@@ -1,6 +1,6 @@
 # LAN Sentinel
 
-LAN Sentinel keeps a persistent, interface-aware, historical inventory of the hosts on local OT networks. It runs as a single static Go binary (`lan-sentinel`) under systemd on edge devices and correlates MAC addresses, IP addresses, hostnames, services and vendor information from passive capture, the kernel neighbour table and carefully rate-limited active probes.
+LAN Sentinel keeps a persistent, interface-aware, historical inventory of the hosts on local OT networks. It runs as a single cgo-free Go binary (`lan-sentinel`) under systemd on Linux or launchd on macOS and correlates MAC addresses, IP addresses, hostnames, services and vendor information from passive capture, the kernel neighbour table and carefully rate-limited active probes.
 
 Its purpose is field troubleshooting: answering, after the fact, *what was using this IP at that time, with which MAC, what we thought it was, and when that changed*.
 
@@ -28,17 +28,17 @@ Design complete, implementation starting. See `docs/IMPLEMENTATION_PLAN.md`.
 ## Build
 
 ```bash
-make release   # dist/lan-sentinel-linux-amd64, dist/lan-sentinel-linux-arm64, SHA256SUMS
+make release   # dist/lan-sentinel-{linux,darwin}-{amd64,arm64}, SHA256SUMS
 ```
 
-Binaries are static (`CGO_ENABLED=0`) and need no runtime dependencies. Reference systemd unit, `sysusers.d`, `tmpfiles.d` and default config are in `deploy/`.
+Binaries are built with `CGO_ENABLED=0` and need no runtime dependencies. Linux (kernel 5.10+) and macOS (14+) are both development and delivery platforms with the same features. Linux binaries are static; macOS binaries link only the system `libSystem`. Darwin binaries are not notarised: after downloading, run `xattr -d com.apple.quarantine lan-sentinel-darwin-*`. Reference files: `deploy/linux/` (systemd unit, `sysusers.d`, `tmpfiles.d`, config) and `deploy/darwin/` (LaunchDaemon plists, `newsyslog.d`, config, setup README).
 
 ## Runtime layout
 
-| Item | Path |
-| --- | --- |
-| Binary | `/usr/local/bin/lan-sentinel` |
-| Config | `/etc/lan-sentinel/config.yaml` |
-| Database | `/data/lan-sentinel/hosts.db` |
-| API socket | `/run/lan-sentinel/api.sock` |
-| Service | `lan-sentinel.service`, user `lan-sentinel`, `CAP_NET_RAW` only |
+| Item | Linux | macOS |
+| --- | --- | --- |
+| Binary | `/usr/local/bin/lan-sentinel` | `/usr/local/bin/lan-sentinel` |
+| Config | `/etc/lan-sentinel/config.yaml` | `/usr/local/etc/lan-sentinel/config.yaml` |
+| Database | `/data/lan-sentinel/hosts.db` | `/usr/local/var/lan-sentinel/hosts.db` |
+| API socket | `/run/lan-sentinel/api.sock` | `/var/run/lan-sentinel/api.sock` |
+| Service | `lan-sentinel.service`, user `lan-sentinel`, `CAP_NET_RAW` only | LaunchDaemon `lan-sentinel`, user `_lan-sentinel` in `access_bpf`, never root |

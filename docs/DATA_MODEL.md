@@ -40,14 +40,18 @@ type Observation struct {
     Hostname  string
     NameType  NameType          // mdns, dhcp, dns_ptr, netbios, lldp
     Service   *ServiceResult    // proto, port, OPEN/REFUSED/TIMEOUT/UNREACHABLE/UNKNOWN
-    NUDState  string            // netlink only
+    NeighborState string        // kernel_neighbor only: normalised state; backend + raw state in Meta
     Meta      map[string]string
 }
 ```
 
-Sources: `passive_arp`, `passive_ipv4`, `passive_ipv6`, `passive_ndp`, `passive_dhcp`, `passive_mdns`, `passive_dns`, `passive_lldp`, `netlink_neighbor`, `arp_scan`, `icmp_scan`, `ndp_probe`, `tcp_connect`, `udp_probe`.
+Replayed observations (pcap or JSONL) keep their recorded source and time; there is no separate replay source, so the correlator treats them exactly as live ones.
 
-Events that are not caused by an observation use one of these internal causes instead of a source: `presence` (presence ticker), `expiry` (binding expiry), `netlink_link` (interface manager), `scheduler` (scan runs), `operator` (API/CLI action).
+Sources are platform-neutral; the platform backend that produced an observation (e.g. `netlink` or `darwin_route` for `kernel_neighbor`, `afpacket` or `bpf` for passive sources) is recorded in `Meta["backend"]`.
+
+Sources: `passive_arp`, `passive_ipv4`, `passive_ipv6`, `passive_ndp`, `passive_dhcp`, `passive_mdns`, `passive_dns`, `passive_lldp`, `kernel_neighbor`, `arp_scan`, `icmp_scan`, `ndp_probe`, `tcp_connect`, `udp_probe`.
+
+Events that are not caused by an observation use one of these internal causes instead of a source: `presence` (presence ticker), `expiry` (binding expiry), `iface_monitor` (interface manager), `scheduler` (scan runs), `operator` (API/CLI action).
 
 ## 3. Time and interval semantics
 
@@ -154,8 +158,8 @@ Applied by the correlator to each observation, in order, within the observation'
 
 An IP from an observation is bound to the host only if it is on-link for the context:
 
-- IPv4: inside one of the context's open `context_prefixes`, or the source is `passive_arp`, `arp_scan`, `passive_dhcp` or `netlink_neighbor` (L2 evidence; out-of-subnet ARP from misconfigured devices is still recorded).
-- IPv6: link-local, or inside an open prefix, or the source is `passive_ndp`, `ndp_probe` or `netlink_neighbor`.
+- IPv4: inside one of the context's open `context_prefixes`, or the source is `passive_arp`, `arp_scan`, `passive_dhcp` or `kernel_neighbor` (L2 evidence; out-of-subnet ARP from misconfigured devices is still recorded).
+- IPv6: link-local, or inside an open prefix, or the source is `passive_ndp`, `ndp_probe` or `kernel_neighbor`.
 - `passive_ipv4` / `passive_ipv6` source addresses outside these rules are ignored for binding, because the frame's source MAC is the router's.
 
 A host whose MAC answers ARP for IPs that are already bound to other live hosts, or for more than `identity.proxy_arp_threshold` (default 16) addresses, is flagged `proxy_arp` in `identifications`. Its further ARP-only claims do not open or take over bindings; they are recorded as observations only.
@@ -229,9 +233,9 @@ Every event is self-contained, so pruning observations never weakens history:
 | Column | Content |
 | --- | --- |
 | `old_value`, `new_value` | Text form of the changed attribute (IP, name, state, prefix) |
-| `cause` | The observation's `Source`, or an internal cause (`presence`, `expiry`, `netlink_link`, `scheduler`, `operator`) |
+| `cause` | The observation's `Source`, or an internal cause (`presence`, `expiry`, `iface_monitor`, `scheduler`, `operator`) |
 | `observation_id` | ID of the causing observation if any. May point at a pruned row; informational only. |
-| `evidence_json` | Snapshot copied at write time: `{ts, source, interface, mac, ip, hostname, name_type, service: {proto, port, state}, nud_state}` of the causing observation. For timer-driven events: the snapshot of the last supporting observation plus `reason` (e.g. `"no observation for 24h"`). For operator events: `{actor, reason}`. |
+| `evidence_json` | Snapshot copied at write time: `{ts, source, interface, mac, ip, hostname, name_type, service: {proto, port, state}, neighbor_state, backend}` of the causing observation. For timer-driven events: the snapshot of the last supporting observation plus `reason` (e.g. `"no observation for 24h"`). For operator events: `{actor, reason}`. |
 | `clock_synced` | false if written before NTP sync |
 
 ## 8. Runtime state
@@ -251,7 +255,7 @@ The central correlator fixture, committed in phase 0 under `test/golden/reconstr
 | 1 | T0 | `passive_arp` MAC A, IP X = .50 | Host A created; binding A–X open; `HOST_DISCOVERED` A |
 | 2 | T0+1h | `passive_dhcp` MAC A, IP Y = .51 | A–X closed at T0+1h; A–Y open; `IP_CHANGED` X → Y |
 | 3 | T0+2h | `passive_arp` MAC B, IP X | Host B; B–X open; `HOST_DISCOVERED` B |
-| 4 | T0+2h58m | `netlink_neighbor` MAC A, IP Y | A–Y `last_seen` updated; no event |
+| 4 | T0+2h58m | `kernel_neighbor` MAC A, IP Y | A–Y `last_seen` updated; no event |
 | 5 | T0+3h | `passive_arp` (gratuitous) MAC C, IP Y | Host C; C–Y open; A–Y and C–Y `conflict = 1`; `HOST_DISCOVERED` C, `DUPLICATE_IP_DETECTED` Y (A, C) |
 | 6 | T0+3h30m | `passive_dhcp` MAC A, IP Z = .52 | A–Y closed at T0+3h30m; A–Z open; `IP_CHANGED` Y → Z; C–Y `conflict = 0`; `DUPLICATE_IP_RESOLVED` Y |
 | 7 | T0+4h | `tcp_connect` IP X, tcp/502 OPEN (no MAC) | Attached to B; `SERVICE_OPENED` |
