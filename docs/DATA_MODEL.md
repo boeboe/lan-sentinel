@@ -40,14 +40,23 @@ type Observation struct {
     Hostname  string
     NameType  NameType          // mdns, dhcp, dns_ptr, netbios, lldp
     Service   *ServiceResult    // proto, port, OPEN/REFUSED/TIMEOUT/UNREACHABLE/UNKNOWN
-    NeighborState string        // kernel_neighbor only: normalised state; backend + raw state in Meta
+    NeighborState string        // kernel_neighbor only: NUD state
     Meta      map[string]string
 }
 ```
 
-Replayed observations (pcap or JSONL) keep their recorded source and time; there is no separate replay source, so the correlator treats them exactly as live ones.
+### JSONL encoding
 
-Sources are platform-neutral; the platform backend that produced an observation (e.g. `netlink` or `darwin_route` for `kernel_neighbor`, `afpacket` or `bpf` for passive sources) is recorded in `Meta["backend"]`.
+Replay files and the golden scenarios store one observation per line, with empty fields omitted:
+
+```json
+{"time": "2026-10-01T12:58:00Z", "source": "kernel_neighbor", "interface": "eth1", "mac": "00:1b:1b:aa:bb:01", "ip": "192.168.110.51", "neighbor_state": "REACHABLE"}
+{"time": "2026-10-01T14:00:00Z", "source": "tcp_connect", "interface": "eth1", "ip": "192.168.110.50", "service": {"proto": "tcp", "port": 502, "state": "OPEN"}}
+```
+
+Fields: `time` (RFC 3339), `source`, `interface`, `mac`, `ip`, `hostname`, `name_type`, `service` (`proto`, `port`, `state`), `neighbor_state`, `meta`. Unknown fields are rejected.
+
+Replayed observations (pcap or JSONL) keep their recorded source and time; there is no separate replay source, so the correlator treats them exactly as live ones.
 
 Sources: `passive_arp`, `passive_ipv4`, `passive_ipv6`, `passive_ndp`, `passive_dhcp`, `passive_mdns`, `passive_dns`, `passive_lldp`, `kernel_neighbor`, `arp_scan`, `icmp_scan`, `ndp_probe`, `tcp_connect`, `udp_probe`.
 
@@ -226,6 +235,23 @@ Thresholds are configurable (`presence:`). Transitions into MISSING emit `HOST_D
 | `INTERFACE_DOWN` | `interface-down` | warning | Monitored interface went down |
 | `SUBNET_CHANGED` | `subnet-changed` | notice | A `context_prefixes` binding opened or closed |
 
+### Values
+
+| Type | `old_value` | `new_value` | Other columns |
+| --- | --- | --- | --- |
+| `HOST_DISCOVERED` | — | MAC | IP (if any) in evidence |
+| `HOST_DISAPPEARED`, `HOST_REAPPEARED` | presence before | presence after | |
+| `IP_ADDED` / `IP_REMOVED` | — / IP | IP / — | |
+| `IP_CHANGED` | old IP | new IP | |
+| `MAC_MOVED` | other interface | this interface | `related_host_id` = host on the other interface |
+| `HOSTNAME_*` | old name (`type:name`) | new name (`type:name`) | |
+| `SERVICE_OPENED` / `SERVICE_CLOSED` | previous state | `proto/port` + state | IP in evidence |
+| `VENDOR_IDENTIFIED` | old value | new value (`field=value`) | |
+| `DUPLICATE_IP_DETECTED` | — | IP | `host_id` = new claimer, `related_host_id` = existing holder |
+| `DUPLICATE_IP_RESOLVED` | — | IP | `host_id` = remaining holder, `related_host_id` = the host that left |
+| `SCAN_*`, `ACTIVE_*`, `INTERFACE_*` | — | summary text | no host |
+| `SUBNET_CHANGED` | prefix closed | prefix opened | no host |
+
 ### Provenance
 
 Every event is self-contained, so pruning observations never weakens history:
@@ -235,7 +261,7 @@ Every event is self-contained, so pruning observations never weakens history:
 | `old_value`, `new_value` | Text form of the changed attribute (IP, name, state, prefix) |
 | `cause` | The observation's `Source`, or an internal cause (`presence`, `expiry`, `iface_monitor`, `scheduler`, `operator`) |
 | `observation_id` | ID of the causing observation if any. May point at a pruned row; informational only. |
-| `evidence_json` | Snapshot copied at write time: `{ts, source, interface, mac, ip, hostname, name_type, service: {proto, port, state}, neighbor_state, backend}` of the causing observation. For timer-driven events: the snapshot of the last supporting observation plus `reason` (e.g. `"no observation for 24h"`). For operator events: `{actor, reason}`. |
+| `evidence_json` | Snapshot copied at write time: `{ts, source, interface, mac, ip, hostname, name_type, service: {proto, port, state}, neighbor_state}` of the causing observation. For timer-driven events: the snapshot of the last supporting observation plus `reason` (e.g. `"no observation for 24h"`). For operator events: `{actor, reason}`. |
 | `clock_synced` | false if written before NTP sync |
 
 ## 8. Runtime state

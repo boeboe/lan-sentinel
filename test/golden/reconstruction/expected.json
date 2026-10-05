@@ -1,0 +1,220 @@
+{
+  "description": "Golden reconstruction scenario, docs/DATA_MODEL.md \u00a710. Default thresholds.",
+  "interface": "eth1",
+  "prefixes": [
+    "192.168.110.0/24"
+  ],
+  "hosts": {
+    "A": "00:1b:1b:aa:bb:01",
+    "B": "00:1b:1b:aa:bb:02",
+    "C": "00:0c:26:aa:bb:03"
+  },
+  "bindings": [
+    {
+      "host": "A",
+      "ip": "192.168.110.50",
+      "first_seen": "2026-10-01T10:00:00Z",
+      "last_seen": "2026-10-01T10:00:00Z",
+      "ended_at": "2026-10-01T11:00:00Z",
+      "conflict": false
+    },
+    {
+      "host": "A",
+      "ip": "192.168.110.51",
+      "first_seen": "2026-10-01T11:00:00Z",
+      "last_seen": "2026-10-01T12:58:00Z",
+      "ended_at": "2026-10-01T13:30:00Z",
+      "conflict": true
+    },
+    {
+      "host": "B",
+      "ip": "192.168.110.50",
+      "first_seen": "2026-10-01T12:00:00Z",
+      "last_seen": "2026-10-01T14:00:00Z",
+      "ended_at": null,
+      "conflict": false
+    },
+    {
+      "host": "C",
+      "ip": "192.168.110.51",
+      "first_seen": "2026-10-01T13:00:00Z",
+      "last_seen": "2026-10-01T13:00:00Z",
+      "ended_at": null,
+      "conflict": false
+    },
+    {
+      "host": "A",
+      "ip": "192.168.110.52",
+      "first_seen": "2026-10-01T13:30:00Z",
+      "last_seen": "2026-10-01T13:30:00Z",
+      "ended_at": null,
+      "conflict": false
+    }
+  ],
+  "events": [
+    {
+      "ts": "2026-10-01T10:00:00Z",
+      "type": "HOST_DISCOVERED",
+      "host": "A",
+      "new": "00:1b:1b:aa:bb:01",
+      "cause": "passive_arp",
+      "evidence_ip": "192.168.110.50"
+    },
+    {
+      "ts": "2026-10-01T11:00:00Z",
+      "type": "IP_CHANGED",
+      "host": "A",
+      "old": "192.168.110.50",
+      "new": "192.168.110.51",
+      "cause": "passive_dhcp",
+      "evidence_ip": "192.168.110.51"
+    },
+    {
+      "ts": "2026-10-01T12:00:00Z",
+      "type": "HOST_DISCOVERED",
+      "host": "B",
+      "new": "00:1b:1b:aa:bb:02",
+      "cause": "passive_arp",
+      "evidence_ip": "192.168.110.50"
+    },
+    {
+      "ts": "2026-10-01T13:00:00Z",
+      "type": "HOST_DISCOVERED",
+      "host": "C",
+      "new": "00:0c:26:aa:bb:03",
+      "cause": "passive_arp",
+      "evidence_ip": "192.168.110.51"
+    },
+    {
+      "ts": "2026-10-01T13:00:00Z",
+      "type": "DUPLICATE_IP_DETECTED",
+      "host": "C",
+      "related": "A",
+      "new": "192.168.110.51",
+      "cause": "passive_arp",
+      "evidence_ip": "192.168.110.51"
+    },
+    {
+      "ts": "2026-10-01T13:30:00Z",
+      "type": "IP_CHANGED",
+      "host": "A",
+      "old": "192.168.110.51",
+      "new": "192.168.110.52",
+      "cause": "passive_dhcp",
+      "evidence_ip": "192.168.110.52"
+    },
+    {
+      "ts": "2026-10-01T13:30:00Z",
+      "type": "DUPLICATE_IP_RESOLVED",
+      "host": "C",
+      "related": "A",
+      "new": "192.168.110.51",
+      "cause": "passive_dhcp",
+      "evidence_ip": "192.168.110.52"
+    },
+    {
+      "ts": "2026-10-01T14:00:00Z",
+      "type": "SERVICE_OPENED",
+      "host": "B",
+      "new": "tcp/502",
+      "cause": "tcp_connect",
+      "evidence_ip": "192.168.110.50"
+    }
+  ],
+  "unbound_observations": 1,
+  "queries": [
+    {
+      "find": "192.168.110.50",
+      "at": "2026-10-01T10:30:00Z",
+      "holders": [
+        {
+          "host": "A",
+          "first_seen": "2026-10-01T10:00:00Z",
+          "ended_at": "2026-10-01T11:00:00Z",
+          "unconfirmed": true
+        }
+      ],
+      "conflict": false
+    },
+    {
+      "find": "192.168.110.50",
+      "at": "2026-10-01T11:30:00Z",
+      "holders": [],
+      "conflict": false,
+      "previous": {
+        "host": "A",
+        "at": "2026-10-01T11:00:00Z"
+      },
+      "next": {
+        "host": "B",
+        "at": "2026-10-01T12:00:00Z"
+      }
+    },
+    {
+      "find": "192.168.110.50",
+      "at": "2026-10-01T12:30:00Z",
+      "holders": [
+        {
+          "host": "B",
+          "first_seen": "2026-10-01T12:00:00Z",
+          "ended_at": null,
+          "unconfirmed": false
+        }
+      ],
+      "conflict": false
+    },
+    {
+      "find": "192.168.110.51",
+      "at": "2026-10-01T13:10:00Z",
+      "holders": [
+        {
+          "host": "A",
+          "first_seen": "2026-10-01T11:00:00Z",
+          "ended_at": "2026-10-01T13:30:00Z",
+          "unconfirmed": true
+        },
+        {
+          "host": "C",
+          "first_seen": "2026-10-01T13:00:00Z",
+          "ended_at": null,
+          "unconfirmed": true
+        }
+      ],
+      "conflict": true
+    },
+    {
+      "find": "192.168.110.51",
+      "at": "2026-10-01T13:40:00Z",
+      "holders": [
+        {
+          "host": "C",
+          "first_seen": "2026-10-01T13:00:00Z",
+          "ended_at": null,
+          "unconfirmed": true
+        }
+      ],
+      "conflict": false
+    }
+  ],
+  "history": [
+    {
+      "ip": "192.168.110.50",
+      "events": [
+        0,
+        1,
+        2,
+        7
+      ]
+    },
+    {
+      "ip": "192.168.110.51",
+      "events": [
+        1,
+        3,
+        4,
+        5,
+        6
+      ]
+    }
+  ]
+}

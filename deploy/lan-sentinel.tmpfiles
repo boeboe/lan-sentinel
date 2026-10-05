@@ -1,0 +1,4 @@
+# Install: /etc/tmpfiles.d/lan-sentinel.conf, then: systemd-tmpfiles --create
+# The runtime directory /run/lan-sentinel comes from RuntimeDirectory= in the unit.
+d /data/lan-sentinel 0750 lan-sentinel lan-sentinel -
+d /etc/lan-sentinel  0755 root         root         -

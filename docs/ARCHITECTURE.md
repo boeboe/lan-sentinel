@@ -1,6 +1,6 @@
 # LAN Sentinel — Architecture
 
-Every collector emits normalised observations onto one bus, on Linux and darwin alike; a single correlation goroutine owns identity and state, so collectors never touch the database directly.
+Every collector emits normalised observations onto one bus; a single correlation goroutine owns identity and state, so collectors never touch the database directly.
 
 ## 1. Data flow
 
@@ -47,9 +47,9 @@ Every collector emits normalised observations onto one bus, on Linux and darwin 
                      └──────────────┘  └──────────────┘
 ```
 
-Only the correlator writes state and events. The log sink (journald on Linux, JSON lines on darwin) receives state transitions straight from the event engine, never raw observations.
+Only the correlator writes state and events. journald receives state transitions straight from the event engine, never raw observations.
 
-The interface manager, capture, neighbour and probe-transmit layers each have a Linux and a darwin backend behind a small interface (§3, Platform layer). Everything else, including the probe scheduler and budgets, is shared code. A replay collector can stand in for live collection on either platform.
+LAN Sentinel is Linux only, and so is the code base. The kernel-facing parts (interface manager, capture, neighbour monitoring, probe transmission) sit behind small interfaces (§3, Platform layer) so everything above them can be tested against fakes. A replay collector can stand in for live collection, e.g. in the dev container.
 
 ## 2. Key decisions
 
@@ -60,65 +60,62 @@ The interface manager, capture, neighbour and probe-transmit layers each have a 
 | Data flow | Collectors → observation channel → correlator → state + events → SQLite | Collectors stay independent and testable; one writer avoids lock contention |
 | Concurrency | One correlator goroutine; collectors and probes in their own goroutines under `errgroup` | Deterministic ordering of state changes |
 | Storage | SQLite in WAL mode, single writer, batched transactions | Atomic, crash-safe, one portable file, queryable |
-| SQLite driver | `modernc.org/sqlite` (pure Go) | No cgo; supports all four targets |
-| Packet capture | Linux: `AF_PACKET` TPACKET_V3 via `gopacket/afpacket`. Darwin: `/dev/bpf*` via `golang.org/x/sys/unix` ioctls. Same classic-BPF filter (`golang.org/x/net/bpf`) on both | No cgo, no libpcap; kernel-side filtering keeps CPU low |
-| Neighbours and interfaces | Linux: `vishvananda/netlink` subscriptions. Darwin: `golang.org/x/net/route` (routing socket + `sysctl` RIB dumps). Periodic resync on both | Event-driven where the kernel allows; resync covers missed notifications |
-| ARP/NDP send | Linux: `AF_PACKET` (`mdlayher/arp`, `mdlayher/ndp`). Darwin: frames encoded with `gopacket/layers` and written to a BPF device (`BIOCSHDRCMPLT`) | Linux needs only `CAP_NET_RAW`; darwin needs only BPF device access |
-| TCP probes | Plain `net.Dialer` connect with timeout, immediate close, bound to the interface (`SO_BINDTODEVICE` / `IP_BOUND_IF`) | Safe for OT; classifies OPEN / REFUSED / TIMEOUT / UNREACHABLE; leaves via the probed interface |
+| SQLite driver | `modernc.org/sqlite` (pure Go) | No cgo; static cross-compile |
+| Packet capture | `AF_PACKET` TPACKET_V3 via `gopacket/afpacket`, classic-BPF filter (`golang.org/x/net/bpf`) | No cgo, no libpcap; kernel-side filtering keeps CPU low |
+| Neighbours and interfaces | `vishvananda/netlink` dump + `RTM_NEWNEIGH`/`RTM_DELNEIGH`, link and address subscriptions, resync after `ENOBUFS` and periodically | Event-driven, no `ip neigh` polling |
+| ARP/NDP send | Raw `AF_PACKET` socket (`mdlayher/arp`, `mdlayher/ndp`) | Needs only `CAP_NET_RAW` |
+| TCP probes | Plain `net.Dialer` connect with timeout, immediate close, bound to the interface with `SO_BINDTODEVICE` | Safe for OT; classifies OPEN / REFUSED / TIMEOUT / UNREACHABLE; leaves via the probed interface |
 | Presence | ACTIVE / RECENT / STALE / MISSING, configurable thresholds | Quiet PLCs are not offline |
-| Logging | `log/slog`: journald handler on Linux, JSON lines on stderr under launchd on darwin, text on a terminal; transitions only | No journal spam; no cgo needed for macOS unified logging |
-| Service manager | systemd (`Type=notify`, watchdog) on Linux; launchd LaunchDaemon (`KeepAlive`) on darwin | Native supervisor on each OS |
+| Logging | `log/slog` with a journald handler; text or JSON on a terminal or in a container; transitions only | No journal spam |
+| Service manager | systemd, `Type=notify` with watchdog | Readiness, supervision and sandboxing in one place |
 | CLI | One binary with cobra subcommands; client over Unix socket, `--offline` reads DB | Single static operational tool |
-| Build | Go 1.23+, `CGO_ENABLED=0`, `linux/amd64`, `linux/arm64`, `darwin/amd64`, `darwin/arm64`; minimum Linux 5.10, macOS 14 | One executable per target, no third-party runtime deps; static on Linux, `libSystem` on darwin (Apple does not support static executables) |
-| Platforms | Linux and darwin are both development and delivery platforms with full feature parity; OS code behind small interfaces in `_linux.go` / `_darwin.go` files | Linux assumptions cannot leak into the core |
-| Replay | pcap/pcapng or JSONL replay through the real decoders and correlator, with a simulated clock | Reproduce site behaviour and run golden tests on any platform |
-| Delivery | Four binaries + checksums; reference files in `deploy/` | No packaging requirement |
+| Build | Go 1.26+, `CGO_ENABLED=0`, `linux/amd64` and `linux/arm64`; minimum kernel 5.10 | Fits target hardware; static binary, no runtime deps |
+| Development | Linux-only code base; every build, lint and test runs in a Linux dev container via `make` (§9), on Linux or macOS hosts | One toolchain and one OS everywhere; no stubs or build tags |
+| Replay | pcap/pcapng or JSONL replay through the real decoders and correlator, with a simulated clock | Reproduce site behaviour and run golden tests on any machine |
+| Delivery | Two static binaries + checksums; reference files in `deploy/` | No packaging requirement |
 
 ## 3. Components
 
 ### Interface manager (`internal/iface`)
-Enumerates links and addresses (netlink on Linux; `net.Interfaces` plus routing-socket `RTM_IFINFO`/`RTM_NEWADDR`/`RTM_DELADDR` on darwin), derives one network context per configured interface name, records the interface's own prefixes over time (`context_prefixes`), follows link and address changes at runtime, and emits `INTERFACE_UP`, `INTERFACE_DOWN` and `SUBNET_CHANGED`. The current prefixes feed the correlator's on-link check (`DATA_MODEL.md` §5.2). Collectors start and stop per interface as links come and go.
+Enumerates links and addresses through netlink, derives one network context per configured interface name, records the interface's own prefixes over time (`context_prefixes`), follows link and address changes at runtime, and emits `INTERFACE_UP`, `INTERFACE_DOWN` and `SUBNET_CHANGED`. The current prefixes feed the correlator's on-link check (`DATA_MODEL.md` §5.2). Collectors start and stop per interface as links come and go.
 
 ### Observation bus (`internal/observation`)
 A bounded Go channel of `Observation` values (see `DATA_MODEL.md` §2). When full, new observations are dropped and `lan_sentinel_bus_dropped_total` increments; collectors never block on the correlator.
 
 ### Passive capture (`internal/collect/capture`)
-One capture handle per interface with a classic-BPF filter restricted to ARP, NDP/ICMPv6, DHCP (67/68), mDNS (5353), DNS (53) responses, LLDP (EtherType 0x88cc), and IPv4/IPv6 headers for source-address learning. Decoders are pure functions from frame to zero or more observations, shared by both backends and by replay.
-
-- **Linux:** `AF_PACKET` TPACKET_V3 ring; promiscuous mode via `PACKET_ADD_MEMBERSHIP`.
-- **Darwin:** a cloned `/dev/bpf*` device bound with `BIOCSETIF`, `BIOCIMMEDIATE`, `BIOCSBLEN`, `BIOCSETF`, `BIOCSSEESENT=0`; promiscuous mode via `BIOCPROMISC`. Capture drops come from `BIOCGSTATS`. Requires read access to `/dev/bpf*` (§9).
+One `AF_PACKET` TPACKET_V3 ring per interface with a classic-BPF filter restricted to ARP, NDP/ICMPv6, DHCP (67/68), mDNS (5353), DNS (53) responses, LLDP (EtherType 0x88cc), and IPv4/IPv6 headers for source-address learning. Promiscuous mode is set with `PACKET_ADD_MEMBERSHIP` when enabled. Decoders are pure functions from frame to zero or more observations, shared with replay.
 
 On a switched port, capture sees traffic to/from the box, broadcast, multicast, ARP, mDNS, IPv6 multicast and some switch control traffic, but not unicast between other devices unless the port is mirrored. That is expected and sufficient for discovery.
 
 ### Replay collector (`internal/collect/replay`)
-Portable. Reads a pcap/pcapng file (via the pure-Go `gopacket/pcapgo` reader, frames decoded by the capture package's decoders) or a JSONL file of `Observation` values, and emits them for the configured interface with their recorded source and timestamp. In `speed: 0` mode it advances a simulated clock (`internal/clock`) to each observation's timestamp before emitting it and blocks until the correlator has consumed it, so presence and expiry timers fire exactly as they would have at the site; `speed: N` replays in real time × N. When every replay source is exhausted the daemon keeps serving the API (or exits with `replay.exit_when_done: true`, used by tests).
+Reads a pcap/pcapng file (via the pure-Go `gopacket/pcapgo` reader, frames decoded by the capture package's decoders) or a JSONL file of `Observation` values, and emits them for the configured interface with their recorded source and timestamp. In `speed: 0` mode it advances a simulated clock (`internal/clock`) to each observation's timestamp before emitting it and blocks until the correlator has consumed it, so presence and expiry timers fire exactly as they would have at the site; `speed: N` replays in real time × N. When every replay source is exhausted the daemon keeps serving the API (or exits with `replay.exit_when_done: true`, used by tests).
 
 ### Clock (`internal/clock`)
 All components that read time (correlator, presence ticker, expiry, scheduler, compaction) take a `clock.Clock`. Production uses the wall clock; replay and tests use a simulated clock.
 
 ### Platform layer (`internal/platform`)
-Four small interfaces, each with a `_linux.go` and a `_darwin.go` implementation; nothing outside these packages and the service glue imports OS-specific code:
+Four small interfaces over the kernel facilities. Nothing outside `internal/platform` and `internal/service` uses AF_PACKET, netlink or raw sockets directly, so collectors, the scheduler and the daemon are tested against fakes.
 
-| Interface | Methods (sketch) | Linux | Darwin |
-| --- | --- | --- | --- |
-| `Capturer` | `Open(iface, filter, promisc) (FrameSource, error)`, `Stats()` | `AF_PACKET` ring | `/dev/bpf*` |
-| `NeighborSource` | `Snapshot(ctx) ([]Neighbor, error)`, `Watch(ctx) (<-chan NeighborEvent, error)` | rtnetlink | routing socket + `sysctl` |
-| `InterfaceMonitor` | `List(ctx)`, `Watch(ctx) (<-chan LinkEvent, error)` | rtnetlink | routing socket |
-| `Transmitter` | `SendFrame(iface, frame)`, `DialTCP(iface, addr, timeout)`, `PingSocket(iface)` | `AF_PACKET`, `SO_BINDTODEVICE`, ping/raw socket | BPF write, `IP_BOUND_IF`, datagram ICMP socket |
+| Interface | Methods (sketch) | Linux implementation |
+| --- | --- | --- |
+| `Capturer` | `Open(iface, filter, promisc) (FrameSource, error)`, `Stats()` | `AF_PACKET` TPACKET_V3 ring |
+| `NeighborSource` | `Snapshot(ctx) ([]Neighbor, error)`, `Watch(ctx) (<-chan NeighborEvent, error)` | rtnetlink neighbour dump and subscription |
+| `InterfaceMonitor` | `List(ctx)`, `Watch(ctx) (<-chan LinkEvent, error)` | rtnetlink link and address dump and subscription |
+| `Transmitter` | `SendFrame(iface, frame)`, `DialTCP(iface, addr, timeout)`, `ICMPConn(iface, ipv6)` | `AF_PACKET` write, `SO_BINDTODEVICE`, ping or raw ICMP socket |
 
-Each backend reports availability per interface (`running`, `disabled`, `unsupported`, `failed` with error) to the collector registry, which feeds `daemon status` and `lan_sentinel_collector_up`. Service glue (`sd_notify`, journald) is likewise split, with no-ops on darwin. Shared tests run against fake implementations of these interfaces.
+Each backend reports availability per interface (`running`, `disabled`, `unsupported`, `failed` with error) to the collector registry, which feeds `daemon status` and `lan_sentinel_collector_up`. Shared tests run against fake implementations of these interfaces; the Linux implementations are tested in Docker (§9).
 
 ### Neighbour collector (`internal/collect/neighbor`)
-Reads the kernel neighbour table at startup, then follows notifications (`RTM_NEWNEIGH`/`RTM_DELNEIGH` on Linux; routing-socket `RTM_ADD`/`RTM_DELETE`/`RTM_CHANGE` for `RTF_LLINFO` routes on darwin) and resynchronises with a full snapshot after notification loss and every `neighbor.resync_interval`. Emits source `kernel_neighbor` with `Meta{backend, raw_state}` and a normalised state. `STALE` means unconfirmed reachability, not offline. Darwin notification coverage is validated in the phase 0 spike; the darwin resync default is short (60 s) until then.
+Dumps the neighbour table at startup, then subscribes to `RTM_NEWNEIGH`/`RTM_DELNEIGH`, and takes a fresh dump after notification loss (`ENOBUFS`) and every `neighbor.resync_interval` (default 10 min). Emits source `kernel_neighbor` with the NUD state as `neighbor_state`. `STALE` means unconfirmed reachability, not offline.
 
 ### Active probes (`internal/probe`)
-A shared scheduler runs independent probe engines (ARP, ICMP, NDP, TCP, UDP) per interface; engines build packets in shared code and transmit through the platform `Transmitter`. Each engine draws from its own protocol token bucket and from one global token bucket (packets/s; a TCP connect costs 3 tokens), and holds a slot of one global semaphore (concurrency). TCP additionally holds a per-interface and a per-target-host semaphore, and every target has a minimum spacing between probes. The scheduler applies startup delay, jitter, randomised target order, excludes, the prefix guard, timeout back-off and the kill switch. The same planner computes `scan plan` dry runs and gates `scan run`. See §5.
+A scheduler runs independent probe engines (ARP, ICMP, NDP, TCP, UDP) per interface; engines build packets themselves and transmit through the platform `Transmitter`. Each engine draws from its own protocol token bucket and from one global token bucket (packets/s; a TCP connect costs 3 tokens), and holds a slot of one global semaphore (concurrency). TCP additionally holds a per-interface and a per-target-host semaphore, and every target has a minimum spacing between probes. The scheduler applies startup delay, jitter, randomised target order, excludes, the prefix guard, timeout back-off and the kill switch. The same planner computes `scan plan` dry runs and gates `scan run`. See §5.
 
 ### Correlator (`internal/correlate`) and state (`internal/state`)
 Single goroutine. Applies the correlation rules (`DATA_MODEL.md` §5), maintains in-memory current state, runs the presence state machine and binding expiry on a ticker, derives `preferred_name`, and hands state changes to the store and events to the event engine. Observations that match no host are stored unbound and counted.
 
 ### Event engine (`internal/events`)
-Builds events from state transitions, attaches the evidence snapshot (`DATA_MODEL.md` §7), writes them to the store and to the log sink.
+Builds events from state transitions, attaches the evidence snapshot (`DATA_MODEL.md` §7), writes them to the store and to journald.
 
 ### Store (`internal/store`)
 Owns the single SQLite writer goroutine, migrations, repositories, batched commits (target 5 s), retention, roll-up and compaction (hourly, small batches). Exposes read-only query functions used by the API and by `--offline`; the offline open procedure is specified in `CLI.md` §1. On clean shutdown the writer runs `PRAGMA wal_checkpoint(TRUNCATE)` and closes, so the WAL is removed.
@@ -127,7 +124,7 @@ Owns the single SQLite writer goroutine, migrations, repositories, batched commi
 OUI lookup from an embedded table generated from IEEE MA-L/MA-M/MA-S by `data/oui` tooling, plus an optional override file. Plugin interface (`Identify(evidence) []Identification`) reserved for phase 6+.
 
 ### API (`internal/api`) and CLI (`internal/cli`)
-REST over the platform socket path (§6; mode 0660, owned by the service user and group), optional `127.0.0.1` listener that also serves `/metrics`. The CLI is an API client by default and a read-only DB reader with `--offline`. Endpoints are listed in `IMPLEMENTATION_PLAN.md` phase 3; commands in `CLI.md`.
+REST over `/run/lan-sentinel/api.sock` (mode 0660, owner `lan-sentinel`), optional `127.0.0.1` listener that also serves `/metrics`. The CLI is an API client by default and a read-only DB reader with `--offline`. Endpoints are listed in `IMPLEMENTATION_PLAN.md` phase 3; commands in `CLI.md`.
 
 ### Metrics (`internal/metrics`)
 `lan_sentinel_hosts{interface,presence}`, `lan_sentinel_events_total{type}`, `lan_sentinel_probe_total{interface,protocol,port,result}`, `lan_sentinel_scan_duration_seconds`, `lan_sentinel_observations_total{source}`, `lan_sentinel_bus_dropped_total`, `lan_sentinel_capture_drops_total{interface}`, `lan_sentinel_db_size_bytes`, `lan_sentinel_observations_unbound_total{source}`, `lan_sentinel_active_disabled` (0/1), `lan_sentinel_probe_throttled_total{protocol,reason}`, `lan_sentinel_collector_up{interface,collector}`. No MAC, IP, hostname or host-ID labels.
@@ -139,39 +136,44 @@ lan-sentinel/
 ├── cmd/lan-sentinel/            main.go: cobra root, daemon + CLI subcommands
 ├── internal/
 │   ├── config/                  YAML schema, env (LAN_SENTINEL_*), flags, defaults, validation, SIGHUP reload
-│   ├── platform/                Capturer, NeighborSource, InterfaceMonitor, Transmitter; *_linux.go, *_darwin.go
-│   ├── service/                 sd_notify + journald (linux), launchd/JSON glue (darwin), daemon prepare (darwin)
+│   ├── platform/                Capturer, NeighborSource, InterfaceMonitor, Transmitter; fakes in platform/fake
+│   ├── service/                 sd_notify notifier and journald slog handler
 │   ├── iface/                   interface manager: contexts, prefixes, up/down (via platform.InterfaceMonitor)
 │   ├── observation/             Observation type, Source enum, bounded bus with drop counters
 │   ├── clock/                   wall clock and simulated clock
 │   ├── collect/
 │   │   ├── capture/             capture loop over platform.Capturer; decoders/: arp, ipv4, ipv6, ndp, dhcp, mdns, dns, lldp
 │   │   ├── neighbor/            snapshot + watch + resync over platform.NeighborSource
-│   │   └── replay/              pcap/pcapng and JSONL replay (portable)
+│   │   └── replay/              pcap/pcapng and JSONL replay
 │   ├── probe/
 │   │   ├── scheduler/           intervals, jitter, startup delay, global rate limiter, excludes
 │   │   ├── arp/  icmp/  ndp/  tcp/  udp/   (transmit via platform.Transmitter)
 │   ├── correlate/               identity engine: match observation → host, conflicts
 │   ├── state/                   in-memory current state, presence state machine, name preference
-│   ├── events/                  event types, emitter, log sink
+│   ├── events/                  event types, emitter, journald sink
 │   ├── store/                   SQLite: migrations, repositories, batching, retention/compaction
 │   ├── identify/                OUI lookup; plugin interface for later identification
 │   ├── api/                     REST over Unix socket + optional 127.0.0.1 TCP
+│   ├── buildinfo/               version, commit, date stamped via -ldflags
+│   ├── daemon/                  lifecycle: config, store, collectors, SIGHUP reload, watchdog, shutdown
+│   ├── logging/                 slog handler selection (journald, text, json)
 │   ├── metrics/                 Prometheus registry, low-cardinality collectors
 │   └── cli/                     API client, offline DB reader, table/json/jsonl/csv output
 ├── migrations/                  numbered .sql files embedded with go:embed
 ├── data/oui/                    generated OUI database + generator tool
-├── deploy/
-│   ├── linux/                   systemd unit, sysusers.d, tmpfiles.d, default config
-│   ├── darwin/                  LaunchDaemon plists (daemon, prepare), newsyslog.d, default config, setup README
-│   └── config.dev.yaml          replay config for local development
-├── test/                        netns (linux) and feth (darwin) integration tests, pcap fixtures, golden streams
+├── build/                       dev container (dev.Dockerfile) and the scripts make runs in it
+├── deploy/                      systemd unit, sysusers.d, tmpfiles.d, default config, config.dev.yaml (replay)
+├── test/
+│   ├── golden/                  golden observation streams + expected bindings, events, queries
+│   ├── net/                     Docker network tests: run.sh + Go tests (build tag nettest)
+│   └── fixtures/                pcap fixtures from real sites
+├── tools/capcheck/              privilege and feasibility check (Linux; not released)
 ├── docs/
 ├── Makefile
 └── CLAUDE.md
 ```
 
-Tooling: `golangci-lint` (run for `GOOS=linux` and `GOOS=darwin`); a `Makefile` `release` target producing binaries for `linux/amd64`, `linux/arm64`, `darwin/amd64` and `darwin/arm64` with version, commit and build date stamped via `-ldflags`, plus `SHA256SUMS`; `run-dev` running the daemon with `deploy/config.dev.yaml`; CI on a Linux and a macOS runner running unit and golden tests with `-race`, `go vet` and lint, plus the native network suite on each (`make test-net`: network namespaces + veth on Linux, `feth` pairs on darwin; both need root). The Linux suite can also run in a Linux VM on a Mac (OrbStack, Colima or Lima).
+Tooling: a `Makefile` (`make` lists every target) whose Go commands all run in the Linux dev container (`build/dev.Dockerfile`: Go toolchain, pinned golangci-lint; caches on a named volume; runs as the calling user). Targets: `release` (static `linux/amd64` and `linux/arm64` binaries, version, commit and build date via `-ldflags`, static-linking check, `SHA256SUMS`); hygiene targets `fmt`/`fmt-check`, `tidy`/`tidy-check`, `mod-verify`, `vet`, `lint` (golangci-lint) and `vuln` (`govulncheck`, pinned as a Go tool in `go.mod`); `test`, `coverage`/`cover`, `fuzz` (every `Fuzz*` target, `FUZZTIME` each); the Docker suites `test-net` and `test-systemd` (§9); the gates `check` and `check-all`; `shell` and `run-dev`. CI runs the same targets: `make mod-verify check`, `make fuzz`, the Docker suites and `make release tools`.
 
 ## 5. OT safety controls
 
@@ -199,21 +201,9 @@ Passive capture opens sockets for receive only, never injects frames, and promis
 
 ## 6. Configuration
 
-Precedence: flags → `LAN_SENTINEL_*` environment → config file → compiled defaults. Compiled default paths are per platform:
+Precedence: flags → `LAN_SENTINEL_*` environment → `/etc/lan-sentinel/config.yaml` (or `$LAN_SENTINEL_CONFIG`) → compiled defaults. SIGHUP reloads probes, intervals, thresholds and log level; interface, storage, API, metrics and log-format changes require a restart and are reported as not applied.
 
-| Item | Linux | darwin |
-| --- | --- | --- |
-| Binary | `/usr/local/bin/lan-sentinel` | `/usr/local/bin/lan-sentinel` |
-| Config | `/etc/lan-sentinel/config.yaml` | `/usr/local/etc/lan-sentinel/config.yaml` |
-| Database | `/data/lan-sentinel/hosts.db` | `/usr/local/var/lan-sentinel/hosts.db` |
-| API socket | `/run/lan-sentinel/api.sock` | `/var/run/lan-sentinel/api.sock` |
-| Log | journald | `/var/log/lan-sentinel/daemon.log` (JSON lines, `newsyslog`) |
-| Log format default | `journald` | `json` (or `text` on a terminal) |
-| Service user/group | `lan-sentinel` | `_lan-sentinel` (+ `access_bpf`) |
-
-Development runs on either OS use `deploy/config.dev.yaml` (paths under `./dev/`).
-
-Darwin limits Unix socket paths to 103 bytes; config validation rejects longer paths. SIGHUP reloads probes, intervals, thresholds and log level; interface and storage changes require a restart.
+If `logging.format` is left at its default (`journald`) and stderr is a terminal, the daemon logs text to stderr. If journald is configured but its socket is unreachable (e.g. `daemon run` outside systemd or in a container), it logs text to stderr with a warning.
 
 ```yaml
 version: 1
@@ -230,16 +220,14 @@ interfaces:
 passive:
   protocols: { arp: true, ipv4: true, ipv6: false, dhcp: true, mdns: true, dns: true, lldp: true }
 neighbor:
-  resync_interval: 10m              # platform default: 10m Linux, 60s darwin
-darwin:
-  bpf_devices: 8                    # darwin only: /dev/bpf* clones prepared at boot
+  resync_interval: 10m              # full neighbour-table dump in addition to notifications
 active:
   startup_delay: 30s
   jitter: 0.1
   max_packets_per_second: 20       # global ceiling; a TCP connect costs 3
   max_concurrent_probes: 10
   min_target_interval: 1s          # spacing between probes to one IP
-  budgets:                         # each must be <= the global ceiling
+  budgets:                         # each <= the global ceiling; tcp connects × 3 <= it too
     arp:  { packets_per_second: 10 }
     icmp: { packets_per_second: 5 }
     ndp:  { packets_per_second: 5 }
@@ -277,10 +265,12 @@ api:
   socket: /run/lan-sentinel/api.sock
   listen: ""              # e.g. 127.0.0.1:9734 (also serves /metrics)
 metrics: { enabled: true }
-logging: { level: info, format: journald }   # journald | text | json
+logging:
+  level: info               # trace | debug | info | warn | error
+  format: journald          # journald | json | text
 ```
 
-Replay interface (both platforms; `deploy/config.dev.yaml` uses this):
+Replay interface (works on any development machine; `deploy/config.dev.yaml` uses this):
 
 ```yaml
 version: 1
@@ -300,9 +290,9 @@ logging: { level: debug, format: text }
 
 ## 7. Logging
 
-Each event is one journald entry (Linux) or one JSON line (darwin) with the same structured fields (`EVENT=ip_changed`, `IFACE`, `MAC`, `OLD_IP`, `NEW_IP`, `HOST_ID`, `SOURCE`) and a readable `MESSAGE`. Priority: notice for changes, warning for `DUPLICATE_IP_DETECTED`, `MAC_MOVED`, `ACTIVE_DISABLED` and `INTERFACE_DOWN`, error for daemon faults. `journalctl -u lan-sentinel EVENT=ip_changed` works directly on Linux; on darwin the log file is filterable with `jq`. Observations are never logged.
+Each event is one journald entry with structured fields (`EVENT=ip_changed`, `IFACE`, `MAC`, `OLD_IP`, `NEW_IP`, `HOST_ID`, `SOURCE`) and a readable `MESSAGE`. Priority: notice for changes, warning for `DUPLICATE_IP_DETECTED`, `MAC_MOVED`, `ACTIVE_DISABLED` and `INTERFACE_DOWN`, error for daemon faults. `journalctl -u lan-sentinel EVENT=ip_changed` works directly. Observations are never logged.
 
-## 8. systemd and privileges (Linux)
+## 8. systemd and privileges
 
 ```ini
 [Unit]
@@ -320,6 +310,7 @@ UMask=0027
 WatchdogSec=60
 Restart=on-failure
 RuntimeDirectory=lan-sentinel
+RuntimeDirectoryMode=0750
 ReadWritePaths=/data/lan-sentinel
 AmbientCapabilities=CAP_NET_RAW
 CapabilityBoundingSet=CAP_NET_RAW
@@ -331,11 +322,24 @@ PrivateDevices=true
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectProc=invisible
+ProcSubset=pid
+PrivateIPC=true
+DevicePolicy=closed
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_PACKET AF_NETLINK
 RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+RemoveIPC=true
 LockPersonality=true
 MemoryDenyWriteExecute=true
 SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+SystemCallErrorNumber=EPERM
 MemoryMax=128M
 CPUQuota=20%
 
@@ -356,51 +360,29 @@ WantedBy=multi-user.target
 | TCP `connect()` | none |
 | `SO_BINDTODEVICE` on probe sockets | `CAP_NET_RAW` (kernels < 5.7), none on newer |
 
-Results (kernel version, board, pass/fail) are recorded in this table. If any row needs `CAP_NET_ADMIN` or root, stop and decide before continuing. The process stays in the foreground; systemd owns its lifecycle (no double-fork).
+Run `tools/capcheck` under the reference unit's identity on each target board (`tools/capcheck/README.md`) and record kernel version, board and results below. `make test-net` runs the same check in Docker on every change. If any row needs `CAP_NET_ADMIN` or root, stop and decide before continuing.
 
-## 9. launchd and privileges (darwin)
+| System | Kernel | Date | Result |
+| --- | --- | --- | --- |
+| Docker test network (`make test-net`), uid 65534, ambient `CAP_NET_RAW` only | 7.0.14-linuxkit arm64 | 2026-10-05 | PASS, every row above, including ARP/NDP transmit, ping and raw ICMP, bound TCP connect; AF_PACKET refused without `CAP_NET_RAW` |
+| systemd in a container (`make test-systemd`), transient unit with this unit's `[Service]` settings | 7.0.14-linuxkit arm64, systemd 252 | 2026-10-05 | PASS, every row above; daemon runs as `lan-sentinel` with `CapEff`/`CapBnd` = `CAP_NET_RAW`; `systemd-analyze security` exposure 1.6 |
+| RevPi Connect | (pending) | | |
+| amd64 edge box | (pending) | | |
 
-Two LaunchDaemons in `/Library/LaunchDaemons/`, reference copies in `deploy/darwin/`:
+The process stays in the foreground; systemd owns its lifecycle (no double-fork). `make test-systemd` runs this unit unchanged in a systemd container on every change and fails if the exposure rises above 2.5 or capcheck fails under its sandbox.
 
-| Job | Runs as | What it does |
-| --- | --- | --- |
-| `lan-sentinel-prepare` | root, `RunAtLoad`, exits | `lan-sentinel daemon prepare`: pre-creates `/dev/bpf*` clones up to the configured count (`darwin.bpf_devices`, default 8), sets them `root:access_bpf 0660`, creates `/var/run/lan-sentinel` owned by `_lan-sentinel` (0750). The same approach as Wireshark's ChmodBPF; compatible with it if installed. |
-| `lan-sentinel` | `_lan-sentinel:_lan-sentinel`, member of `access_bpf` | `lan-sentinel daemon run`; `KeepAlive` (restart on exit), `ProcessType=Background`, `Umask=23` (0027), `StandardErrorPath=/var/log/lan-sentinel/daemon.log`. |
+## 9. Development and testing
 
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key><string>lan-sentinel</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>/usr/local/bin/lan-sentinel</string>
-    <string>daemon</string><string>run</string>
-    <string>--config</string><string>/usr/local/etc/lan-sentinel/config.yaml</string>
-  </array>
-  <key>UserName</key><string>_lan-sentinel</string>
-  <key>GroupName</key><string>_lan-sentinel</string>
-  <key>Umask</key><integer>23</integer>
-  <key>RunAtLoad</key><true/>
-  <key>KeepAlive</key><true/>
-  <key>ProcessType</key><string>Background</string>
-  <key>StandardErrorPath</key><string>/var/log/lan-sentinel/daemon.log</string>
-</dict>
-</plist>
-```
+The code base is Linux only. Every make target that runs Go runs in the Linux dev container (`build/dev.Dockerfile`), so development machines, Linux or macOS, need only Docker, make and git, and CI runs exactly the same commands. The container runs as the calling user with Go, lint and module caches on the `lan-sentinel-cache` volume; `make shell` opens a shell in it and `make run-dev` runs the daemon there on a replay file. On macOS, editors should run gopls with `GOOS=linux`.
 
-User, group, `access_bpf` membership and directories are created once by the operator following `deploy/darwin/README.md` (`dscl`/`dseditgroup` commands); there is no installer. Reload: `sudo launchctl kill HUP system/lan-sentinel`.
-
-Expected privileges, verified in the phase 0 darwin spike on macOS 14 and the current release, results recorded here:
-
-| Operation | Expected requirement |
+| Layer | Command |
 | --- | --- |
-| Open `/dev/bpf*`, `BIOCSETIF`, `BIOCSETF`, read | read/write on the device (group `access_bpf`) |
-| `BIOCPROMISC` | same device access |
-| ARP / NDP transmit via BPF write (`BIOCSHDRCMPLT`) | same device access |
-| ICMP echo via `SOCK_DGRAM`/`IPPROTO_ICMP` | none |
-| Routing socket (`AF_ROUTE`) read and `sysctl` RIB/`NET_RT_FLAGS`+`RTF_LLINFO` dumps | none |
-| TCP `connect()` with `IP_BOUND_IF` | none |
+| Format, tidy, vet, lint, vulnerabilities, unit and golden tests with race and coverage | `make check` |
+| Fuzz targets (every `Fuzz*`) | `make fuzz` |
+| Network integration (Docker test network, `CAP_NET_RAW` only) | `make test-net` |
+| systemd unit, sandbox and privileges (systemd container) | `make test-systemd` |
+| Privilege check on real hardware | `tools/capcheck` on the target boards (§8) |
 
-If any operation needs root in the long-running daemon, stop and decide before continuing.
+`make test-net` builds the test binaries in the dev container (`build/test-bins.sh`, for the Docker host's architecture), then `test/net/run.sh` creates a bridge network with fixed subnets (`172.31.250.0/24`, `fd5e:5e:1::/64`) standing in for an OT LAN. Simulated hosts are `busybox` containers: one with a TCP listener on port 502 (`.10`), one without (`.11`, REFUSED), and an unused address (`.99`, TIMEOUT). The runner container starts with only `CAP_NET_RAW` (plus the capabilities `setpriv` needs to drop privileges) and runs the tests as uid 65534 with ambient `CAP_NET_RAW`, mirroring the systemd unit. It runs `capcheck` with and without the capability, then every Go test package under `test/net` built with the `nettest` tag; those read the network layout from `LS_TEST_*` environment variables.
+
+Docker's kernel is not the target kernel, so the board check in §8 stays mandatory.

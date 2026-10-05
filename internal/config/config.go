@@ -1,0 +1,207 @@
+// Package config defines the LAN Sentinel configuration schema and loads it
+// from compiled defaults, the YAML file, LAN_SENTINEL_* environment variables
+// and command-line flags, in that order of increasing precedence, with strict
+// validation. See docs/ARCHITECTURE.md §6.
+package config
+
+import "net/netip"
+
+// Config is the complete configuration.
+type Config struct {
+	Version    int                      `yaml:"version" json:"version"`
+	Interfaces []InterfaceConfig        `yaml:"interfaces" json:"interfaces"`
+	Passive    PassiveConfig            `yaml:"passive" json:"passive"`
+	Neighbor   NeighborConfig           `yaml:"neighbor" json:"neighbor"`
+	Active     ActiveConfig             `yaml:"active" json:"active"`
+	Profiles   map[string]ProfileConfig `yaml:"profiles" json:"profiles"`
+	Presence   PresenceConfig           `yaml:"presence" json:"presence"`
+	Identity   IdentityConfig           `yaml:"identity" json:"identity"`
+	Storage    StorageConfig            `yaml:"storage" json:"storage"`
+	API        APIConfig                `yaml:"api" json:"api"`
+	Metrics    MetricsConfig            `yaml:"metrics" json:"metrics"`
+	Logging    LoggingConfig            `yaml:"logging" json:"logging"`
+	Replay     ReplayConfig             `yaml:"replay" json:"replay"`
+}
+
+// InterfaceConfig configures one monitored interface (one network context).
+type InterfaceConfig struct {
+	Name    string           `yaml:"name" json:"name"`
+	Passive InterfacePassive `yaml:"passive" json:"passive"`
+	Active  InterfaceActive  `yaml:"active" json:"active"`
+	// Prefixes and Replay are only used for replay interfaces, whose subnets
+	// cannot come from the interface manager.
+	Prefixes []netip.Prefix   `yaml:"prefixes,omitempty" json:"prefixes,omitempty"`
+	Replay   *InterfaceReplay `yaml:"replay,omitempty" json:"replay,omitempty"`
+}
+
+// IsReplay reports whether the interface is fed from a replay file.
+func (i InterfaceConfig) IsReplay() bool { return i.Replay != nil }
+
+// PassiveEnabled reports whether passive capture is enabled. It defaults to
+// true for live interfaces and false for replay interfaces.
+func (i InterfaceConfig) PassiveEnabled() bool {
+	if i.Passive.Enabled == nil {
+		return !i.IsReplay()
+	}
+	return *i.Passive.Enabled
+}
+
+// InterfacePassive configures passive capture on one interface.
+type InterfacePassive struct {
+	Enabled     *bool `yaml:"enabled" json:"enabled"`
+	Promiscuous bool  `yaml:"promiscuous" json:"promiscuous"`
+}
+
+// InterfaceActive configures active discovery on one interface.
+type InterfaceActive struct {
+	Enabled  bool           `yaml:"enabled" json:"enabled"`
+	Networks []netip.Prefix `yaml:"networks,omitempty" json:"networks,omitempty"`
+	Exclude  []AddrOrPrefix `yaml:"exclude,omitempty" json:"exclude,omitempty"`
+}
+
+// InterfaceReplay feeds an interface from a recorded file.
+type InterfaceReplay struct {
+	File  string  `yaml:"file" json:"file"`
+	Speed float64 `yaml:"speed" json:"speed"`
+}
+
+// PassiveConfig holds global passive-capture settings.
+type PassiveConfig struct {
+	Protocols PassiveProtocols `yaml:"protocols" json:"protocols"`
+}
+
+// PassiveProtocols enables individual decoders.
+type PassiveProtocols struct {
+	ARP  bool `yaml:"arp" json:"arp"`
+	IPv4 bool `yaml:"ipv4" json:"ipv4"`
+	IPv6 bool `yaml:"ipv6" json:"ipv6"`
+	DHCP bool `yaml:"dhcp" json:"dhcp"`
+	MDNS bool `yaml:"mdns" json:"mdns"`
+	DNS  bool `yaml:"dns" json:"dns"`
+	LLDP bool `yaml:"lldp" json:"lldp"`
+}
+
+// NeighborConfig configures the kernel neighbour collector.
+type NeighborConfig struct {
+	ResyncInterval Duration `yaml:"resync_interval" json:"resync_interval"`
+}
+
+// ActiveConfig holds global active-discovery settings and safety budgets.
+type ActiveConfig struct {
+	StartupDelay        Duration       `yaml:"startup_delay" json:"startup_delay"`
+	Jitter              float64        `yaml:"jitter" json:"jitter"`
+	MaxPacketsPerSecond float64        `yaml:"max_packets_per_second" json:"max_packets_per_second"`
+	MaxConcurrentProbes int            `yaml:"max_concurrent_probes" json:"max_concurrent_probes"`
+	MinTargetInterval   Duration       `yaml:"min_target_interval" json:"min_target_interval"`
+	Budgets             Budgets        `yaml:"budgets" json:"budgets"`
+	MaxAutoScanPrefixV4 int            `yaml:"max_auto_scan_prefix_v4" json:"max_auto_scan_prefix_v4"`
+	AllowWideScan       bool           `yaml:"allow_wide_scan" json:"allow_wide_scan"`
+	ARP                 ProbeConfig    `yaml:"arp" json:"arp"`
+	ICMP                ProbeConfig    `yaml:"icmp" json:"icmp"`
+	TCP                 TCPProbeConfig `yaml:"tcp" json:"tcp"`
+}
+
+// Budgets are the per-protocol rate limits beneath the global packet budget.
+type Budgets struct {
+	ARP  RateBudget `yaml:"arp" json:"arp"`
+	ICMP RateBudget `yaml:"icmp" json:"icmp"`
+	NDP  RateBudget `yaml:"ndp" json:"ndp"`
+	UDP  RateBudget `yaml:"udp" json:"udp"`
+	TCP  TCPBudget  `yaml:"tcp" json:"tcp"`
+}
+
+// RateBudget limits a packet-based probe engine.
+type RateBudget struct {
+	PacketsPerSecond float64 `yaml:"packets_per_second" json:"packets_per_second"`
+}
+
+// TCPBudget limits the TCP connect engine.
+type TCPBudget struct {
+	ConnectsPerSecond         float64 `yaml:"connects_per_second" json:"connects_per_second"`
+	MaxConcurrentPerInterface int     `yaml:"max_concurrent_per_interface" json:"max_concurrent_per_interface"`
+	MaxConcurrentPerHost      int     `yaml:"max_concurrent_per_host" json:"max_concurrent_per_host"`
+}
+
+// TCPConnectTokens is how many tokens of the global packet budget one TCP
+// connect consumes (SYN, ACK, FIN/RST).
+const TCPConnectTokens = 3
+
+// ProbeConfig enables a periodic probe.
+type ProbeConfig struct {
+	Enabled  bool     `yaml:"enabled" json:"enabled"`
+	Interval Duration `yaml:"interval" json:"interval"`
+}
+
+// TCPProbeConfig configures periodic TCP connect probes.
+type TCPProbeConfig struct {
+	Enabled  bool        `yaml:"enabled" json:"enabled"`
+	Interval Duration    `yaml:"interval" json:"interval"`
+	Targets  []TCPTarget `yaml:"targets" json:"targets"`
+}
+
+// TCPTarget is one probed TCP port.
+type TCPTarget struct {
+	Port    int      `yaml:"port" json:"port"`
+	Name    string   `yaml:"name" json:"name"`
+	Timeout Duration `yaml:"timeout" json:"timeout"`
+}
+
+// ProfileConfig is a named on-demand scan profile.
+type ProfileConfig struct {
+	ARP  bool  `yaml:"arp" json:"arp"`
+	ICMP bool  `yaml:"icmp" json:"icmp"`
+	TCP  []int `yaml:"tcp" json:"tcp"`
+}
+
+// PresenceConfig holds presence thresholds (time since last observation).
+type PresenceConfig struct {
+	Active Duration `yaml:"active" json:"active"`
+	Recent Duration `yaml:"recent" json:"recent"`
+	Stale  Duration `yaml:"stale" json:"stale"`
+}
+
+// IdentityConfig holds correlation and naming settings.
+type IdentityConfig struct {
+	HostnamePreference []string `yaml:"hostname_preference" json:"hostname_preference"`
+	AddressOverlap     Duration `yaml:"address_overlap" json:"address_overlap"`
+	AddressExpiry      Duration `yaml:"address_expiry" json:"address_expiry"`
+	NameExpiry         Duration `yaml:"name_expiry" json:"name_expiry"`
+	ProxyARPThreshold  int      `yaml:"proxy_arp_threshold" json:"proxy_arp_threshold"`
+	OUIOverride        string   `yaml:"oui_override" json:"oui_override"`
+}
+
+// StorageConfig configures the SQLite database.
+type StorageConfig struct {
+	Path      string          `yaml:"path" json:"path"`
+	Retention RetentionConfig `yaml:"retention" json:"retention"`
+}
+
+// RetentionConfig holds retention limits.
+type RetentionConfig struct {
+	Observations Duration `yaml:"observations" json:"observations"`
+	Rollups      Duration `yaml:"rollups" json:"rollups"`
+	Events       Duration `yaml:"events" json:"events"`
+	MaxDBSize    ByteSize `yaml:"max_db_size" json:"max_db_size"`
+}
+
+// APIConfig configures the local API listeners.
+type APIConfig struct {
+	Socket string `yaml:"socket" json:"socket"`
+	Listen string `yaml:"listen" json:"listen"`
+}
+
+// MetricsConfig enables /metrics on the local TCP listener.
+type MetricsConfig struct {
+	Enabled bool `yaml:"enabled" json:"enabled"`
+}
+
+// LoggingConfig configures logging.
+type LoggingConfig struct {
+	Level  string `yaml:"level" json:"level"`
+	Format string `yaml:"format" json:"format"`
+}
+
+// ReplayConfig holds global replay settings.
+type ReplayConfig struct {
+	ExitWhenDone bool `yaml:"exit_when_done" json:"exit_when_done"`
+}

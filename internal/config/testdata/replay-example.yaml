@@ -1,0 +1,11 @@
+version: 1
+interfaces:
+  - name: eth1
+    prefixes: [192.168.110.0/24]            # replaces the interface manager
+    replay:
+      file: test/fixtures/site-a-eth1.pcapng  # .pcap, .pcapng or .jsonl
+      speed: 0                               # 0 = simulated clock, as fast as possible; N = real time x N
+replay: { exit_when_done: false }
+storage: { path: ./dev/hosts.db }
+api:     { socket: ./dev/api.sock }
+logging: { level: debug, format: text }

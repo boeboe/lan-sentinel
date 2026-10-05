@@ -1,0 +1,11 @@
+/bin/
+/dist/
+/dev/
+*.db
+*.db-wal
+*.db-shm
+*.test
+*.out
+coverage.out
+/.build/
+coverage.html

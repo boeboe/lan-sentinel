@@ -1,0 +1,32 @@
+version: "2"
+run:
+  timeout: 5m
+linters:
+  enable:
+    - errorlint
+    - misspell
+    - nolintlint
+    - unconvert
+    - bodyclose
+    - copyloopvar
+  settings:
+    errcheck:
+      exclude-functions:
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+        - (*os.File).Close
+        - (io.Closer).Close
+        - golang.org/x/sys/unix.Close
+        - (*golang.org/x/net/icmp.PacketConn).Close
+  exclusions:
+    rules:
+      - path: _test\.go
+        linters: [errcheck]
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes: [lan-sentinel]

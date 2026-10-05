@@ -1,0 +1,53 @@
+# Reference systemd unit for LAN Sentinel (docs/ARCHITECTURE.md §8).
+# Install: /etc/systemd/system/lan-sentinel.service
+[Unit]
+Description=LAN Sentinel
+Documentation=https://github.com/boeboe/lan-sentinel
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+ExecStart=/usr/local/bin/lan-sentinel daemon run --config /etc/lan-sentinel/config.yaml
+ExecReload=/bin/kill -HUP $MAINPID
+User=lan-sentinel
+Group=lan-sentinel
+UMask=0027
+WatchdogSec=60
+Restart=on-failure
+RuntimeDirectory=lan-sentinel
+RuntimeDirectoryMode=0750
+ReadWritePaths=/data/lan-sentinel
+AmbientCapabilities=CAP_NET_RAW
+CapabilityBoundingSet=CAP_NET_RAW
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectProc=invisible
+ProcSubset=pid
+PrivateIPC=true
+DevicePolicy=closed
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_PACKET AF_NETLINK
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+RemoveIPC=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+SystemCallErrorNumber=EPERM
+MemoryMax=128M
+CPUQuota=20%
+
+[Install]
+WantedBy=multi-user.target

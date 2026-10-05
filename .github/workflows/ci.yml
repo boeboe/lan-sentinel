@@ -1,0 +1,50 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+# Every job runs the same make targets as a developer machine. Go, golangci-lint
+# and govulncheck come from the dev container (build/dev.Dockerfile).
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: mod-verify, fmt-check, tidy-check, vet, lint, vuln, tests with race and coverage
+        run: make mod-verify check
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage.out
+
+  fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: make fuzz FUZZTIME=30s
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Network integration tests (Docker, CAP_NET_RAW only)
+        run: make test-net
+      - name: systemd unit test (privileged container)
+        run: make test-systemd
+
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Static linux/amd64 and linux/arm64 binaries and capcheck
+        run: make release tools
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/

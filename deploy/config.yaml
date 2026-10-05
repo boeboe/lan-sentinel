@@ -1,0 +1,27 @@
+# LAN Sentinel default configuration (Linux). Install: /etc/lan-sentinel/config.yaml
+# Validate before rollout: lan-sentinel config validate --config /etc/lan-sentinel/config.yaml
+# Every key and its default: lan-sentinel config show --sources
+version: 1
+
+interfaces:
+  - name: eth0
+    passive: { enabled: true, promiscuous: false }   # promiscuous only on a mirror/SPAN port
+    active:  { enabled: false }                      # active discovery is off until reviewed per site
+  # - name: eth1
+  #   passive: { enabled: true }
+  #   active:
+  #     enabled: true
+  #     networks: [192.168.110.0/24]                 # explicitly configured networks only, /24 or narrower
+  #     exclude:  [192.168.110.1]                    # never probed
+
+passive:
+  protocols: { arp: true, ipv4: true, ipv6: false, dhcp: true, mdns: true, dns: true, lldp: true }
+
+storage:
+  path: /data/lan-sentinel/hosts.db
+
+api:
+  socket: /run/lan-sentinel/api.sock
+  listen: ""            # e.g. 127.0.0.1:9734 to serve /metrics
+
+logging: { level: info, format: journald }

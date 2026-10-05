@@ -1,0 +1,62 @@
+version: 1
+interfaces:
+  - name: eth0
+    passive: { enabled: true, promiscuous: false }
+    active:  { enabled: false }
+  - name: eth1
+    passive: { enabled: true, promiscuous: false }   # true only on a mirror/SPAN port
+    active:
+      enabled: true
+      networks: [192.168.110.0/24]
+      exclude:  [192.168.110.1]
+passive:
+  protocols: { arp: true, ipv4: true, ipv6: false, dhcp: true, mdns: true, dns: true, lldp: true }
+neighbor:
+  resync_interval: 10m              # full neighbour-table dump in addition to notifications
+active:
+  startup_delay: 30s
+  jitter: 0.1
+  max_packets_per_second: 20       # global ceiling; a TCP connect costs 3
+  max_concurrent_probes: 10
+  min_target_interval: 1s          # spacing between probes to one IP
+  budgets:                         # each <= the global ceiling; tcp connects × 3 <= it too
+    arp:  { packets_per_second: 10 }
+    icmp: { packets_per_second: 5 }
+    ndp:  { packets_per_second: 5 }
+    udp:  { packets_per_second: 5 }
+    tcp:  { connects_per_second: 5, max_concurrent_per_interface: 4, max_concurrent_per_host: 1 }
+  max_auto_scan_prefix_v4: 24
+  allow_wide_scan: false
+  arp:  { enabled: true,  interval: 5m }
+  icmp: { enabled: false, interval: 10m }
+  tcp:
+    enabled: true
+    interval: 5m
+    targets:
+      - { port: 502, name: modbus, timeout: 750ms }
+profiles:
+  modbus:
+    arp: true
+    tcp: [502]
+presence: { active: 5m, recent: 30m, stale: 24h }
+identity:
+  hostname_preference: [mdns, dhcp, dns_ptr, lldp]
+  address_overlap: 5m         # older open IPv4 binding is replaced, not kept alongside
+  address_expiry: 24h         # unconfirmed binding closed while host is otherwise seen
+  name_expiry: 168h
+  proxy_arp_threshold: 16
+  oui_override: ""            # optional path
+storage:
+  path: /data/lan-sentinel/hosts.db
+  retention:
+    observations: 168h    # raw
+    rollups: 2160h        # hourly roll-ups
+    events: 17520h
+    max_db_size: 200MB    # prune observations, then roll-ups, then oldest events
+api:
+  socket: /run/lan-sentinel/api.sock
+  listen: ""              # e.g. 127.0.0.1:9734 (also serves /metrics)
+metrics: { enabled: true }
+logging:
+  level: info               # trace | debug | info | warn | error
+  format: journald          # journald | json | text

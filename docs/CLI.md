@@ -2,15 +2,13 @@
 
 One cgo-free binary, `lan-sentinel`, is the service, the troubleshooting client, the database inspector and the on-demand scanner.
 
-All commands behave identically on Linux and darwin; only default paths differ (`ARCHITECTURE.md` §6). `--offline` on either OS is also the way to inspect a `hosts.db` copied from another device (see the copy rules below).
-
 ```text
 lan-sentinel [global options] <command> <subcommand> [options]
 ```
 
 ## 1. How commands reach data
 
-- **Online (default):** commands talk to the running daemon over the API socket (`/run/lan-sentinel/api.sock` on Linux, `/var/run/lan-sentinel/api.sock` on darwin). This gives consistent reads and is required for `scan run`, `active enable|disable`, `watch` and `daemon status`.
+- **Online (default):** commands talk to the running daemon over `/run/lan-sentinel/api.sock`. This gives consistent reads and is required for `scan run`, `active enable|disable`, `watch` and `daemon status`.
 - **Offline (`--offline`):** the CLI opens the database directly, read-only. Read commands (`hosts`, `events`, `observations`, `services`, `interfaces`, `db`, `scan plan`) still work when the daemon will not start. Commands that need the daemon refuse `--offline` with exit 64 and a clear message.
 
 `lan-sentinel daemon run` stays in the foreground; systemd owns the process. No double-fork daemonisation.
@@ -22,16 +20,16 @@ lan-sentinel [global options] <command> <subcommand> [options]
 | Daemon running (`hosts.db-wal` present) | Open `file:<path>?mode=ro` with `PRAGMA busy_timeout = 5000` and `PRAGMA query_only = 1`. Never `immutable=1`. Each command runs in a single read transaction, so it sees one consistent snapshot. Requires read access to the directory, `hosts.db`, `-wal` and `-shm` (service group, see below). |
 | No `-wal` file (daemon stopped cleanly; the last connection checkpoints and removes the WAL) | Open `file:<path>?mode=ro&immutable=1`, because a read-only user cannot create `-shm`. Data is complete. The CLI prints a notice to stderr. If `-wal` appears while the command runs (daemon started), results may be stale; re-run. |
 | `-wal` present but not readable, or `-shm` missing and the directory not writable | Exit 2: `cannot open database read-only beside the WAL; run as a member of the service group or copy the database`. |
-| Copied database | Copy only after stopping the service (`systemctl stop lan-sentinel` / `sudo launchctl bootout system/lan-sentinel`), or copy `hosts.db`, `-wal` and `-shm` together. A `hosts.db` copied alone while the daemon was running lacks every transaction since the last checkpoint; the CLI cannot detect this. |
+| Copied database | Copy only after `systemctl stop lan-sentinel`, or copy `hosts.db`, `-wal` and `-shm` together. A `hosts.db` copied alone while the daemon was running lacks every transaction since the last checkpoint; the CLI cannot detect this. |
 | `SQLITE_BUSY` after the busy timeout | Exit 2 with the SQLite error. |
 
-The daemon runs with umask 0027 and the data directory is `0750` owned by the service user and group (`lan-sentinel` via `tmpfiles.d` on Linux, `_lan-sentinel` per `deploy/darwin/README.md`), so database files are group-readable. Operators who use `--offline` must be in that group or use `sudo`. Offline commands keep their read transaction short; a long-held reader stops WAL checkpoints.
+The daemon runs with `UMask=0027` and the data directory is `0750 lan-sentinel:lan-sentinel` (from `tmpfiles.d`), so database files are group-readable. Operators who use `--offline` must be in that group or use `sudo`. Offline commands keep their read transaction short; a long-held reader stops WAL checkpoints.
 
 ## 2. Global options
 
 | Option | Meaning |
 | --- | --- |
-| `--config PATH` | Config file (default `/etc/lan-sentinel/config.yaml`) |
+| `--config PATH` | Config file (default `$LAN_SENTINEL_CONFIG`, else `/etc/lan-sentinel/config.yaml`) |
 | `--db PATH` | Database path for `--offline` (default from config) |
 | `--socket PATH` | API socket (default `/run/lan-sentinel/api.sock`) |
 | `-o`, `--output table\|json\|jsonl\|csv` | Output format (default `table`) |
@@ -46,7 +44,6 @@ The daemon runs with umask 0027 and the data directory is `0750` owned by the se
 | Command | Purpose | Key options | Phase |
 | --- | --- | --- | --- |
 | `daemon run` | Run the service in the foreground | `--config`, `--log-level` | 0 |
-| `daemon prepare` | Darwin only, run as root at boot by launchd: prepare `/dev/bpf*` group access and the runtime directory (`ARCHITECTURE.md` §9). Exit 64 on Linux. | `--config` | 0 |
 | `daemon status` | Version, platform, PID, uptime, DB health, interfaces, host counts, kill-switch state, last scan, and per-interface collector state (`running`/`disabled`/`unsupported`/`failed` + error) | `-o json`; `--quiet` exit codes | 3 |
 | `hosts list` | Inventory: MAC, IP, hostname, vendor, interface, presence, last seen | `--interface`, `--active`, `--stale`, `--vendor`, `--port`, `--seen-within` | 3 |
 | `hosts show <host-id>` | Full record of one host | | 3 |
@@ -70,7 +67,7 @@ The daemon runs with umask 0027 and the data directory is `0750` owned by the se
 
 There are no merge or split commands: within an interface a host is its MAC (`DATA_MODEL.md` §1).
 
-Deferred past v1: `daemon reload` (use `systemctl reload lan-sentinel` or `sudo launchctl kill HUP system/lan-sentinel`), `neighbors list`, `interfaces show`, `scan status`, `db vacuum`, `db export`.
+Deferred past v1: `daemon reload` (use `systemctl reload lan-sentinel`), `neighbors list`, `interfaces show`, `scan status`, `db vacuum`, `db export`.
 
 ## 4. Behaviour details
 
@@ -93,7 +90,7 @@ For a MAC or name query, `--at` shows the host and the addresses and names in ef
 ### `hosts history`
 
 - Host UUID or MAC: every event for that host (for a MAC, for each context it appears in).
-- IP: every event whose old or new value is that IP, across all hosts that ever held it, in time order. This is the IP's ownership timeline.
+- IP: every event whose old value, new value or evidence IP (`evidence_json.ip`) is that IP, across all hosts that ever held it, in time order. This is the IP's ownership timeline, including service and conflict events seen on it.
 - Name: every event for hosts that ever held that name.
 
 ### `hosts evidence`
@@ -234,17 +231,17 @@ IP               MAC                PORT     STATE    LAST CHECK
 
 ```bash
 $ lan-sentinel daemon status
-Version:    1.0.0 (darwin/arm64)   PID 412   up 3d 4h
-Database:   /usr/local/var/lan-sentinel/hosts.db  ok  41 MB
+Version:    1.0.0 (linux/arm64)   PID 412   up 3d 4h
+Database:   /data/lan-sentinel/hosts.db  ok  41 MB
 Active:     enabled
 Interfaces:
-  en7   up  192.168.110.10/24
-        capture    running     bpf
-        neighbor   running     darwin_route (resync 60s)
+  eth1  up  192.168.110.10/24
+        capture    running     afpacket
+        neighbor   running     netlink
         arp        running
         tcp        running
-  en8   up  10.0.0.5/24
-        capture    failed      open /dev/bpf3: permission denied
+  eth2  up  10.0.0.5/24
+        capture    failed      socket(AF_PACKET): operation not permitted
 State:      DEGRADED
 ```
 
