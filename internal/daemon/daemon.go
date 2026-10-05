@@ -1,6 +1,7 @@
 // Package daemon runs the LAN Sentinel service: it loads configuration,
-// opens the store, reports collector availability, talks to the service
-// manager and handles SIGHUP reloads and graceful shutdown.
+// opens the store, runs the collection pipeline (collectors → bus →
+// correlator → store and journald), talks to systemd and handles SIGHUP
+// reloads and graceful shutdown.
 package daemon
 
 import (
@@ -19,8 +20,11 @@ import (
 
 	"lan-sentinel/internal/buildinfo"
 	"lan-sentinel/internal/clock"
+	"lan-sentinel/internal/collect/replay"
 	"lan-sentinel/internal/config"
+	"lan-sentinel/internal/correlate"
 	"lan-sentinel/internal/logging"
+	"lan-sentinel/internal/observation"
 	"lan-sentinel/internal/platform"
 	"lan-sentinel/internal/service"
 	"lan-sentinel/internal/store"
@@ -55,6 +59,12 @@ type Daemon struct {
 	notifier service.Notifier
 	backends platform.Backends
 	ready    chan struct{}
+
+	player     *replay.Player // replay mode only
+	bus        *observation.Bus
+	correlator *correlate.Correlator
+	replayDone chan struct{}
+	stop       func() // stops the pipeline: collectors, drain, correlator
 }
 
 // Ready is closed once the daemon has signalled readiness.
@@ -88,7 +98,22 @@ func New(o Options) (*Daemon, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Replay runs the whole daemon on recorded time: a simulated clock that
+	// starts at the first observation.
+	var player *replay.Player
+	if loaded.Config.ReplayMode() {
+		if player, err = openReplay(loaded.Config); err != nil {
+			return nil, err
+		}
+		sim, ok := o.Clock.(*clock.Sim)
+		if !ok {
+			sim = clock.NewSim(player.First())
+		}
+		player.SetClock(sim)
+		o.Clock = sim
+	}
 	d := &Daemon{
+		player: player, replayDone: make(chan struct{}, 1),
 		opts: o, loaded: loaded, clock: o.Clock, notifier: o.Notifier, backends: *o.Backends,
 		level: new(slog.LevelVar), registry: platform.NewRegistry(o.Clock.Now), ready: make(chan struct{}),
 	}
@@ -121,7 +146,10 @@ func (d *Daemon) Run(ctx context.Context) error {
 	d.store = st
 	d.log.Info("database ready", "path", st.Path(), "schema_version", st.SchemaVersion())
 
-	d.startCollectors(ctx)
+	if err := d.startPipeline(ctx); err != nil {
+		_ = d.store.Close()
+		return err
+	}
 
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -147,6 +175,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 	d.notify("stopping", d.notifier.Stopping)
 	cancel()
 	wg.Wait()
+	d.stop()
 	if err := d.store.Close(); err != nil {
 		d.log.Error("closing database", "err", err)
 		return fmt.Errorf("close store: %w", err)
@@ -160,6 +189,8 @@ func (d *Daemon) loop(ctx context.Context) string {
 		select {
 		case <-ctx.Done():
 			return "context cancelled"
+		case <-d.replayDone:
+			return "replay finished"
 		case sig := <-d.opts.Signals:
 			switch sig {
 			case syscall.SIGHUP:
@@ -199,57 +230,6 @@ func (d *Daemon) setupLogging() error {
 		d.log.Warn("logging to stderr instead of journald", "reason", fallback)
 	}
 	return nil
-}
-
-// startCollectors records the availability of every configured collector.
-// The collectors themselves land in later phases; until then their backends
-// report ErrNotImplemented and show as failed.
-func (d *Daemon) startCollectors(ctx context.Context) {
-	cfg := d.cfg.Load()
-	b := d.backends
-	report := func(iface, collector, backend string, err error) {
-		state := platform.StateRunning
-		if err != nil {
-			state = platform.StateFailed
-			d.log.Warn("collector unavailable", "interface", iface, "collector", collector, "backend", backend, "err", err)
-		}
-		d.registry.Set(iface, collector, backend, state, err)
-	}
-	for _, ic := range cfg.Interfaces {
-		if ic.IsReplay() {
-			report(ic.Name, platform.CollectorReplay, "file",
-				fmt.Errorf("replay collector: %w (planned for phase 1)", platform.ErrNotImplemented))
-			continue
-		}
-		_, err := b.Interfaces.List(ctx)
-		report(ic.Name, platform.CollectorInterface, b.Interfaces.Backend(), err)
-		_, err = b.Neighbors.Snapshot(ctx)
-		report(ic.Name, platform.CollectorNeighbor, b.Neighbors.Backend(), err)
-		if ic.PassiveEnabled() {
-			src, err := b.Capturer.Open(ctx, ic.Name, nil, ic.Passive.Promiscuous)
-			if err == nil {
-				_ = src.Close()
-			}
-			report(ic.Name, platform.CollectorCapture, b.Capturer.Backend(), err)
-		} else {
-			d.registry.Set(ic.Name, platform.CollectorCapture, b.Capturer.Backend(), platform.StateDisabled, nil)
-		}
-		for _, p := range []struct {
-			name    string
-			enabled bool
-		}{
-			{platform.CollectorARP, cfg.Active.ARP.Enabled},
-			{platform.CollectorICMP, cfg.Active.ICMP.Enabled},
-			{platform.CollectorTCP, cfg.Active.TCP.Enabled},
-		} {
-			if !ic.Active.Enabled || !p.enabled {
-				d.registry.Set(ic.Name, p.name, b.Transmitter.Backend(), platform.StateDisabled, nil)
-				continue
-			}
-			report(ic.Name, p.name, b.Transmitter.Backend(),
-				fmt.Errorf("probe engine: %w (planned for phase 4)", platform.ErrNotImplemented))
-		}
-	}
 }
 
 // Collectors returns the current collector states.
@@ -310,6 +290,9 @@ func (d *Daemon) reload() {
 	}
 	d.level.Set(lvl)
 	d.cfg.Store(next)
+	if d.correlator != nil {
+		d.correlator.SetConfig(next)
+	}
 	d.log.Info("configuration reloaded", "path", loaded.Path, "log_level", next.Logging.Level)
 }
 

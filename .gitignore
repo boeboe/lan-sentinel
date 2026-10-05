@@ -9,3 +9,4 @@
 coverage.out
 /.build/
 coverage.html
+.vscode/

@@ -55,23 +55,25 @@ Read these before changing anything. If code and docs disagree, stop and ask.
 - Migrations are numbered `.sql` files in `migrations/`, embedded with `go:embed`, applied at startup.
 - Tests: table-driven; decoders tested against pcap fixtures in `test/fixtures/`; correlator tested with golden observation streams in `test/golden/` — the reconstruction scenario (`docs/DATA_MODEL.md` §10) must always pass; platform backends and probes tested in Docker on a test network with simulated hosts, as uid 65534 with only `CAP_NET_RAW` (`test/net/`, build tag `nettest`, `make test-net`).
 - Every decoder gets a `go test -fuzz` target.
+- Coverage of `internal/` (from every test package, `-coverpkg`) must stay at or above 90%; `make check` enforces it. Cover behaviour, not lines: error paths, retries and validation rules count; trivial tests written only for the number do not.
 - Errors wrapped with `%w`; no panics outside `main`.
 
 ## Commands
 
 ```bash
 make              # list all targets (make help)
-make check        # fast gate: fmt-check, tidy-check, vet, lint, vuln, tests with race + coverage
+make check        # fast gate: fmt-check, tidy-check, vet, lint, vuln, tests with race + coverage >= 90%
 make check-all    # check + test-net + test-systemd
 make build        # bin/lan-sentinel for the Docker host's architecture
 make release      # static linux/amd64 + linux/arm64 into dist/ with checksums
 make test         # unit and golden tests with -race
-make coverage     # tests with coverage (coverage.out); make cover opens the report
+make coverage     # tests with coverage of internal/ (coverage.out), fails below 90%; make cover opens the report
 make fuzz         # every Fuzz* target, FUZZTIME each (default 30s)
 make test-net     # network integration tests in Docker (CAP_NET_RAW only)
 make test-systemd # daemon under systemd in a container with the deploy/ unit
 make run-dev      # daemon in the dev container on deploy/config.dev.yaml (replay)
 make tools        # tools/capcheck for linux/amd64 + linux/arm64 (privilege check for boards)
+make oui          # regenerate the embedded IEEE OUI table (each release)
 make fmt / tidy   # fix formatting / go.mod
 make shell        # shell in the dev container
 ```

@@ -153,6 +153,7 @@ func TestValidation(t *testing.T) {
 		{"promisc without passive", minimal + "    passive: { enabled: false, promiscuous: true }\n", "interfaces[0].passive.promiscuous", "requires passive"},
 		{"replay needs prefixes", "version: 1\ninterfaces:\n  - name: eth1\n    replay: { file: x.jsonl }\n", "interfaces[0].prefixes", "required"},
 		{"replay bad extension", "version: 1\ninterfaces:\n  - name: eth1\n    prefixes: [10.0.0.0/24]\n    replay: { file: x.txt }\n", "interfaces[0].replay.file", "must end in"},
+		{"replay and live mixed", "version: 1\ninterfaces:\n  - name: eth0\n  - name: eth1\n    prefixes: [10.0.0.0/24]\n    replay: { file: x.jsonl }\n", "interfaces", "cannot be mixed"},
 		{"replay exclusive with active", "version: 1\ninterfaces:\n  - name: eth1\n    prefixes: [10.0.0.0/24]\n    replay: { file: x.jsonl }\n    active: { enabled: true, networks: [10.0.0.0/24] }\n", "interfaces[0].active.enabled", "mutually exclusive"},
 		{"budget above global", minimal + "active: { budgets: { arp: { packets_per_second: 30 } } }\n", "active.budgets.arp.packets_per_second", "exceeds the global"},
 		{"tcp connects above global", minimal + "active: { budgets: { tcp: { connects_per_second: 7 } } }\n", "active.budgets.tcp.connects_per_second", "exceeds the global"},

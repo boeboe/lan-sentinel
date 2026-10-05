@@ -37,6 +37,12 @@ type InterfaceConfig struct {
 // IsReplay reports whether the interface is fed from a replay file.
 func (i InterfaceConfig) IsReplay() bool { return i.Replay != nil }
 
+// ReplayMode reports whether the daemon replays recorded files (every
+// interface is a replay interface; validation forbids mixing).
+func (c *Config) ReplayMode() bool {
+	return len(c.Interfaces) > 0 && c.Interfaces[0].IsReplay()
+}
+
 // PassiveEnabled reports whether passive capture is enabled. It defaults to
 // true for live interfaces and false for replay interfaces.
 func (i InterfaceConfig) PassiveEnabled() bool {

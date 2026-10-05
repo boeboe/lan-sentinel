@@ -54,7 +54,9 @@ Replay files and the golden scenarios store one observation per line, with empty
 {"time": "2026-10-01T14:00:00Z", "source": "tcp_connect", "interface": "eth1", "ip": "192.168.110.50", "service": {"proto": "tcp", "port": 502, "state": "OPEN"}}
 ```
 
-Fields: `time` (RFC 3339), `source`, `interface`, `mac`, `ip`, `hostname`, `name_type`, `service` (`proto`, `port`, `state`), `neighbor_state`, `meta`. Unknown fields are rejected.
+Fields: `time` (RFC 3339), `source`, `interface`, `mac`, `ip`, `hostname`, `name_type`, `service` (`proto`, `port`, `state`), `neighbor_state`, `meta`. Unknown fields are rejected. In a replay file `interface` may be omitted (it defaults to the replay interface); naming a different interface is an error.
+
+An observation's `time` is the time of the evidence, not of its delivery. For `kernel_neighbor` it is when the kernel last confirmed reachability (`nda_cacheinfo.ndm_confirmed`), so an entry that lingers in the table as STALE carries its old time and adds no fresh evidence.
 
 Replayed observations (pcap or JSONL) keep their recorded source and time; there is no separate replay source, so the correlator treats them exactly as live ones.
 
@@ -155,7 +157,9 @@ The events for that host and IP around T then explain what changed, what replace
 
 ## 5. Correlation rules
 
-Applied by the correlator to each observation, in order, within the observation's context.
+Applied by the correlator to each observation, in order, within the observation's context. Every rule is evaluated at the observation's `time`; timer-driven transitions (presence §6, expiry §5.3) are stamped with the moment their threshold was crossed. Results therefore do not depend on when evaluation runs, and a replay produces the same database every time.
+
+Before the rules: an observation for an interface that is not configured is dropped. A MAC that is not a usable host MAC (multicast, broadcast, all-zero) and an IP that is not a unicast host address (unspecified, multicast, broadcast, loopback) are treated as absent.
 
 ### 5.1 Binding the observation to a host
 
@@ -185,9 +189,11 @@ Let *H* be the bound host and *X* the attributed IP.
 | **Takeover:** *X* is held open by another host *G* that is not live (presence STALE or MISSING) | Close *(G, X)* with `ended_at = obs.ts`; open *(H, X)* | `IP_REMOVED` on *G*, `IP_ADDED`/`IP_CHANGED` on *H* |
 | **Conflict:** *X* is held open by another host *G* that is live (ACTIVE or RECENT) | Open *(H, X)*; set `conflict = 1` on both bindings | `DUPLICATE_IP_DETECTED` with both host ids |
 | **Conflict ends:** after any close, exactly one open binding for *X* remains | Clear `conflict` on it | `DUPLICATE_IP_RESOLVED` |
-| **Expiry:** an open binding not confirmed for `identity.address_expiry` (default 24 h) while its host has been observed since | Close with `ended_at = now` | `IP_REMOVED` (cause `expiry`) |
+| **Expiry:** an open binding not confirmed for `identity.address_expiry` (default 24 h) while its host has been observed since | Close with `ended_at = last_seen + address_expiry`, the moment expiry applied | `IP_REMOVED` (cause `expiry`) |
 
-Bindings are **not** closed when a host becomes MISSING: the last known state remains in effect (and shows as unconfirmed). IPv6 addresses never trigger replacement; they are opened with `IP_ADDED` and closed by expiry or takeover, because hosts hold several IPv6 addresses at once.
+Bindings are **not** closed when a host becomes MISSING: the last known state remains in effect (and shows as unconfirmed). IPv6 addresses never trigger replacement; they are opened with `IP_ADDED` and closed by expiry or takeover, because hosts hold several IPv6 addresses at once. The network and broadcast addresses of the context's IPv4 prefixes are never attributed.
+
+**Late observations.** An observation older than the last binding change of its host or of its IP (open or close) only refreshes an existing open binding; it never opens, closes, replaces or takes over a binding. This keeps evidence that arrives out of order (e.g. an old neighbour-table entry read after an IP change) from reopening history.
 
 ### 5.4 Names
 
@@ -206,7 +212,7 @@ A probe result attached to a host upserts `services`. A transition into OPEN emi
 | STALE | < 24 h |
 | MISSING | ≥ 24 h |
 
-Thresholds are configurable (`presence:`). Transitions into MISSING emit `HOST_DISAPPEARED` (cause `presence`); any observation of a MISSING host emits `HOST_REAPPEARED`. Transitions between ACTIVE, RECENT and STALE update `hosts.presence` but do not produce events. "Live" in §5.3 means ACTIVE or RECENT.
+Thresholds are configurable (`presence:`). Transitions into MISSING emit `HOST_DISAPPEARED` (cause `presence`) stamped `last_seen + presence.stale`, with old value STALE; an observation newer than that brings a MISSING host back and emits `HOST_REAPPEARED`. Transitions between ACTIVE, RECENT and STALE update `hosts.presence` but do not produce events. "Live" in §5.3 means ACTIVE or RECENT.
 
 ## 7. Event catalogue
 
@@ -240,13 +246,15 @@ Thresholds are configurable (`presence:`). Transitions into MISSING emit `HOST_D
 | Type | `old_value` | `new_value` | Other columns |
 | --- | --- | --- | --- |
 | `HOST_DISCOVERED` | — | MAC | IP (if any) in evidence |
-| `HOST_DISAPPEARED`, `HOST_REAPPEARED` | presence before | presence after | |
-| `IP_ADDED` / `IP_REMOVED` | — / IP | IP / — | |
+| `HOST_DISAPPEARED` | `STALE` | `MISSING` | evidence: last observation + `reason` |
+| `HOST_REAPPEARED` | `MISSING` | presence after | |
+| `IP_ADDED` / `IP_REMOVED` | — / IP | IP / — | `IP_REMOVED` on takeover: `related_host_id` = the new holder |
 | `IP_CHANGED` | old IP | new IP | |
 | `MAC_MOVED` | other interface | this interface | `related_host_id` = host on the other interface |
 | `HOSTNAME_*` | old name (`type:name`) | new name (`type:name`) | |
-| `SERVICE_OPENED` / `SERVICE_CLOSED` | previous state | `proto/port` + state | IP in evidence |
-| `VENDOR_IDENTIFIED` | old value | new value (`field=value`) | |
+| `SERVICE_OPENED` | previous state (empty for a first result) | `proto/port` | IP and state in evidence |
+| `SERVICE_CLOSED` | `proto/port` | new state | IP in evidence |
+| `VENDOR_IDENTIFIED` | old value | new value (`field=value`) | Not emitted for the OUI manufacturer set at discovery (recorded in `identifications`, source `oui`, confidence 0.7); reserved for later changes |
 | `DUPLICATE_IP_DETECTED` | — | IP | `host_id` = new claimer, `related_host_id` = existing holder |
 | `DUPLICATE_IP_RESOLVED` | — | IP | `host_id` = remaining holder, `related_host_id` = the host that left |
 | `SCAN_*`, `ACTIVE_*`, `INTERFACE_*` | — | summary text | no host |

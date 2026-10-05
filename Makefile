@@ -16,6 +16,8 @@ COVERAGE := coverage.out
 TEST_BIN := .build/test
 # Duration each fuzz target runs. Override with FUZZTIME=... (e.g. FUZZTIME=5m).
 FUZZTIME ?= 30s
+# Minimum coverage of internal/ in percent (make coverage, make check).
+COVER_MIN ?= 90
 
 # Dev container: the image tag follows the Dockerfile's content, caches live on
 # a named volume, and commands run as the calling user so files in the
@@ -27,7 +29,7 @@ RUN       := docker run --rm -v "$(CURDIR)":/src -w /src -v $(CACHE_VOL):/cache 
 	-e LDFLAGS="$(LDFLAGS)" -e FUZZTIME=$(FUZZTIME) $(DEV_IMAGE)
 
 .DEFAULT_GOAL := help
-.PHONY: help all dev-image shell build release tools fmt fmt-check tidy tidy-check mod-verify vet lint vuln \
+.PHONY: help all dev-image shell build release tools oui fmt fmt-check tidy tidy-check mod-verify vet lint vuln \
 	test coverage cover fuzz test-net test-systemd check check-all run-dev clean clean-cache
 
 help: ## This help
@@ -59,6 +61,9 @@ release: dev-image ## Static linux/amd64 and linux/arm64 binaries into dist/ wit
 tools: dev-image ## capcheck for linux/amd64 and linux/arm64 into dist/tools/ (privilege check)
 	@$(RUN) build/release.sh tools
 
+oui: dev-image ## Regenerate data/oui/oui.tsv.gz from the IEEE registries (each release)
+	@$(RUN) go run ./data/oui/gen -out data/oui/oui.tsv.gz
+
 # --- hygiene -----------------------------------------------------------------
 
 fmt: dev-image ## Format Go code with gofmt -s
@@ -85,9 +90,9 @@ vet: dev-image ## Run go vet
 	@echo "Running go vet on $(PKGS)"
 	@$(RUN) go vet $(PKGS)
 
-lint: dev-image ## Run golangci-lint (includes staticcheck)
+lint: dev-image ## Run golangci-lint (includes staticcheck), including the nettest-tagged tests
 	@echo "Running golangci-lint"
-	@$(RUN) golangci-lint run $(PKGS)
+	@$(RUN) golangci-lint run --build-tags nettest $(PKGS)
 
 vuln: dev-image ## Run govulncheck (pinned as a tool in go.mod)
 	@echo "Running govulncheck"
@@ -100,12 +105,11 @@ test: dev-image ## Unit and golden tests with the race detector
 	@echo "Running tests on $(PKGS)"
 	@$(RUN) env CGO_ENABLED=1 go test -race $(PKGS)
 
-# tools/ (capcheck) is exercised end to end by test-net and test-systemd, not by
-# unit tests, so it is left out of the coverage figure.
-coverage: dev-image ## Tests with race detector and coverage of the daemon code (writes coverage.out)
-	@echo "Running tests with coverage on $(PKGS), excluding tools/"
-	@$(RUN) sh -c 'CGO_ENABLED=1 go test -count=1 -race -coverprofile=$(COVERAGE) -covermode=atomic $$(go list $(PKGS) | grep -v /tools/)'
-	@$(RUN) go tool cover -func=$(COVERAGE) | tail -1
+# Coverage of internal/ from every test package; fails below COVER_MIN
+# (build/coverage.sh says what is counted).
+coverage: dev-image ## Tests with race detector and coverage of internal/ (fails below COVER_MIN, default 90%)
+	@echo "Running tests with coverage of internal/ (minimum $(COVER_MIN)%)"
+	@$(RUN) env COVER_MIN=$(COVER_MIN) COVERAGE=$(COVERAGE) build/coverage.sh
 
 cover: coverage ## Write coverage.html and open it in a browser
 	@$(RUN) go tool cover -html=$(COVERAGE) -o coverage.html

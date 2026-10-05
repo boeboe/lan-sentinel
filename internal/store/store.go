@@ -75,6 +75,7 @@ const (
 	reqOp requestKind = iota
 	reqFlush
 	reqPing
+	reqView
 )
 
 type request struct {
@@ -189,6 +190,23 @@ func (s *Store) Flush(ctx context.Context) error {
 	return s.roundTrip(ctx, reqFlush)
 }
 
+// View commits everything queued, then runs fn in its own transaction on
+// the writer connection and returns fn's error. It is for reads that must
+// see every earlier write, such as loading state at startup; fn must not
+// keep the transaction open longer than necessary.
+func (s *Store) View(ctx context.Context, fn func(ctx context.Context, tx *sql.Tx) error) error {
+	reply := make(chan error, 1)
+	if err := s.send(ctx, request{kind: reqView, op: fn, reply: reply}); err != nil {
+		return err
+	}
+	select {
+	case err := <-reply:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 // Ping checks that the writer goroutine is alive and draining its queue.
 func (s *Store) Ping(ctx context.Context) error {
 	return s.roundTrip(ctx, reqPing)
@@ -270,6 +288,12 @@ func (s *Store) writer(flushInterval time.Duration, maxBatch int) {
 			r.reply <- commit()
 		case reqPing:
 			r.reply <- nil
+		case reqView:
+			if err := commit(); err != nil {
+				r.reply <- err
+				return
+			}
+			r.reply <- s.view(r.op)
 		}
 	}
 
@@ -319,6 +343,16 @@ func (s *Store) commitBatch(ops []Op) error {
 	s.commits.Add(1)
 	s.log.Debug("store: committed batch", "ops", len(ops), "failed", failed, "duration", time.Since(start))
 	return nil
+}
+
+func (s *Store) view(fn Op) error {
+	ctx := context.Background()
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return fmt.Errorf("begin view: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck // read-only
+	return fn(ctx, tx)
 }
 
 func runOp(ctx context.Context, tx *sql.Tx, op Op) error {

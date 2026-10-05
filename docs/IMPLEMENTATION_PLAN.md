@@ -12,10 +12,19 @@ Six phases, each ending in a shippable build. Passive discovery lands before any
 | 5 | Release builds, hardening, rollout | 2 weeks | **v1.0** on the full fleet; active discovery enabled per site |
 | 6+ | Identification plugins | ongoing | — |
 
+## Open hardware checks
+
+Deferred checks that need real hardware. Each closes a phase's exit criterion; the Docker equivalent already passes on every change, so development continues meanwhile. Record results where noted and tick here.
+
+| | Check | Closes | Docker equivalent (passing) | Record results in |
+| --- | --- | --- | --- | --- |
+| [ ] | `tools/capcheck` under the reference unit on each target board (RevPi Connect, amd64 edge box): every row passes with only `CAP_NET_RAW` | Phase 0 exit | `make test-net` (capcheck with and without `CAP_NET_RAW`), `make test-systemd` (capcheck under the unit's sandbox) | `ARCHITECTURE.md` §8 table |
+| [ ] | Daemon on a target board on a real test LAN: hosts appear from the kernel neighbour table alone, with vendor and per-interface scoping (config with `passive: { enabled: false }` until phase 2) | Phase 1 exit | `TestDaemonFindsHosts` in `make test-net`: two networks, real-OUI vendor, same MAC on both networks as two hosts with `MAC_MOVED` | Phase 1 exit note below |
+
 ## Phase 0 — Foundations, platform layer, test infrastructure (2–3 weeks)
 
 - [x] Repo skeleton, Go module `lan-sentinel`, `golangci-lint`, CI, self-documenting `Makefile` (`make` lists targets)
-- [x] Hygiene gate `make check`: `fmt-check`, `tidy-check`, `vet`, `lint`, `vuln` (`govulncheck` pinned as a Go tool), tests with race and coverage; `make fuzz` runs every `Fuzz*` target; `make check-all` adds the Docker suites
+- [x] Hygiene gate `make check`: `fmt-check`, `tidy-check`, `vet`, `lint`, `vuln` (`govulncheck` pinned as a Go tool), tests with race and coverage of `internal/` ≥ 90%; `make fuzz` runs every `Fuzz*` target; `make check-all` adds the Docker suites
 - [x] Static cross-compiled builds for `linux/amd64` and `linux/arm64` (`CGO_ENABLED=0`), version/commit/date via `-ldflags`, `SHA256SUMS`
 - [x] Linux dev container (`build/dev.Dockerfile`): every make target that runs Go runs in it, as the calling user, with a cache volume; no macOS stubs or build tags
 - [ ] CI: `make mod-verify check`, `make fuzz`, `make test-net test-systemd`, `make release tools`, all in the dev container — *workflow written, not yet run on GitHub*
@@ -28,7 +37,7 @@ Six phases, each ending in a shippable build. Passive discovery lands before any
 - [x] Daemon lifecycle: context cancellation, `sd_notify` READY/WATCHDOG, graceful shutdown, SIGHUP reload — *verified under systemd in a container (`make test-systemd`)*
 - [x] systemd container test (`make test-systemd`): reference unit unchanged, `Type=notify`, identity and capabilities, reload, clean stop, capcheck under the unit's sandbox, `systemd-analyze security` ≤ 2.5 (now 1.6)
 - [x] Docker network test harness (`make test-net`, `ARCHITECTURE.md` §9): test network with simulated hosts, runner as uid 65534 with only `CAP_NET_RAW`, `tools/capcheck` with and without the capability
-- [ ] Capability check under the reference unit with only `CAP_NET_RAW`: every row of `ARCHITECTURE.md` §8, in Docker and on each target board; record results there. Any failure stops the project for a decision. — *Docker and systemd container: passed; boards pending*
+- [ ] Capability check under the reference unit with only `CAP_NET_RAW`: every row of `ARCHITECTURE.md` §8, in Docker and on each target board; record results there. Any failure stops the project for a decision. — *Docker and systemd container: passed; boards deferred, tracked under Open hardware checks*
 - [x] Golden reconstruction scenario (`DATA_MODEL.md` §10) committed under `test/golden/reconstruction/` as observation stream + expected bindings, events and query answers; a harness that validates the fixture (including that the expected answers follow from the expected bindings) and runs it through the correlator (skipped until phase 1, so CI stays green)
 - [x] `deploy/`: reference unit, `sysusers.d`, `tmpfiles.d`, default config, replay `config.dev.yaml`
 
@@ -36,18 +45,18 @@ Six phases, each ending in a shippable build. Passive discovery lands before any
 
 ## Phase 1 — Observation pipeline, interfaces, neighbours (2–3 weeks)
 
-- [ ] `Observation` type, `Source` enum, bounded bus, drop counter
-- [ ] Replay collector, JSONL input: simulated-clock and real-time modes, `exit_when_done`; golden scenario harness runs through it; `make run-dev`
-- [ ] Interface manager over `InterfaceMonitor` (netlink): one network context per interface name, `context_prefixes` history, follow changes, emit `INTERFACE_UP/DOWN`, `SUBNET_CHANGED`
-- [ ] Neighbour collector over `NeighborSource` (netlink): startup dump, `RTM_NEWNEIGH`/`RTM_DELNEIGH` subscription, resync on `ENOBUFS` and on interval, source `kernel_neighbor` with NUD state
-- [ ] Docker network tests for the netlink backends: neighbours appearing, changing MAC and expiring; a container leaving the network (link and address events)
-- [ ] Correlator v1: `DATA_MODEL.md` §5.1 (host = context + MAC, unbound observations), §5.2 on-link check, §5.3 open/replace/takeover/expiry with interval semantics of §3; `HOST_DISCOVERED`, `IP_ADDED`, `IP_CHANGED`, `IP_REMOVED`, `MAC_MOVED`
-- [ ] Schema constraints and partial unique indexes from `DATA_MODEL.md` §4
-- [ ] Presence state machine with configurable thresholds; `HOST_DISAPPEARED`, `HOST_REAPPEARED`
-- [ ] Event engine writing to `events` (with `cause` and `evidence_json` snapshot) and journald
-- [ ] OUI vendor lookup (IEEE MA-L/MA-M/MA-S) with a generator that builds a compact embedded table; optional override file; locally administered flag
+- [x] `Observation` type, `Source` enum, JSONL encoding, bounded bus with drop counter, ordered interface states and barriers
+- [x] Replay collector, JSONL input: time-ordered merge of several files, simulated-clock and real-time modes, `exit_when_done`; replay and live interfaces cannot be mixed; `make run-dev`
+- [x] Interface manager over `InterfaceMonitor` (netlink): one network context per interface name, `context_prefixes` history, follow changes, emit `INTERFACE_UP/DOWN`, `SUBNET_CHANGED` (applied by the correlator, in order with observations)
+- [x] Neighbour collector over `NeighborSource` (netlink): startup dump, `RTM_NEWNEIGH`/`RTM_DELNEIGH` subscription, resubscribe and resync on loss and on interval, source `kernel_neighbor` with NUD state, stamped with the kernel's confirmation time
+- [x] Docker network tests for the netlink backends: neighbours appearing, changing MAC (gratuitous ARP) and expiring (unresolvable, and a host that disappears); a network connected to and disconnected from the runner (link and address events); the daemon on two test networks finding hosts with their vendor (a real Siemens OUI), scoped per interface (the same MAC on both networks is two hosts with `MAC_MOVED`)
+- [x] Correlator v1: `DATA_MODEL.md` §5.1 (host = context + MAC, unbound observations), §5.2 on-link check, §5.3 open/replace/takeover/conflict/expiry with interval semantics of §3, late-observation rule, §5.5 services; data-driven time; state loaded at startup; `HOST_DISCOVERED`, `IP_ADDED`, `IP_CHANGED`, `IP_REMOVED`, `MAC_MOVED`, `DUPLICATE_IP_DETECTED/RESOLVED`, `SERVICE_OPENED/CLOSED`
+- [x] Schema constraints and partial unique indexes from `DATA_MODEL.md` §4 (in the phase 0 migration)
+- [x] Presence state machine with configurable thresholds; `HOST_DISAPPEARED`, `HOST_REAPPEARED`
+- [x] Event engine writing to `events` (with `cause` and `evidence_json` snapshot) and journald
+- [x] OUI vendor lookup (IEEE MA-L/MA-M/MA-S, longest prefix) with a generator (`make oui`) that builds a compact embedded table; optional override file; locally administered flag
 
-**Exit:** `make run-dev` replays the golden stream and the resulting database matches the expected bindings; in the Docker test network and on a test LAN, hosts appear from the kernel neighbour table alone, with vendor and correct per-interface scoping; the golden scenario passes at correlator level except the conflict steps (phase 2).
+**Exit:** `make run-dev` replays the golden stream and the resulting database matches the expected bindings; in the Docker test network and on a test LAN, hosts appear from the kernel neighbour table alone, with vendor and correct per-interface scoping; the golden scenario passes at correlator level except the conflict steps (phase 2). — *Status: replay, golden scenario (including the conflict steps, implemented early) and Docker test network met; real test LAN deferred, tracked under Open hardware checks.*
 
 ## Phase 2 — Passive capture (3–4 weeks)
 
@@ -57,7 +66,7 @@ Six phases, each ending in a shippable build. Passive discovery lands before any
 - [ ] Fuzz target per decoder; pcap fixtures from real sites
 - [ ] Replay collector, pcap/pcapng input through the same decoders
 - [ ] Name bindings (`DATA_MODEL.md` §5.4) and `preferred_name` precedence; `HOSTNAME_ADDED/CHANGED/REMOVED`
-- [ ] Conflict handling: `DUPLICATE_IP_DETECTED` / `DUPLICATE_IP_RESOLVED` (conflicting ARP replies or gratuitous ARP), `conflict` flag; proxy-ARP flagging
+- [ ] Conflict detection from capture (conflicting ARP replies, gratuitous ARP) feeding the correlator's conflict handling (done in phase 1); proxy-ARP flagging
 - [ ] Retention, hourly roll-up and compaction job; `max_db_size` enforcement; golden scenario re-run after simulated 7-day compaction gives identical answers and evidence
 - [ ] Startup integrity check with quarantine and recreate
 
@@ -93,7 +102,7 @@ Six phases, each ending in a shippable build. Passive discovery lands before any
 
 - [ ] Release artifacts: static binaries for `linux/amd64` and `linux/arm64` with SHA-256 checksums; no `.deb` or other packages
 - [ ] Capability audit on the boards; `systemd-analyze security` exposure ≤ 2.5 on the target systemd versions (1.6 in the container test)
-- [ ] Clock-jump handling: mark events written before NTP sync
+- [ ] Clock-jump handling: mark events written before NTP sync. Note: the hardened unit's `ProtectClock=true` blocks `adjtimex` (the `@clock` syscall group), so sync detection needs another source (e.g. systemd-timesyncd's `/run/systemd/timesync/synchronized`) or an explicit `SystemCallFilter` exception
 - [ ] Staged fleet rollout (below)
 
 **Exit:** v1.0 on the full fleet with active discovery enabled per site.

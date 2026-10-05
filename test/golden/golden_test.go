@@ -2,60 +2,27 @@
 // JSONL observation stream (the replay format, docs/DATA_MODEL.md §2) and
 // the expected bindings, events and CLI query answers.
 //
-// Until the correlator exists (phase 1) this test validates the fixtures
-// themselves: their syntax, and that the expected query answers follow from
-// the expected bindings under the point-in-time semantics of
-// docs/DATA_MODEL.md §3–§4. Running the stream through the correlator is
-// skipped until then.
+// The test validates each fixture (syntax, and that its expected query
+// answers follow from its expected bindings under docs/DATA_MODEL.md §3–§4),
+// then runs the stream through the correlator and compares the database
+// with the expectations (correlate_test.go).
 package golden
 
 import (
-	"bufio"
 	"bytes"
 	"encoding/json"
 	"fmt"
 	"net"
-	"net/netip"
 	"os"
 	"path/filepath"
 	"slices"
 	"sort"
 	"testing"
 	"time"
+
+	"lan-sentinel/internal/events"
+	"lan-sentinel/internal/observation"
 )
-
-var sources = []string{
-	"passive_arp", "passive_ipv4", "passive_ipv6", "passive_ndp", "passive_dhcp", "passive_mdns",
-	"passive_dns", "passive_lldp", "kernel_neighbor", "arp_scan", "icmp_scan", "ndp_probe", "tcp_connect", "udp_probe",
-}
-
-var eventTypes = []string{
-	"HOST_DISCOVERED", "HOST_DISAPPEARED", "HOST_REAPPEARED", "IP_ADDED", "IP_REMOVED", "IP_CHANGED", "MAC_MOVED",
-	"HOSTNAME_ADDED", "HOSTNAME_CHANGED", "HOSTNAME_REMOVED", "SERVICE_OPENED", "SERVICE_CLOSED", "VENDOR_IDENTIFIED",
-	"DUPLICATE_IP_DETECTED", "DUPLICATE_IP_RESOLVED", "SCAN_STARTED", "SCAN_COMPLETED", "ACTIVE_DISABLED",
-	"ACTIVE_ENABLED", "INTERFACE_UP", "INTERFACE_DOWN", "SUBNET_CHANGED",
-}
-
-// Observation is one line of the JSONL stream.
-type Observation struct {
-	Time          time.Time         `json:"time"`
-	Source        string            `json:"source"`
-	Interface     string            `json:"interface"`
-	MAC           string            `json:"mac,omitempty"`
-	IP            string            `json:"ip,omitempty"`
-	Hostname      string            `json:"hostname,omitempty"`
-	NameType      string            `json:"name_type,omitempty"`
-	Service       *Service          `json:"service,omitempty"`
-	NeighborState string            `json:"neighbor_state,omitempty"`
-	Meta          map[string]string `json:"meta,omitempty"`
-}
-
-// Service is a probe result.
-type Service struct {
-	Proto string `json:"proto"`
-	Port  int    `json:"port"`
-	State string `json:"state"`
-}
 
 // Expected is a scenario's expected outcome.
 type Expected struct {
@@ -137,36 +104,24 @@ func TestScenarios(t *testing.T) {
 			t.Run("expected", func(t *testing.T) { checkExpected(t, exp) })
 			t.Run("queries follow from bindings", func(t *testing.T) { checkQueries(t, exp) })
 			t.Run("history follows from events", func(t *testing.T) { checkHistory(t, exp) })
-			t.Run("correlator", func(t *testing.T) {
-				t.Skip("correlator lands in phase 1 (docs/IMPLEMENTATION_PLAN.md)")
-			})
+			t.Run("correlator", func(t *testing.T) { runCorrelator(t, obs, exp) })
 		})
 	}
 }
 
-func readObservations(t *testing.T, path string) []Observation {
+func readObservations(t *testing.T, path string) []observation.Observation {
 	t.Helper()
 	f, err := os.Open(path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer f.Close()
-	var out []Observation
-	sc := bufio.NewScanner(f)
-	for line := 1; sc.Scan(); line++ {
-		if len(bytes.TrimSpace(sc.Bytes())) == 0 {
-			continue
-		}
-		dec := json.NewDecoder(bytes.NewReader(sc.Bytes()))
-		dec.DisallowUnknownFields()
-		var o Observation
-		if err := dec.Decode(&o); err != nil {
-			t.Fatalf("%s:%d: %v", path, line, err)
-		}
+	var out []observation.Observation
+	if err := observation.ReadJSONL(f, func(o observation.Observation) error {
 		out = append(out, o)
-	}
-	if err := sc.Err(); err != nil {
-		t.Fatal(err)
+		return nil
+	}); err != nil {
+		t.Fatalf("%s: %v", path, err)
 	}
 	return out
 }
@@ -186,7 +141,7 @@ func readExpected(t *testing.T, path string) Expected {
 	return e
 }
 
-func checkObservations(t *testing.T, obs []Observation, exp Expected) {
+func checkObservations(t *testing.T, obs []observation.Observation, exp Expected) {
 	var prev time.Time
 	for i, o := range obs {
 		where := fmt.Sprintf("observation %d", i+1)
@@ -194,24 +149,8 @@ func checkObservations(t *testing.T, obs []Observation, exp Expected) {
 			t.Errorf("%s: time %s goes backwards", where, o.Time)
 		}
 		prev = o.Time
-		if !slices.Contains(sources, o.Source) {
-			t.Errorf("%s: unknown source %q", where, o.Source)
-		}
 		if o.Interface != exp.Interface {
 			t.Errorf("%s: interface %q, scenario uses %q", where, o.Interface, exp.Interface)
-		}
-		if o.MAC != "" {
-			if _, err := net.ParseMAC(o.MAC); err != nil {
-				t.Errorf("%s: %v", where, err)
-			}
-		}
-		if o.IP != "" {
-			if _, err := netip.ParseAddr(o.IP); err != nil {
-				t.Errorf("%s: %v", where, err)
-			}
-		}
-		if o.MAC == "" && o.IP == "" {
-			t.Errorf("%s: neither MAC nor IP", where)
 		}
 	}
 }
@@ -236,7 +175,7 @@ func checkExpected(t *testing.T, e Expected) {
 	}
 	var prev time.Time
 	for i, ev := range e.Events {
-		if !slices.Contains(eventTypes, ev.Type) {
+		if _, ok := events.Lookup(events.Type(ev.Type)); !ok {
 			t.Errorf("event %d: unknown type %q", i, ev.Type)
 		}
 		if !labels[ev.Host] || (ev.Related != "" && !labels[ev.Related]) {

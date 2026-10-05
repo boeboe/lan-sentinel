@@ -17,6 +17,7 @@ linters:
         - fmt.Fprintln
         - (*os.File).Close
         - (io.Closer).Close
+        - (*database/sql.Rows).Close
         - golang.org/x/sys/unix.Close
         - (*golang.org/x/net/icmp.PacketConn).Close
   exclusions:

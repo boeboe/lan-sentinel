@@ -311,3 +311,22 @@ func waitFor(t *testing.T, cond func() bool) {
 		time.Sleep(5 * time.Millisecond)
 	}
 }
+
+func TestViewSeesQueuedWrites(t *testing.T) {
+	s := open(t, Options{Clock: clock.NewSim(t0)})
+	ctx := context.Background()
+	if err := s.Submit(ctx, insertContext("eth0")); err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	err := s.View(ctx, func(ctx context.Context, tx *sql.Tx) error {
+		return tx.QueryRowContext(ctx, `SELECT count(*) FROM network_contexts`).Scan(&n)
+	})
+	if err != nil || n != 1 {
+		t.Fatalf("View saw %d rows (err %v), want the queued write", n, err)
+	}
+	wantErr := errors.New("boom")
+	if err := s.View(ctx, func(context.Context, *sql.Tx) error { return wantErr }); !errors.Is(err, wantErr) {
+		t.Errorf("View error = %v", err)
+	}
+}

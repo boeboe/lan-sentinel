@@ -11,19 +11,13 @@ import (
 	"lan-sentinel/internal/platform/fake"
 )
 
-func TestNewReportsUnavailableBackends(t *testing.T) {
-	// Planned backends report ErrNotImplemented until their phase.
+func TestNewReportsPendingBackends(t *testing.T) {
+	// Capture (phase 2) and transmit (phase 4) report ErrNotImplemented.
 	want := platform.ErrNotImplemented
 	b := platform.New()
 	ctx := context.Background()
 	if _, err := b.Capturer.Open(ctx, "eth0", nil, false); !errors.Is(err, want) {
 		t.Errorf("Capturer.Open err = %v, want %v", err, want)
-	}
-	if _, err := b.Neighbors.Snapshot(ctx); !errors.Is(err, want) {
-		t.Errorf("Neighbors.Snapshot err = %v", err)
-	}
-	if _, err := b.Interfaces.List(ctx); !errors.Is(err, want) {
-		t.Errorf("Interfaces.List err = %v", err)
 	}
 	if err := b.Transmitter.SendFrame(ctx, "eth0", nil); !errors.Is(err, want) {
 		t.Errorf("Transmitter.SendFrame err = %v", err)

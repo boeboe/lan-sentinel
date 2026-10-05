@@ -120,7 +120,7 @@ lan-sentinel hosts history 192.168.1.200 --since 7d
 | FR-PLAT-3 | Network integration tests SHALL run in Docker containers on Docker networks with simulated hosts, as an unprivileged user with only `CAP_NET_RAW` (`make test-net`), and the systemd unit SHALL be tested in a systemd container (`make test-systemd`). |
 | FR-RP-1 | A replay collector SHALL feed an interface's observations from a pcap/pcapng file (decoded by the same decoders as live capture) or from a JSONL observation stream. Replayed observations SHALL keep their recorded `Source` and timestamp. |
 | FR-RP-2 | Replay SHALL drive a simulated clock from the observation timestamps (as fast as possible) or replay in real time scaled by a speed factor, so presence and expiry behave as they did at the site. The golden scenarios SHALL run through the same mechanism. |
-| FR-RP-3 | Replay is configured per interface and is mutually exclusive with live passive and active discovery on that interface; the interface's prefixes come from config. Replay works in the dev container. |
+| FR-RP-3 | Replay is configured per interface and is mutually exclusive with live passive and active discovery; the interface's prefixes come from config. All interfaces of a daemon are replay interfaces or none is, since replay runs the daemon on recorded time; several replay files are merged in time order. Replay works in the dev container. |
 
 ## 3. Non-functional requirements
 
@@ -135,7 +135,7 @@ lan-sentinel hosts history 192.168.1.200 --since 7d
 | NFR-PERF-2 | SQLite commits SHALL be batched (target every 5 s) to limit SD-card wear; `synchronous=NORMAL` with WAL. |
 | NFR-SEC-1 | The service SHALL run as user `lan-sentinel` with only `CAP_NET_RAW`, under the hardened unit in `ARCHITECTURE.md` §8; target `systemd-analyze security` exposure ≤ 2.5. This SHALL be verified on every change in Docker (`make test-net`, `make test-systemd`) and on each target board in phase 0; any need for another capability stops the project for a decision. |
 | NFR-PORT-1 | Deliverables SHALL be static `CGO_ENABLED=0` binaries for `linux/amd64` and `linux/arm64` with SHA-256 checksums. No `.deb` or other packages. Minimum kernel 5.10. |
-| NFR-PORT-2 | CI SHALL, on every change, run the same make targets as developers in the dev container: `check` (format, tidy, vet, lint, vulnerabilities, tests with race and coverage), `fuzz`, the Docker network and systemd suites, and the release build of both targets. |
+| NFR-PORT-2 | CI SHALL, on every change, run the same make targets as developers in the dev container: `check` (format, tidy, vet, lint, vulnerabilities, tests with race and coverage of `internal/` of at least 90%), `fuzz`, the Docker network and systemd suites, and the release build of both targets. |
 | NFR-REL-1 | The daemon SHALL use `Type=notify` with READY and WATCHDOG, shut down gracefully on SIGTERM, and tolerate interfaces appearing and disappearing at runtime. |
 | NFR-REL-2 | Timestamps SHALL survive clock jumps on devices without an RTC: events written before NTP sync SHALL be marked (`adjtimex` `STA_UNSYNC`). |
 

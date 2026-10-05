@@ -67,6 +67,15 @@ func (v *validator) interfaces(cfg *Config) {
 	if len(cfg.Interfaces) == 0 {
 		v.add("interfaces", "at least one interface is required")
 	}
+	replays := 0
+	for _, ic := range cfg.Interfaces {
+		if ic.IsReplay() {
+			replays++
+		}
+	}
+	if replays > 0 && replays < len(cfg.Interfaces) {
+		v.add("interfaces", "replay and live interfaces cannot be mixed: replay runs the daemon on recorded time")
+	}
 	seen := map[string]bool{}
 	for i, ic := range cfg.Interfaces {
 		k := fmt.Sprintf("interfaces[%d]", i)

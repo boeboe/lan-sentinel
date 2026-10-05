@@ -56,6 +56,8 @@ type Neighbor struct {
 	MAC       net.HardwareAddr
 	// State is the NUD state: REACHABLE, STALE, DELAY, PROBE, FAILED, ...
 	State string
+	// ConfirmedAgo is how long ago reachability was last confirmed.
+	ConfirmedAgo time.Duration
 }
 
 // NeighborEvent is a change notification. Resync means notifications were

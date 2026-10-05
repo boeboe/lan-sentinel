@@ -31,24 +31,6 @@ func (p pendingCapturer) Open(context.Context, string, []bpf.RawInstruction, boo
 	return nil, p.err("capture")
 }
 
-type pendingNeighbors struct{ pending }
-
-func (p pendingNeighbors) Snapshot(context.Context) ([]Neighbor, error) {
-	return nil, p.err("neighbor")
-}
-
-func (p pendingNeighbors) Watch(context.Context) (<-chan NeighborEvent, error) {
-	return nil, p.err("neighbor")
-}
-
-type pendingInterfaces struct{ pending }
-
-func (p pendingInterfaces) List(context.Context) ([]Link, error) { return nil, p.err("interface") }
-
-func (p pendingInterfaces) Watch(context.Context) (<-chan LinkEvent, error) {
-	return nil, p.err("interface")
-}
-
 type pendingTransmitter struct{ pending }
 
 func (p pendingTransmitter) SendFrame(context.Context, string, []byte) error {
