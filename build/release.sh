@@ -50,10 +50,10 @@ package)
 		mkdir -p "$stage"
 		cp "dist/lan-sentinel-$os-$arch" "$stage/lan-sentinel"
 		cp "dist/tools/capcheck-$os-$arch" "$stage/capcheck"
-		cp deploy/lan-sentinel.service deploy/lan-sentinel.sysusers deploy/lan-sentinel.tmpfiles deploy/config.yaml deploy/README.md "$stage/"
+		cp deploy/lan-sentinel.service deploy/config.yaml deploy/README.md "$stage/"
 		(cd "$stage" && sha256sum lan-sentinel capcheck >SHA256SUMS)
 		chmod 0755 "$stage" "$stage/lan-sentinel" "$stage/capcheck"
-		chmod 0644 "$stage"/*.service "$stage"/*.sysusers "$stage"/*.tmpfiles "$stage"/config.yaml "$stage"/README.md "$stage"/SHA256SUMS
+		chmod 0644 "$stage"/lan-sentinel.service "$stage"/config.yaml "$stage"/README.md "$stage"/SHA256SUMS
 		echo "Packing dist/release/$name.tar.gz"
 		tar --sort=name --mtime="@$epoch" --owner=0 --group=0 --numeric-owner --format=gnu \
 			-C dist/release -cf - "$name" | gzip -9n >"dist/release/$name.tar.gz"

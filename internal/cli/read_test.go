@@ -379,7 +379,7 @@ func TestEventsLimitAndPermission(t *testing.T) {
 	if err := os.Chmod(f.socket, 0); err != nil {
 		t.Fatal(err)
 	}
-	if code, _, stderr := f.run(t, "hosts", "list"); code != ExitError || !strings.Contains(stderr, "service group") {
+	if code, _, stderr := f.run(t, "hosts", "list"); code != ExitError || !strings.Contains(stderr, "run with sudo") {
 		t.Errorf("inaccessible socket: exit %d %s", code, stderr)
 	}
 }

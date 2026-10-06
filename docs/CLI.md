@@ -17,13 +17,13 @@ lan-sentinel [global options] <command> <subcommand> [options]
 
 | Situation | Behaviour |
 | --- | --- |
-| Daemon running (`hosts.db-wal` present) | Open `file:<path>?mode=ro` with `PRAGMA busy_timeout = 5000` and `PRAGMA query_only = 1`. Never `immutable=1`. Each command runs in a single read transaction, so it sees one consistent snapshot. Requires read access to the directory, `hosts.db`, `-wal` and `-shm` (service group, see below). |
+| Daemon running (`hosts.db-wal` present) | Open `file:<path>?mode=ro` with `PRAGMA busy_timeout = 5000` and `PRAGMA query_only = 1`. Never `immutable=1`. Each command runs in a single read transaction, so it sees one consistent snapshot. Requires read access to the directory, `hosts.db`, `-wal` and `-shm` (root, see below). |
 | No `-wal` file (daemon stopped cleanly; the last connection checkpoints and removes the WAL) | Open `file:<path>?mode=ro&immutable=1`, because a read-only user cannot create `-shm`. Data is complete. The CLI prints a notice to stderr. If `-wal` appears while the command runs (daemon started), results may be stale; re-run. |
-| `-wal` present but not readable, or `-shm` missing and the directory not writable | Exit 2: `cannot open database read-only beside the WAL; run as a member of the service group or copy the database`. |
+| `-wal` present but not readable, or `-shm` missing and the directory not writable | Exit 2: `cannot open database read-only beside the WAL; run with sudo or copy the database`. |
 | Copied database | Copy only after `systemctl stop lan-sentinel`, or copy `hosts.db`, `-wal` and `-shm` together. A `hosts.db` copied alone while the daemon was running lacks every transaction since the last checkpoint; the CLI cannot detect this. |
 | `SQLITE_BUSY` after the busy timeout | Exit 2 with the SQLite error. |
 
-The daemon runs with `UMask=0027` and the data directory is `0750 lan-sentinel:lan-sentinel` (from `tmpfiles.d`), so database files are group-readable. Operators who use `--offline` must be in that group or use `sudo`. Offline commands keep their read transaction short; a long-held reader stops WAL checkpoints.
+The daemon runs as root with `UMask=0027` and the data directory is `0750 root:root` (`deploy/README.md`), so `--offline` needs `sudo`. Offline commands keep their read transaction short; a long-held reader stops WAL checkpoints.
 
 ## 2. Global options
 
@@ -132,7 +132,7 @@ Lists (`hosts list`, `hosts history`, `observations list`, `events list`, `servi
 
 ### Online reads
 
-Online, the daemon answers from what its single writer has committed, at most one 5-second batch behind; `watch` is live. Offline and online answers come from the same queries, and each command is one snapshot (`hosts evidence` included). `--mac` and `--ip` filters accept any written form. A socket the caller may not open is exit 2 with a hint to join the service group (the daemon may be running); no daemon on the socket is exit 3.
+Online, the daemon answers from what its single writer has committed, at most one 5-second batch behind; `watch` is live. Offline and online answers come from the same queries, and each command is one snapshot (`hosts evidence` included). `--mac` and `--ip` filters accept any written form. A socket the caller may not open is exit 2 with a hint to run with `sudo` (the daemon may be running); no daemon on the socket is exit 3.
 
 ### Event type names
 

@@ -5,8 +5,8 @@
 #
 # A bridge network with fixed subnets stands in for an OT LAN. Simulated hosts
 # are busybox containers with fixed MACs. The test binaries run in a runner
-# container as uid 65534 with only CAP_NET_RAW (ambient), mirroring the
-# systemd unit. Go tests can ask for changes outside the runner (swap the host
+# container as uid 65534 with only CAP_NET_RAW (ambient), stricter than the
+# systemd unit (root with a CAP_NET_RAW bounding set). Go tests can ask for changes outside the runner (swap the host
 # behind an IP, stop a host, connect a second network, inject frames from
 # other MACs) through request files in a shared directory; the loop below
 # performs them.
@@ -189,7 +189,7 @@ for bin in ${tests[@]+"${tests[@]}"}; do
 	wait "$pid" || fail=1
 done
 
-# Where net.ipv4.ping_group_range excludes the service group (common on
+# Where net.ipv4.ping_group_range excludes the daemon's group (common on
 # boards), ICMP falls back to a raw socket under CAP_NET_RAW.
 RUNNER_EXTRA=(--sysctl "net.ipv4.ping_group_range=1 0" -e LS_TEST_RAW_ICMP=1)
 for bin in ${tests[@]+"${tests[@]}"}; do

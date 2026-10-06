@@ -17,12 +17,11 @@ Build both targets with `make tools` (output in `dist/tools/`). `make test-net` 
 
 ## On a target board: run it as the daemon runs
 
-Run it on each target board, as the `lan-sentinel` user with only `CAP_NET_RAW` and the reference unit's sandboxing:
+Run it on each target board as the daemon runs: root, with only `CAP_NET_RAW` in the bounding set and the reference unit's sandboxing:
 
 ```bash
 sudo systemd-run --pty --wait --collect \
-  -p User=lan-sentinel -p Group=lan-sentinel \
-  -p AmbientCapabilities=CAP_NET_RAW -p CapabilityBoundingSet=CAP_NET_RAW \
+  -p CapabilityBoundingSet=CAP_NET_RAW \
   -p NoNewPrivileges=true -p ProtectSystem=strict -p ProtectHome=true -p PrivateTmp=true \
   -p PrivateDevices=true -p ProtectKernelTunables=true -p ProtectKernelModules=true \
   -p ProtectControlGroups=true -p RestrictNamespaces=true -p LockPersonality=true \

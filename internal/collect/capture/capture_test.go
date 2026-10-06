@@ -239,6 +239,8 @@ func TestCollector(t *testing.T) {
 	if o := next(t, bus); o.Source != observation.PassiveARP {
 		t.Fatalf("after reopen: %+v", o)
 	}
+	// The collector counts an observation after publishing it.
+	waitFor(t, func() bool { st := c.Stats(); return len(st) == 1 && st[0].Observations >= 3 })
 	st := c.Stats()
 	if len(st) != 1 || st[0].Received != 4 || st[0].Observations != 3 || st[0].BusDropped != 0 {
 		t.Errorf("stats = %+v", st)

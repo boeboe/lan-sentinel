@@ -120,7 +120,7 @@ func (a *app) failed(err error) error {
 	case errors.As(err, &ee):
 		return err
 	case errors.Is(err, os.ErrPermission):
-		return failf(ExitError, "%v (run as a member of the service group, or with sudo)", err)
+		return failf(ExitError, "%v (run with sudo)", err)
 	case errors.Is(err, api.ErrUnreachable):
 		return failf(ExitUnreachable, "%v (is lan-sentinel running? --offline reads the database directly)", err)
 	case errors.Is(err, store.ErrBadQuery):

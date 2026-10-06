@@ -1,2 +1,0 @@
-# Install: /etc/sysusers.d/lan-sentinel.conf, then: systemd-sysusers
-u lan-sentinel - "LAN Sentinel" /data/lan-sentinel /usr/sbin/nologin

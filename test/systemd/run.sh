@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# Runs the daemon under systemd in a privileged container with the reference
-# unit, sysusers.d and tmpfiles.d files from deploy/: `make test-systemd`,
-# which first builds the binaries into BIN_DIR in the dev container. It runs
-# once per target Debian release (RELEASES, default: the targets bullseye,
-# bookworm and trixie, systemd 247, 252 and 257).
+# Installs LAN Sentinel on a fresh Debian with systemd as PID 1 (a
+# privileged container) exactly as deploy/README.md says: the files of a
+# release tarball, then its "2. Install" block run verbatim. `make
+# test-systemd` first builds the binaries into BIN_DIR in the dev container.
+# It runs once per target Debian release (RELEASES, default: the targets
+# bullseye, bookworm and trixie, systemd 247, 252 and 257).
 # Checks Type=notify start-up, the service identity and capabilities, the
 # clock sync state, the database, SIGHUP reload, clean shutdown and the
 # systemd-analyze score, and runs tools/capcheck as a transient unit with
@@ -22,7 +23,10 @@ for b in lan-sentinel capcheck; do
 	[ -x "$BIN_DIR/$b" ] || { echo "test-systemd: $BIN_DIR/$b missing; run via make test-systemd" >&2; exit 2; }
 	cp "$BIN_DIR/$b" "$work/"
 done
-cp deploy/lan-sentinel.service deploy/lan-sentinel.sysusers deploy/lan-sentinel.tmpfiles test/systemd/config.yaml "$work/"
+cp deploy/lan-sentinel.service deploy/config.yaml deploy/README.md "$work/"
+# The install commands of the runbook, the block after "### 2. Install".
+install_block=$(awk '/^### 2\. Install/ { f = 1; next } f && /^```bash/ { p = 1; next } p && /^```/ { exit } p' deploy/README.md)
+[ -n "$install_block" ] || { echo "test-systemd: no install block in deploy/README.md" >&2; exit 2; }
 
 x() { docker exec "$NAME" "$@"; }
 total=0
@@ -32,12 +36,20 @@ summary=()
 run_on() {
 local release=$1 image=lan-sentinel-systemd-test:$1
 echo "== Debian $release"
-docker build -q --build-arg "BASE=debian:$release-slim" -t "$image" -f test/systemd/Dockerfile "$work" >/dev/null
+docker build -q --build-arg "BASE=debian:$release-slim" -t "$image" -f test/systemd/Dockerfile test/systemd >/dev/null
 docker rm -f "$NAME" >/dev/null 2>&1 || true
 docker run -d --name "$NAME" --privileged --cgroupns=host -v /sys/fs/cgroup:/sys/fs/cgroup:rw \
 	--tmpfs /run --tmpfs /run/lock "$image" >/dev/null
 fail=0
 echo "info: $(x systemctl --version | head -1)"
+# The release tarball's directory (as build/release.sh package lays it out).
+x mkdir -p /root/release
+for f in "$work"/*; do docker cp "$f" "$NAME:/root/release/" >/dev/null; done
+x sh -c 'cd /root/release && sha256sum lan-sentinel capcheck >SHA256SUMS'
+for _ in $(seq 1 30); do # until systemd has booted (running, or degraded in a container)
+	case $(x systemctl is-system-running --wait 2>/dev/null) in running | degraded) break ;; esac
+	sleep 1
+done
 check() { # check DESCRIPTION COMMAND...
 	local d=$1
 	shift
@@ -51,17 +63,24 @@ wait_for() { # wait_for SECONDS COMMAND...
 	return 1
 }
 
+if docker exec -w /root/release "$NAME" bash -euxo pipefail -c "$install_block" >"$work/install.txt" 2>&1; then
+	echo "ok:   install with the commands of deploy/README.md"
+else
+	echo "FAIL: install with the commands of deploy/README.md" >&2
+	cat "$work/install.txt" >&2
+	fail=1
+fi
 check "service active (Type=notify readiness)" wait_for 60 x systemctl is-active --quiet lan-sentinel
 pid=$(x systemctl show -p MainPID --value lan-sentinel)
 status=$(x cat "/proc/$pid/status")
-check "runs as user lan-sentinel" grep -Eq "^Uid:\s+$(x id -u lan-sentinel)\s" <<<"$status"
+check "runs as root" grep -Eq "^Uid:\s+0\s" <<<"$status"
 check "effective capabilities are CAP_NET_RAW only" grep -Eq '^CapEff:\s+0000000000002000$' <<<"$status"
 check "bounding set is CAP_NET_RAW only" grep -Eq '^CapBnd:\s+0000000000002000$' <<<"$status"
 check "database created in /data/lan-sentinel" x test -f /data/lan-sentinel/hosts.db
 check "events go to the journal" journal_has "lan-sentinel running"
 check "passive capture runs under the unit (AF_PACKET)" wait_for 10 journal_has "capture started"
 check "no capture failures" bash -c "! docker exec $NAME journalctl -u lan-sentinel --no-pager -o cat | grep -q 'capture unavailable'"
-check "API socket is 0660 lan-sentinel:lan-sentinel" bash -c "[ \"\$(docker exec $NAME stat -c '%a %U %G' /run/lan-sentinel/api.sock)\" = '660 lan-sentinel lan-sentinel' ]"
+check "API socket is 0660 root:root" bash -c "[ \"\$(docker exec $NAME stat -c '%a %U %G' /run/lan-sentinel/api.sock)\" = '660 root root' ]"
 check "daemon status over the API socket (healthy)" x lan-sentinel daemon status --quiet
 clock=$(x lan-sentinel daemon status -o json | grep -oE '"clock": *"[a-z]+"' | grep -oE '[a-z]+"$' | tr -d '"')
 check "clock sync state readable under the unit (${clock:-none}, not unknown)" bash -c "[ '$clock' = synced ] || [ '$clock' = unsynced ]"
@@ -86,6 +105,9 @@ done < <(x systemctl cat lan-sentinel.service | awk '
 	svc && /^[A-Za-z]/ && $0 !~ /^(Type|ExecStart|ExecReload|WatchdogSec|Restart|RuntimeDirectory|RuntimeDirectoryMode)=/')
 gw_hex=$(x awk '$2 == "00000000" { print $3; exit }' /proc/net/route)
 gw=$(printf '%d.%d.%d.%d' "0x${gw_hex:6:2}" "0x${gw_hex:4:2}" "0x${gw_hex:2:2}" "0x${gw_hex:0:2}")
+# capcheck is not installed (the board audit runs it from the unpacked
+# release); the sandbox hides /root, so put it where the unit can see it.
+x install -m 0755 /root/release/capcheck /usr/local/bin/capcheck
 echo "info: capcheck under the unit sandbox ($((${#props[@]} / 2)) settings), ARP/ICMP target $gw"
 # A unit file only warns about a setting its systemd does not know (e.g.
 # PrivateIPC= before systemd 248) and runs without it; a transient unit
@@ -112,7 +134,7 @@ else
 	echo "FAIL: capcheck under the reference unit's sandbox" >&2
 	fail=1
 fi
-check "capcheck sees CAP_NET_RAW only" grep -Eq '^privilege: +CapEff=0x2000: CAP_NET_RAW$' "$work/capcheck.txt"
+check "capcheck sees root with CAP_NET_RAW only" grep -Eq '^privilege: +CapEff=0x2000: euid 0 \(root\), CAP_NET_RAW$' "$work/capcheck.txt"
 if [ "$fail" != 0 ] || [ -n "${KEEP_JOURNAL:-}" ]; then cat "$work/capcheck.txt"; fi
 
 x systemctl stop lan-sentinel

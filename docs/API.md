@@ -6,8 +6,8 @@ The daemon serves an API for the CLI and local integrations (FR-API-1): reads, p
 
 | Listener | Address | Serves | Access |
 | --- | --- | --- | --- |
-| Unix socket | `api.socket` (default `/run/lan-sentinel/api.sock`) | `/v1/…` | Mode `0660`, owner `lan-sentinel:lan-sentinel` in a `0750` runtime directory: the service group and root. No other authentication in v1. |
-| TCP (optional) | `api.listen`, loopback only (e.g. `127.0.0.1:9734`) | Reads only: `GET /v1/…` and `GET /metrics` when `metrics.enabled` | Anyone on the box. Requests whose `Host` is not a loopback name or address are refused (403), so a web page in a local browser cannot reach it through DNS rebinding. The operator endpoints, which change state, are served on the socket only, where the service group and `SO_PEERCRED` apply. |
+| Unix socket | `api.socket` (default `/run/lan-sentinel/api.sock`) | `/v1/…` | Mode `0660` in a `0750` runtime directory, owned by the daemon's user and group: `root:root` under the reference unit, so callers need `sudo`. No other authentication in v1. |
+| TCP (optional) | `api.listen`, loopback only (e.g. `127.0.0.1:9734`) | Reads only: `GET /v1/…` and `GET /metrics` when `metrics.enabled` | Anyone on the box. Requests whose `Host` is not a loopback name or address are refused (403), so a web page in a local browser cannot reach it through DNS rebinding. The operator endpoints, which change state, are served on the socket only, where file permissions and `SO_PEERCRED` apply. |
 
 A stale socket from a crashed daemon is replaced at start-up; a socket another daemon is listening on stops the start. The API reads through a read-only connection pool, so it sees what the single writer has committed: at most one batch interval (5 s) behind the correlator. Replays commit their last batch when they finish. `/v1/events/stream` is live.
 

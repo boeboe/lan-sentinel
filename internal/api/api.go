@@ -151,7 +151,7 @@ func readOnly(h http.HandlerFunc) http.HandlerFunc {
 // loopbackOnly refuses requests whose Host header is not a loopback name
 // or address (a web page in a local browser could otherwise reach the
 // listener through DNS rebinding) and anything but reads, so endpoints
-// that change state stay on the Unix socket, where the service group and
+// that change state stay on the Unix socket, where file permissions and
 // SO_PEERCRED apply.
 func loopbackOnly(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -179,7 +179,7 @@ func (s *Server) Handler() http.Handler { return s.mux }
 // Start listens on the Unix socket (and on listen, a loopback address, if
 // set) and serves in the background until ctx is cancelled; Wait returns
 // once the servers have shut down. The socket is created with mode 0660 so
-// the service group can use it.
+// only its owner (root, under the reference unit) and group can use it.
 func (s *Server) Start(ctx context.Context, socket, listen string) error {
 	ul, err := listenUnix(socket)
 	if err != nil {

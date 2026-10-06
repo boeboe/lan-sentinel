@@ -10,15 +10,14 @@ Wants=network-online.target
 Type=notify
 ExecStart=/usr/local/bin/lan-sentinel daemon run --config /etc/lan-sentinel/config.yaml
 ExecReload=/bin/kill -HUP $MAINPID
-User=lan-sentinel
-Group=lan-sentinel
+# Runs as root (decided 6 Oct 2026), but the bounding set below leaves root
+# only CAP_NET_RAW, and the sandbox keeps the rest of the system read-only.
 UMask=0027
 WatchdogSec=60
 Restart=on-failure
 RuntimeDirectory=lan-sentinel
 RuntimeDirectoryMode=0750
 ReadWritePaths=/data/lan-sentinel
-AmbientCapabilities=CAP_NET_RAW
 CapabilityBoundingSet=CAP_NET_RAW
 NoNewPrivileges=true
 ProtectSystem=strict

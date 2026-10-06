@@ -40,7 +40,7 @@ const DefaultReadBusyTimeout = 5 * time.Second
 
 // ErrReadOnlyBesideWAL is returned when the WAL cannot be read beside a
 // running daemon (docs/CLI.md §1).
-var ErrReadOnlyBesideWAL = errors.New("cannot open database read-only beside the WAL; run as a member of the service group or copy the database")
+var ErrReadOnlyBesideWAL = errors.New("cannot open database read-only beside the WAL; run with sudo or copy the database")
 
 // ReadOptions configures OpenReadOnly.
 type ReadOptions struct {

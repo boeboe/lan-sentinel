@@ -24,7 +24,7 @@ Read these before changing anything. If code and docs disagree, stop and ask.
 | Repository / Go module | `lan-sentinel` |
 | Binary | `lan-sentinel` |
 | systemd unit | `lan-sentinel.service` |
-| Service user/group | `lan-sentinel` |
+| Service user | `root`, bounding set `CAP_NET_RAW` only (no service user or group) |
 | Config | `/etc/lan-sentinel/config.yaml` |
 | Database | `/data/lan-sentinel/hosts.db` |
 | API socket | `/run/lan-sentinel/api.sock` |
@@ -36,14 +36,14 @@ Read these before changing anything. If code and docs disagree, stop and ask.
 
 1. **Static Linux builds only.** `CGO_ENABLED=0`, delivered targets `linux/amd64` and `linux/arm64`. Never add a dependency that needs cgo (no libpcap, no mattn/go-sqlite3). Use `modernc.org/sqlite`, `gopacket/afpacket` and `gopacket/layers` (also to build probe frames), `vishvananda/netlink`. Raw frame I/O for probes goes through a generic frame connection in `internal/platform`; protocol logic stays out of the platform package. Do not add `mdlayher/arp` or `mdlayher/ndp` unless gopacket plus the platform layer cannot do something cleanly.
 2. **Linux only; kernel access behind the platform interfaces.** The code base targets Linux only: no build tags, no stubs or implementations for other OSes. Capture, neighbour and interface monitoring and probe transmission go through `internal/platform` (`Capturer`, `NeighborSource`, `InterfaceMonitor`, `Transmitter`) so the rest can be tested with fakes; sd_notify and journald go through `internal/service`. Run Go only through `make` (the dev container), never on the macOS host.
-3. **No packages.** A release is one tarball per target (`linux/amd64`, `linux/arm64`) with the static binary, `capcheck` and the reference unit/sysusers/tmpfiles/config files from `deploy/`, plus SHA-256 checksums, published by the manual `release` workflow from `main`. No `.deb`, `.rpm` or installers.
+3. **No packages.** A release is one tarball per target (`linux/amd64`, `linux/arm64`) with the static binary, `capcheck` and the reference unit and config files from `deploy/`, plus SHA-256 checksums, published by the manual `release` workflow from `main`. No `.deb`, `.rpm` or installers.
 4. **Collectors only emit observations.** Collectors and probes never touch the database or host state. They send `observation.Observation` values on the bus. Only the correlator goroutine mutates state and writes events.
 5. **Single SQLite writer.** One writer goroutine, WAL mode, batched transactions. CLI `--offline` opens the DB read-only (`mode=ro`).
 6. **Host = MAC per interface.** Within a network context (the interface) a host has exactly one MAC and the MAC is the only identity evidence; hosts are never merged or split. Rows are keyed by an internal UUID `host_id`. The same IP or MAC on two interfaces is two different hosts/bindings. Bindings use `first_seen`/`last_seen`/`ended_at` (NULL = open) as defined in `docs/DATA_MODEL.md` §3.
 7. **OT safety first.** Active discovery is off by default, only scans explicitly configured networks, respects the global packet-rate budget, concurrency cap, excludes and the `/24` prefix guard. Never add SYN scanning, generic UDP port scanning or IPv6 sweeping. TCP probes are plain `connect()` with immediate close and no payload. ARP sweeps the configured networks; ICMP, TCP and UDP probe known hosts only. UDP probes are protocol-specific (NTP, EtherNet/IP ListIdentity) and only add evidence: no response means nothing, never that a host is offline.
 8. **No journal spam.** Observations are never logged. Only state transitions (events) go to journald.
 9. **No high-cardinality metrics.** Never put MAC, IP, hostname or host ID in Prometheus labels.
-10. **Least privilege.** Only `CAP_NET_RAW`. Do not introduce anything needing `CAP_NET_ADMIN` or root. `make test-net` enforces this in Docker.
+10. **Least privilege.** The reference unit runs the daemon as root (decided 6 Oct 2026) with `CapabilityBoundingSet=CAP_NET_RAW`, so it holds that capability alone. The code must keep working as an unprivileged user with only `CAP_NET_RAW`: `make test-net` runs it that way in Docker. Do not introduce anything needing `CAP_NET_ADMIN`, another capability or root's file access.
 11. **Out of scope for v1:** VLAN tagging, web UI, any data leaving the box (fleet aggregation, remote API), identification plugins beyond OUI (phase 6+). Do not build these without an explicit request.
 12. **IPv4-first.** v1 active discovery is IPv4: ARP is the primary LAN discovery mechanism. IPv6 active probing (NDP solicitation) is deferred; do not implement it until it is requested. Passive IPv6/NDP decoding stays.
 

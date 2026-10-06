@@ -19,7 +19,7 @@ Phases 0–4 are done (passive and active discovery, read side, OT safety limits
 
 ## Releases
 
-Each release on the [Releases page](https://github.com/boeboe/lan-sentinel/releases) has one tarball per target, `lan-sentinel-vX.Y.Z-linux-amd64.tar.gz` and `lan-sentinel-vX.Y.Z-linux-arm64.tar.gz`, each with the static binary, `capcheck`, the reference systemd unit, `sysusers.d`, `tmpfiles.d` and default config, and `SHA256SUMS` for the tarballs. A release is cut from `main` with the **release** workflow (Actions → release → Run workflow, choose a patch, minor or major bump; the first release is v0.0.1). Installing and upgrading: [`deploy/README.md`](deploy/README.md).
+Each release on the [Releases page](https://github.com/boeboe/lan-sentinel/releases) has one tarball per target, `lan-sentinel-vX.Y.Z-linux-amd64.tar.gz` and `lan-sentinel-vX.Y.Z-linux-arm64.tar.gz`, each with the static binary, `capcheck`, the reference systemd unit and default config, and `SHA256SUMS` for the tarballs. A release is cut from `main` with the **release** workflow (Actions → release → Run workflow, choose a patch, minor or major bump; the first release is v0.0.1). Installing and upgrading: [`deploy/README.md`](deploy/README.md).
 
 ## Documentation
 
@@ -42,7 +42,7 @@ make test-net    # network integration tests in Docker
 make test-systemd # the daemon under systemd in a container
 ```
 
-Binaries are static (`CGO_ENABLED=0`) and need no runtime dependencies; minimum kernel 5.10. The code base is Linux only. Every make target that runs Go runs in a Linux dev container (`build/dev.Dockerfile`), so the only requirements on a development machine (Linux or macOS) are Docker, make and git. On macOS, point your editor's gopls at Linux (`GOOS=linux`). Reference systemd unit, `sysusers.d`, `tmpfiles.d` and default config are in `deploy/`.
+Binaries are static (`CGO_ENABLED=0`) and need no runtime dependencies; minimum kernel 5.10. The code base is Linux only. Every make target that runs Go runs in a Linux dev container (`build/dev.Dockerfile`), so the only requirements on a development machine (Linux or macOS) are Docker, make and git. On macOS, point your editor's gopls at Linux (`GOOS=linux`). The reference systemd unit and default config are in `deploy/`.
 
 ## Runtime layout
 
@@ -52,4 +52,4 @@ Binaries are static (`CGO_ENABLED=0`) and need no runtime dependencies; minimum 
 | Config | `/etc/lan-sentinel/config.yaml` |
 | Database | `/data/lan-sentinel/hosts.db` |
 | API socket | `/run/lan-sentinel/api.sock` |
-| Service | `lan-sentinel.service`, user `lan-sentinel`, `CAP_NET_RAW` only |
+| Service | `lan-sentinel.service`, root with `CAP_NET_RAW` only; CLI commands need `sudo` |

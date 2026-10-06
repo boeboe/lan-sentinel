@@ -45,7 +45,7 @@ func privilegeSummary() string {
 		}
 		var caps []string
 		if os.Geteuid() == 0 {
-			caps = append(caps, "euid 0 (root!)")
+			caps = append(caps, "euid 0 (root)")
 		}
 		for bit, name := range map[uint]string{unix.CAP_NET_RAW: "CAP_NET_RAW", unix.CAP_NET_ADMIN: "CAP_NET_ADMIN", unix.CAP_SYS_ADMIN: "CAP_SYS_ADMIN"} {
 			if v&(1<<bit) != 0 {

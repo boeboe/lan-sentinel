@@ -4,7 +4,7 @@ Reference files for running LAN Sentinel under systemd (docs/ARCHITECTURE.md §8
 
 | Asset | Contents |
 | --- | --- |
-| `lan-sentinel-vX.Y.Z-linux-amd64.tar.gz`, `lan-sentinel-vX.Y.Z-linux-arm64.tar.gz` | a directory of the same name with `lan-sentinel` (the static binary), `capcheck` (the privilege check for the board audit), `lan-sentinel.service`, `lan-sentinel.sysusers`, `lan-sentinel.tmpfiles`, `config.yaml` (the reference files in this directory), this `README.md`, and `SHA256SUMS` for the two binaries |
+| `lan-sentinel-vX.Y.Z-linux-amd64.tar.gz`, `lan-sentinel-vX.Y.Z-linux-arm64.tar.gz` | a directory of the same name with `lan-sentinel` (the static binary), `capcheck` (the privilege check for the board audit), `lan-sentinel.service` and `config.yaml` (the reference files in this directory), this `README.md`, and `SHA256SUMS` for the two binaries |
 | `SHA256SUMS` | the checksums of the two tarballs |
 
 Releases are reproducible: `make package VERSION=vX.Y.Z` on the tagged commit gives the same checksums. `config.dev.yaml` is for local development (`make run-dev`).
@@ -13,32 +13,42 @@ Targets: Debian 11 (systemd 247), 12 (252) and 13 (257), kernel 5.10 or newer; `
 
 ## Install
 
-Download the tarball for the board (`linux-arm64` for a RevPi, `linux-amd64` for an x86 edge box) and `SHA256SUMS`, then:
+### 1. Verify and unpack
+
+Download the tarball for the board (`linux-arm64` for a RevPi or Raspberry Pi, `linux-amd64` for an x86 edge box) and `SHA256SUMS`, then:
 
 ```bash
 sha256sum --check --ignore-missing SHA256SUMS
 tar -xzf lan-sentinel-vX.Y.Z-linux-arm64.tar.gz && cd lan-sentinel-vX.Y.Z-linux-arm64
-sha256sum --check SHA256SUMS
-sudo install -m 0755 lan-sentinel /usr/local/bin/lan-sentinel
-sudo install -m 0644 lan-sentinel.sysusers /etc/sysusers.d/lan-sentinel.conf
-sudo install -m 0644 lan-sentinel.tmpfiles /etc/tmpfiles.d/lan-sentinel.conf
-sudo systemd-sysusers && sudo systemd-tmpfiles --create
-sudo install -m 0640 -g lan-sentinel config.yaml /etc/lan-sentinel/config.yaml
-lan-sentinel config validate --config /etc/lan-sentinel/config.yaml
-sudo install -m 0644 lan-sentinel.service /etc/systemd/system/lan-sentinel.service
-sudo systemctl daemon-reload && sudo systemctl enable --now lan-sentinel
 ```
+
+### 2. Install
+
+From the unpacked directory, as a user with `sudo`. The daemon runs as root, limited by the unit to `CAP_NET_RAW` and a read-only view of the system; it needs no user, group or extra directories beyond these. `make test-systemd` runs exactly this block on Debian 11, 12 and 13.
+
+```bash
+sha256sum --check SHA256SUMS
+sudo install -D -m 0755 lan-sentinel /usr/local/bin/lan-sentinel
+sudo install -D -m 0640 config.yaml /etc/lan-sentinel/config.yaml
+sudo install -d -m 0750 /data/lan-sentinel
+sudo lan-sentinel config validate --config /etc/lan-sentinel/config.yaml
+sudo install -D -m 0644 lan-sentinel.service /etc/systemd/system/lan-sentinel.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now lan-sentinel
+```
+
+Edit `/etc/lan-sentinel/config.yaml` for the site (interfaces, and active discovery only after review, see below), then `sudo systemctl reload lan-sentinel`. The API socket and the database are root's (mode 0660 and 0640): run `lan-sentinel` commands with `sudo`.
 
 Then check:
 
 | Check | Command | Expect |
 | --- | --- | --- |
-| Healthy | `lan-sentinel daemon status` | `State: ok` (exit 0); every collector of a configured interface `running` |
+| Healthy | `sudo lan-sentinel daemon status` | `State: ok` (exit 0); every collector of a configured interface `running` |
 | Clock | same | `Clock: synced` once chrony has synchronised; events written before that are marked `unsynced` (`clock_sync` in `events list -o json`) |
-| Hosts appear | `lan-sentinel hosts list` | the devices of the site within a few minutes |
-| Privileges | `grep Cap /proc/$(systemctl show -p MainPID --value lan-sentinel)/status` | `CapEff` and `CapBnd` `0000000000002000` (`CAP_NET_RAW` only) |
-| Sandbox | `systemd-analyze security lan-sentinel` | exposure ≤ 2.5 (2.0 in the container tests) |
-| Board audit (once per board type) | `capcheck` under the unit's identity and sandbox, as in `tools/capcheck/README.md` | every row `PASS` or `SKIP`, including the `adjtimex` read; record it in `docs/ARCHITECTURE.md` §8 |
+| Hosts appear | `sudo lan-sentinel hosts list` | the devices of the site within a few minutes |
+| Privileges | `grep Cap /proc/$(systemctl show -p MainPID --value lan-sentinel)/status` | `CapEff` and `CapBnd` `0000000000002000`: root, but with `CAP_NET_RAW` only |
+| Sandbox | `systemd-analyze security lan-sentinel` | exposure ≤ 2.5 (2.3 in the container tests) |
+| Board audit (once per board type) | `capcheck` under the unit's sandbox, as in `tools/capcheck/README.md` | every row `PASS` or `SKIP`, including the `adjtimex` read; record it in `docs/ARCHITECTURE.md` §8 |
 
 ## Upgrade and rollback
 
@@ -48,7 +58,7 @@ Migrations run at start-up and only forward; an older binary refuses a newer dat
 sudo systemctl stop lan-sentinel        # a clean stop removes the WAL
 sudo cp -a /data/lan-sentinel/hosts.db /data/lan-sentinel/hosts.db.pre-$(lan-sentinel version --quiet)
 sudo install -m 0755 lan-sentinel /usr/local/bin/lan-sentinel
-sudo systemctl start lan-sentinel && lan-sentinel daemon status
+sudo systemctl start lan-sentinel && sudo lan-sentinel daemon status
 ```
 
 Compare the release's `lan-sentinel.service` with `/etc/systemd/system/lan-sentinel.service`; if the unit changed, install it and run `sudo systemctl daemon-reload` before the start.
@@ -91,9 +101,9 @@ Runs are serialised, so two releases never pick the same version. If a run fails
 
 | Task | Command |
 | --- | --- |
-| Status | `systemctl status lan-sentinel`, `lan-sentinel daemon status` |
+| Status | `systemctl status lan-sentinel`, `sudo lan-sentinel daemon status` |
 | Reload configuration | `sudo systemctl reload lan-sentinel` |
 | Events in the journal | `journalctl -u lan-sentinel EVENT=ip_changed` |
 | Security exposure | `systemd-analyze security lan-sentinel` (target ≤ 2.5) |
 
-To use `lan-sentinel --offline`, add your account to group `lan-sentinel`.
+`lan-sentinel` commands, online or `--offline`, need `sudo`: the socket and the database belong to root.
