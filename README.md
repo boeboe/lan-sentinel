@@ -15,7 +15,11 @@ lan-sentinel watch --interface eth1
 
 ## Status
 
-Design complete, implementation starting. See `docs/IMPLEMENTATION_PLAN.md`.
+Phases 0–4 are done (passive and active discovery, read side, OT safety limits); phase 5 (releases, hardening, pilot rollout) is in progress. See `docs/IMPLEMENTATION_PLAN.md`.
+
+## Releases
+
+Each release on the [Releases page](https://github.com/boeboe/lan-sentinel/releases) has one tarball per target, `lan-sentinel-vX.Y.Z-linux-amd64.tar.gz` and `lan-sentinel-vX.Y.Z-linux-arm64.tar.gz`, each with the static binary, `capcheck`, the reference systemd unit, `sysusers.d`, `tmpfiles.d` and default config, and `SHA256SUMS` for the tarballs. A release is cut from `main` with the **release** workflow (Actions → release → Run workflow, choose a patch, minor or major bump; the first release is v0.0.1). Installing and upgrading: [`deploy/README.md`](deploy/README.md).
 
 ## Documentation
 
@@ -23,7 +27,9 @@ Design complete, implementation starting. See `docs/IMPLEMENTATION_PLAN.md`.
 - [Architecture](docs/ARCHITECTURE.md)
 - [Data model](docs/DATA_MODEL.md)
 - [CLI](docs/CLI.md)
+- [Local API and metrics](docs/API.md)
 - [Implementation plan](docs/IMPLEMENTATION_PLAN.md)
+- [Deployment and releases](deploy/README.md)
 
 ## Build and test
 
@@ -31,6 +37,7 @@ Design complete, implementation starting. See `docs/IMPLEMENTATION_PLAN.md`.
 make             # list all targets
 make check       # format, tidy, vet, lint, vuln, tests with coverage
 make release     # dist/lan-sentinel-linux-{amd64,arm64}, SHA256SUMS
+make package     # dist/release/lan-sentinel-<version>-linux-{amd64,arm64}.tar.gz, SHA256SUMS
 make test-net    # network integration tests in Docker
 make test-systemd # the daemon under systemd in a container
 ```

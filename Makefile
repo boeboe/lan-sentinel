@@ -9,6 +9,7 @@ VERSION  ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev
 COMMIT   ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
 # The commit's time, not the build's: the same commit builds the same bytes.
 DATE     ?= $(shell TZ=UTC git log -1 --date=format-local:%Y-%m-%dT%H:%M:%SZ --format=%cd 2>/dev/null || echo unknown)
+SOURCE_DATE_EPOCH ?= $(shell git log -1 --format=%ct 2>/dev/null || echo 0)
 LDFLAGS  := -s -w \
 	-X $(PKG)/internal/buildinfo.Version=$(VERSION) \
 	-X $(PKG)/internal/buildinfo.Commit=$(COMMIT) \
@@ -27,10 +28,10 @@ DEV_IMAGE := lan-sentinel-dev:$(shell git hash-object build/dev.Dockerfile 2>/de
 CACHE_VOL := lan-sentinel-cache
 USER_ID   := $(shell id -u):$(shell id -g)
 RUN       := docker run --rm -v "$(CURDIR)":/src -w /src -v $(CACHE_VOL):/cache --user $(USER_ID) \
-	-e LDFLAGS="$(LDFLAGS)" -e FUZZTIME=$(FUZZTIME) $(DEV_IMAGE)
+	-e LDFLAGS="$(LDFLAGS)" -e FUZZTIME=$(FUZZTIME) -e VERSION=$(VERSION) -e SOURCE_DATE_EPOCH=$(SOURCE_DATE_EPOCH) $(DEV_IMAGE)
 
 .DEFAULT_GOAL := help
-.PHONY: help all dev-image shell build release tools oui fixtures fmt fmt-check tidy tidy-check mod-verify vet lint vuln \
+.PHONY: help all dev-image shell build release tools package oui fixtures fmt fmt-check tidy tidy-check mod-verify vet lint vuln \
 	test coverage cover fuzz test-net test-systemd check check-all run-dev clean clean-cache
 
 help: ## This help
@@ -61,6 +62,9 @@ release: dev-image ## Static linux/amd64 and linux/arm64 binaries into dist/ wit
 
 tools: dev-image ## capcheck for linux/amd64 and linux/arm64 into dist/tools/ (privilege check)
 	@$(RUN) build/release.sh tools
+
+package: release tools ## Release tarballs per target into dist/release/ with SHA256SUMS (VERSION=vX.Y.Z)
+	@$(RUN) build/release.sh package
 
 oui: dev-image ## Regenerate data/oui/oui.tsv.gz from the IEEE registries (each release)
 	@$(RUN) go run ./data/oui/gen -out data/oui/oui.tsv.gz

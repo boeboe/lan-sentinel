@@ -1,19 +1,57 @@
 name: release
-# A pushed v* tag publishes a GitHub Release: the static linux/amd64 and
-# linux/arm64 binaries with SHA256SUMS, and capcheck for the board audit
-# with its own checksums (NFR-PORT-1; no packages). It runs the same make
-# targets as CI and a developer machine, and refuses to publish unless every
-# gate passes, the build is stamped with the tag, and a second build gives
-# the same checksums.
+# Releases a new version from main: Actions → release → Run workflow, pick
+# the bump. The next version follows the highest vMAJOR.MINOR.PATCH tag
+# (build/next-version.sh); the first release is v0.0.1. The workflow runs
+# the same gates as CI on the commit, builds one tarball per target twice
+# (the checksums must match), then creates the annotated tag on that commit
+# and publishes the GitHub Release with the tarballs and SHA256SUMS
+# (NFR-PORT-1; no packages). See deploy/README.md.
 on:
-  push:
-    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Version bump from the latest release (the first release is v0.0.1)
+        type: choice
+        options: [patch, minor, major]
+        default: patch
 
 permissions:
   contents: read
 
+# One release at a time: two runs must not pick the same version.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.next.outputs.version }}
+    steps:
+      - name: Only from main
+        if: github.ref != 'refs/heads/main'
+        run: |
+          echo "::error::Releases are made from main only; this run is on $GITHUB_REF."
+          exit 1
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Next version
+        id: next
+        env:
+          BUMP: ${{ inputs.bump }}
+        run: |
+          v=$(build/next-version.sh "$BUMP")
+          if git rev-parse -q --verify "refs/tags/$v" >/dev/null; then
+            echo "::error::Tag $v exists already."
+            exit 1
+          fi
+          echo "version=$v" >>"$GITHUB_OUTPUT"
+          echo "Releasing $v ($BUMP) from $GITHUB_SHA" >>"$GITHUB_STEP_SUMMARY"
+
   check:
+    needs: version
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -21,12 +59,14 @@ jobs:
         run: make mod-verify check
 
   fuzz:
+    needs: version
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - run: make fuzz FUZZTIME=30s
 
   docker:
+    needs: version
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -36,31 +76,39 @@ jobs:
         run: make test-systemd
 
   publish:
-    needs: [check, fuzz, docker]
+    needs: [version, check, fuzz, docker]
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - name: The build is stamped with the tag
+      - name: Tarballs for linux/amd64 and linux/arm64, built twice (reproducible)
         run: |
-          v=$(git describe --tags --always --dirty)
-          [ "$v" = "$GITHUB_REF_NAME" ] || { echo "git describe says $v, the tag is $GITHUB_REF_NAME" >&2; exit 1; }
-      - name: Static binaries and capcheck, built twice (reproducible)
+          make package VERSION="$VERSION"
+          cp dist/release/SHA256SUMS first.sums
+          make package VERSION="$VERSION"
+          diff first.sums dist/release/SHA256SUMS
+          cat dist/release/SHA256SUMS
+      - name: The binaries report the version
         run: |
-          make release tools
-          cp dist/SHA256SUMS first.sums && cp dist/tools/SHA256SUMS first-tools.sums
-          make release tools
-          diff first.sums dist/SHA256SUMS && diff first-tools.sums dist/tools/SHA256SUMS
+          tar -xzf "dist/release/lan-sentinel-$VERSION-linux-amd64.tar.gz" -C "$RUNNER_TEMP"
+          got=$("$RUNNER_TEMP/lan-sentinel-$VERSION-linux-amd64/lan-sentinel" version --quiet)
+          [ "$got" = "$VERSION" ] || { echo "::error::the binary reports $got, not $VERSION"; exit 1; }
+      - name: Tag the tested commit
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$VERSION" -m "LAN Sentinel $VERSION" "$GITHUB_SHA"
+          git push origin "refs/tags/$VERSION"
       - name: GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          cp dist/tools/SHA256SUMS dist/capcheck-SHA256SUMS
-          flags=()
-          case "$GITHUB_REF_NAME" in *-*) flags+=(--prerelease) ;; esac
-          gh release create "$GITHUB_REF_NAME" --verify-tag --title "LAN Sentinel $GITHUB_REF_NAME" --generate-notes "${flags[@]}" \
-            dist/lan-sentinel-linux-amd64 dist/lan-sentinel-linux-arm64 dist/SHA256SUMS \
-            dist/tools/capcheck-linux-amd64 dist/tools/capcheck-linux-arm64 dist/capcheck-SHA256SUMS
+          gh release create "$VERSION" --verify-tag --title "LAN Sentinel $VERSION" --generate-notes \
+            "dist/release/lan-sentinel-$VERSION-linux-amd64.tar.gz" \
+            "dist/release/lan-sentinel-$VERSION-linux-arm64.tar.gz" \
+            dist/release/SHA256SUMS

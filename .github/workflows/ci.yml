@@ -42,8 +42,8 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - name: Static linux/amd64 and linux/arm64 binaries and capcheck
-        run: make release tools
+      - name: Static linux/amd64 and linux/arm64 binaries, capcheck and the release tarballs
+        run: make package
       - uses: actions/upload-artifact@v7
         with:
           name: dist

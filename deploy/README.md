@@ -1,14 +1,25 @@
 # Deployment
 
-Reference files for running LAN Sentinel under systemd (docs/ARCHITECTURE.md §8). There are no packages: a release is the static binary for `linux/amd64` or `linux/arm64`, `SHA256SUMS`, and `capcheck` for the board audit with `capcheck-SHA256SUMS`, attached to the GitHub Release of each `v*` tag. The binaries are reproducible: `make release` on the tagged commit gives the same checksums. `config.dev.yaml` is for local development (`make run-dev`).
+Reference files for running LAN Sentinel under systemd (docs/ARCHITECTURE.md §8). There are no packages. Each release on the [Releases page](https://github.com/boeboe/lan-sentinel/releases) has one tarball per target and `SHA256SUMS` for both:
+
+| Asset | Contents |
+| --- | --- |
+| `lan-sentinel-vX.Y.Z-linux-amd64.tar.gz`, `lan-sentinel-vX.Y.Z-linux-arm64.tar.gz` | a directory of the same name with `lan-sentinel` (the static binary), `capcheck` (the privilege check for the board audit), `lan-sentinel.service`, `lan-sentinel.sysusers`, `lan-sentinel.tmpfiles`, `config.yaml` (the reference files in this directory), this `README.md`, and `SHA256SUMS` for the two binaries |
+| `SHA256SUMS` | the checksums of the two tarballs |
+
+Releases are reproducible: `make package VERSION=vX.Y.Z` on the tagged commit gives the same checksums. `config.dev.yaml` is for local development (`make run-dev`).
 
 Targets: Debian 11 (systemd 247), 12 (252) and 13 (257), kernel 5.10 or newer; `make test-systemd` runs this unit on each. On Debian 11 the unit runs without `PrivateIPC=` (not in systemd 247; the journal shows a warning). Debian 11's regular security support ended in August 2026.
 
 ## Install
 
+Download the tarball for the board (`linux-arm64` for a RevPi, `linux-amd64` for an x86 edge box) and `SHA256SUMS`, then:
+
 ```bash
 sha256sum --check --ignore-missing SHA256SUMS
-sudo install -m 0755 lan-sentinel-linux-arm64 /usr/local/bin/lan-sentinel   # or -amd64
+tar -xzf lan-sentinel-vX.Y.Z-linux-arm64.tar.gz && cd lan-sentinel-vX.Y.Z-linux-arm64
+sha256sum --check SHA256SUMS
+sudo install -m 0755 lan-sentinel /usr/local/bin/lan-sentinel
 sudo install -m 0644 lan-sentinel.sysusers /etc/sysusers.d/lan-sentinel.conf
 sudo install -m 0644 lan-sentinel.tmpfiles /etc/tmpfiles.d/lan-sentinel.conf
 sudo systemd-sysusers && sudo systemd-tmpfiles --create
@@ -31,16 +42,28 @@ Then check:
 
 ## Upgrade and rollback
 
-Migrations run at start-up and only forward; an older binary refuses a newer database (`database schema version N is newer than this binary supports`). Keep a copy for rollback:
+Migrations run at start-up and only forward; an older binary refuses a newer database (`database schema version N is newer than this binary supports`). Keep a copy for rollback. From the extracted directory of the new release:
 
 ```bash
 sudo systemctl stop lan-sentinel        # a clean stop removes the WAL
 sudo cp -a /data/lan-sentinel/hosts.db /data/lan-sentinel/hosts.db.pre-$(lan-sentinel version --quiet)
-sudo install -m 0755 lan-sentinel-linux-arm64 /usr/local/bin/lan-sentinel
+sudo install -m 0755 lan-sentinel /usr/local/bin/lan-sentinel
 sudo systemctl start lan-sentinel && lan-sentinel daemon status
 ```
 
+Compare the release's `lan-sentinel.service` with `/etc/systemd/system/lan-sentinel.service`; if the unit changed, install it and run `sudo systemctl daemon-reload` before the start.
+
 To roll back, stop the service, put the previous binary and the copied database back, and start it. `lan-sentinel --offline` refuses a database whose schema differs from the binary's until the daemon has migrated it.
+
+## Cutting a release
+
+Releases are made from `main` only, by the **release** workflow (`.github/workflows/release.yml`):
+
+1. GitHub → Actions → **release** → **Run workflow**, on branch `main`.
+2. Choose the bump: `patch` (v0.0.1 → v0.0.2), `minor` (→ v0.1.0) or `major` (→ v1.0.0). The next version follows the highest `vX.Y.Z` tag (`build/next-version.sh`; pre-release tags are ignored); the first release is v0.0.1 whatever the bump.
+3. The workflow refuses any branch but `main` and a version whose tag exists already, runs the same gates as CI on the commit (`make mod-verify check`, `make fuzz`, `make test-net`, `make test-systemd`), builds the tarballs twice and compares their checksums, checks that the binary reports the version, creates the annotated tag `vX.Y.Z` on the tested commit and publishes the GitHub Release with the two tarballs and `SHA256SUMS`, with notes generated from the commits.
+
+Runs are serialised, so two releases never pick the same version. If a run fails after the tag was pushed (the release step), delete the tag before running it again, or the next run picks the following version.
 
 ## Staged rollout (each release, docs/IMPLEMENTATION_PLAN.md)
 

@@ -36,7 +36,7 @@ Read these before changing anything. If code and docs disagree, stop and ask.
 
 1. **Static Linux builds only.** `CGO_ENABLED=0`, delivered targets `linux/amd64` and `linux/arm64`. Never add a dependency that needs cgo (no libpcap, no mattn/go-sqlite3). Use `modernc.org/sqlite`, `gopacket/afpacket` and `gopacket/layers` (also to build probe frames), `vishvananda/netlink`. Raw frame I/O for probes goes through a generic frame connection in `internal/platform`; protocol logic stays out of the platform package. Do not add `mdlayher/arp` or `mdlayher/ndp` unless gopacket plus the platform layer cannot do something cleanly.
 2. **Linux only; kernel access behind the platform interfaces.** The code base targets Linux only: no build tags, no stubs or implementations for other OSes. Capture, neighbour and interface monitoring and probe transmission go through `internal/platform` (`Capturer`, `NeighborSource`, `InterfaceMonitor`, `Transmitter`) so the rest can be tested with fakes; sd_notify and journald go through `internal/service`. Run Go only through `make` (the dev container), never on the macOS host.
-3. **No packages.** Release artifacts are the two binaries plus SHA-256 checksums. No `.deb`, `.rpm` or installers. Reference unit/sysusers/tmpfiles/config files live in `deploy/`.
+3. **No packages.** A release is one tarball per target (`linux/amd64`, `linux/arm64`) with the static binary, `capcheck` and the reference unit/sysusers/tmpfiles/config files from `deploy/`, plus SHA-256 checksums, published by the manual `release` workflow from `main`. No `.deb`, `.rpm` or installers.
 4. **Collectors only emit observations.** Collectors and probes never touch the database or host state. They send `observation.Observation` values on the bus. Only the correlator goroutine mutates state and writes events.
 5. **Single SQLite writer.** One writer goroutine, WAL mode, batched transactions. CLI `--offline` opens the DB read-only (`mode=ro`).
 6. **Host = MAC per interface.** Within a network context (the interface) a host has exactly one MAC and the MAC is the only identity evidence; hosts are never merged or split. Rows are keyed by an internal UUID `host_id`. The same IP or MAC on two interfaces is two different hosts/bindings. Bindings use `first_seen`/`last_seen`/`ended_at` (NULL = open) as defined in `docs/DATA_MODEL.md` §3.
@@ -68,6 +68,7 @@ make check        # fast gate: fmt-check, tidy-check, vet, lint, vuln, tests wit
 make check-all    # check + test-net + test-systemd
 make build        # bin/lan-sentinel for the Docker host's architecture
 make release      # static linux/amd64 + linux/arm64 into dist/ with checksums
+make package      # release tarballs per target into dist/release/ (VERSION=vX.Y.Z)
 make test         # unit and golden tests with -race
 make coverage     # tests with coverage of internal/ (coverage.out), fails below 90%; make cover opens the report
 make fuzz         # every Fuzz* target, FUZZTIME each (default 30s)
