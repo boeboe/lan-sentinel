@@ -1,11 +1,11 @@
 package platform
 
-// New returns the backends: rtnetlink neighbour and interface monitoring;
-// AF_PACKET capture (phase 2) and probe transmission (phase 4) report
-// ErrNotImplemented until they land.
+// New returns the backends: AF_PACKET capture and rtnetlink neighbour and
+// interface monitoring; probe transmission (phase 4) reports
+// ErrNotImplemented until it lands.
 func New() Backends {
 	return Backends{
-		Capturer:    pendingCapturer{pending{backend: "afpacket", phase: 2}},
+		Capturer:    afpacketCapturer{},
 		Neighbors:   &netlinkNeighbors{},
 		Interfaces:  netlinkInterfaces{},
 		Transmitter: pendingTransmitter{pending{backend: "afpacket", phase: 4}},

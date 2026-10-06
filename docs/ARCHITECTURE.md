@@ -83,12 +83,14 @@ Enumerates links and addresses through netlink, derives one network context per 
 A bounded Go channel carrying `Observation` values (see `DATA_MODEL.md` §2), interface states and barriers. When full, new observations from live collectors are dropped and `lan_sentinel_bus_dropped_total` increments; collectors never block on the correlator. Interface states and replayed observations are never dropped (they wait). A barrier returns once everything before it has been processed; shutdown and replay use it to drain the bus.
 
 ### Passive capture (`internal/collect/capture`)
-One `AF_PACKET` TPACKET_V3 ring per interface with a classic-BPF filter restricted to ARP, NDP/ICMPv6, DHCP (67/68), mDNS (5353), DNS (53) responses, LLDP (EtherType 0x88cc), and IPv4/IPv6 headers for source-address learning. Promiscuous mode is set with `PACKET_ADD_MEMBERSHIP` when enabled. Decoders are pure functions from frame to zero or more observations, shared with replay.
+One receive-only `AF_PACKET` TPACKET_V3 ring per interface (`passive.ring_size`, default 2 MiB, in 128 KiB blocks handed over at least every 100 ms) with a classic-BPF filter built from `passive.protocols`: ARP, LLDP (EtherType 0x88cc), NDP (ICMPv6 133–137), DHCP (67/68), mDNS (from 5353) and DNS responses (from 53) are captured whole; other IPv4 and IPv6 frames are truncated to their first 96 bytes for source-address learning; everything else is dropped in the kernel. `ipv6: false` drops every IPv6 frame, NDP and mDNS or DNS over IPv6 included. Frames of a VLAN are dropped too (VLANs are out of scope in v1): the kernel strips 802.1Q tags before the filter runs, so the filter checks the tag through the BPF VLAN extensions and keeps only untagged and priority-tagged (VLAN ID 0, common with PROFINET devices) frames. The host's own frames are never evidence: the filter drops what the kernel marks `PACKET_OUTGOING`, and the capture source skips frames from the interface's own MAC, which a bridge port in hairpin mode reflects back, as well as frames that reached the ring before the filter was attached. Promiscuous mode is set with `PACKET_ADD_MEMBERSHIP` when enabled and dropped with the socket. An administratively down interface is not opened; when the interface goes down or disappears the ring is closed. Either way capture retries with back-off (1 s doubling to 30 s, starting over only once frames arrive), shows as failed meanwhile, and logs each distinct failure once. Kernel receive and drop counters are kept per interface across reopens (`lan_sentinel_capture_drops_total`).
+
+Decoders (`capture/decoders`) are pure functions from an Ethernet frame to zero or more observations, shared with pcap replay, each with a fuzz target. The MAC evidence is the ARP sender hardware address, the NDP link-layer address option, the DHCP `chaddr`, the LLDP chassis MAC (when the chassis ID is a MAC) or else the frame's source MAC. DNS PTR answers carry no MAC: they name the holder of an address (`DATA_MODEL.md` §5.1). LLDP management addresses, mDNS services and TXT data, DHCP client identifier, parameter request list and vendor class go into `meta` (`DATA_MODEL.md` §2). One mDNS hostname is kept per packet (the one for the packet's source address), so aliases do not flip the host's name. Identical observations (same source, MAC, IP, name and metadata) are emitted at most once per 2 minutes per interface, which keeps presence fresh (ACTIVE is 5 min) while bounding the volume written to `observations`.
 
 On a switched port, capture sees traffic to/from the box, broadcast, multicast, ARP, mDNS, IPv6 multicast and some switch control traffic, but not unicast between other devices unless the port is mirrored. That is expected and sufficient for discovery.
 
 ### Replay collector (`internal/collect/replay`)
-Reads JSONL files of `Observation` values (pcap/pcapng through the capture decoders arrives in phase 2), merges every replay interface's file into one time-ordered stream, and emits them with their recorded source and timestamp. Paths are relative to the working directory. Replay and live interfaces cannot be mixed: a replay runs the whole daemon on recorded time. In `speed: 0` mode it advances a simulated clock (`internal/clock`) to each observation's timestamp before emitting it and blocks until the correlator has consumed it, so presence and expiry timers fire exactly as they would have at the site; `speed: N` replays in real time × N. When every replay source is exhausted the daemon keeps serving the API (or exits with `replay.exit_when_done: true`, used by tests).
+Reads JSONL files of `Observation` values, or pcap/pcapng captures (Ethernet link type; `.pcap.gz` and `.pcapng.gz` are read compressed) decoded by the capture decoders with the same refresh suppression as live capture, skipping packets a pcapng file records as outbound (a classic pcap records no direction, so a capture taken on the box includes its own frames), merges every replay interface's file into one time-ordered stream, and emits them with their recorded source and timestamp. Paths are relative to the working directory. Replay and live interfaces cannot be mixed: a replay runs the whole daemon on recorded time. In `speed: 0` mode it advances a simulated clock (`internal/clock`) to each observation's timestamp before emitting it and blocks until the correlator has consumed it, so presence and expiry timers fire exactly as they would have at the site; `speed: N` replays in real time × N. When every replay source is exhausted the daemon keeps serving the API (or exits with `replay.exit_when_done: true`, used by tests).
 
 ### Clock (`internal/clock`)
 All components that read time (correlator, presence ticker, expiry, scheduler, compaction) take a `clock.Clock`. Production uses the wall clock; replay and tests use a simulated clock.
@@ -118,7 +120,7 @@ Single goroutine. Loads the current state (contexts, hosts, open bindings, servi
 Builds events from state transitions, attaches the evidence snapshot (`DATA_MODEL.md` §7), writes them to the store and to journald.
 
 ### Store (`internal/store`)
-Owns the single SQLite writer goroutine, migrations, repositories, batched commits (target 5 s), retention, roll-up and compaction (hourly, small batches). Exposes read-only query functions used by the API and by `--offline`; the offline open procedure is specified in `CLI.md` §1. On clean shutdown the writer runs `PRAGMA wal_checkpoint(TRUNCATE)` and closes, so the WAL is removed.
+Owns the single SQLite writer goroutine, migrations, repositories, batched commits (target 5 s), retention, roll-up and compaction (`DATA_MODEL.md` §9). Compaction runs at start-up and hourly (not in replay mode, so a replay's database depends only on the recorded data); each step touches at most 2,000 rows and is one committed op in the writer's queue, so it never holds the writer for long. The size cap compares the data size (pages minus free pages) with `max_db_size`; new databases use `auto_vacuum=INCREMENTAL`, so compaction returns freed pages to the file system. At start-up the store runs `PRAGMA quick_check`; a database that fails it, or is not a database at all, is renamed with its `-wal` and `-shm` files to `<path>.corrupt-<UTC time>` and a new one is created, which the daemon logs as an error and the correlator records as `DATABASE_RECREATED` (FR-ST-4). Exposes read-only query functions used by the API and by `--offline`; the offline open procedure is specified in `CLI.md` §1. On clean shutdown the writer runs `PRAGMA wal_checkpoint(TRUNCATE)` and closes, so the WAL is removed.
 
 ### Identification (`internal/identify`)
 OUI lookup (longest prefix: MA-S, MA-M, MA-L) from an embedded table (`data/oui/oui.tsv.gz`, about 54,000 assignments, 0.5 MB) that `make oui` regenerates from the IEEE registries each release, plus an optional override file (`identity.oui_override`: lines `PREFIX[/bits] Name`, e.g. `00:1B:1B Siemens` or `02-42-AC-1F/24 Lab`). The locally-administered bit is recorded per host. Plugin interface (`Identify(evidence) []Identification`) reserved for phase 6+.
@@ -142,7 +144,7 @@ lan-sentinel/
 │   ├── observation/             Observation type, Source enum, bounded bus with drop counters
 │   ├── clock/                   wall clock and simulated clock
 │   ├── collect/
-│   │   ├── capture/             capture loop over platform.Capturer; decoders/: arp, ipv4, ipv6, ndp, dhcp, mdns, dns, lldp
+│   │   ├── capture/             capture loop over platform.Capturer, BPF filter; decoders/: arp, ip, ndp, dhcp, dns (mDNS, DNS), lldp
 │   │   ├── neighbor/            snapshot + watch + resync over platform.NeighborSource
 │   │   └── replay/              pcap/pcapng and JSONL replay
 │   ├── probe/
@@ -165,8 +167,9 @@ lan-sentinel/
 ├── deploy/                      systemd unit, sysusers.d, tmpfiles.d, default config, config.dev.yaml (replay)
 ├── test/
 │   ├── golden/                  golden observation streams + expected bindings, events, queries
-│   ├── net/                     Docker network tests: run.sh + Go tests (build tag nettest)
-│   └── fixtures/                pcap fixtures from real sites
+│   ├── net/                     Docker network tests: run.sh + Go tests (build tag nettest); inject/ frame injector
+│   ├── frames/                  frame builders (gopacket) for tests, fixtures and the injector
+│   └── fixtures/                pcap fixtures (synthetic, `make fixtures`; real site captures later)
 ├── tools/capcheck/              privilege and feasibility check (Linux; not released)
 ├── docs/
 ├── Makefile
@@ -219,6 +222,7 @@ interfaces:
       exclude:  [192.168.110.1]
 passive:
   protocols: { arp: true, ipv4: true, ipv6: false, dhcp: true, mdns: true, dns: true, lldp: true }
+  ring_size: 2MiB                   # AF_PACKET ring per captured interface (256KiB-256MiB)
 neighbor:
   resync_interval: 10m              # full neighbour-table dump in addition to notifications
 active:
@@ -251,7 +255,7 @@ identity:
   hostname_preference: [mdns, dhcp, dns_ptr, lldp]
   address_overlap: 5m         # older open IPv4 binding is replaced, not kept alongside
   address_expiry: 24h         # unconfirmed binding closed while host is otherwise seen
-  name_expiry: 168h
+  name_expiry: 168h           # names not confirmed this long show as stale; they are never closed by time
   proxy_arp_threshold: 16
   oui_override: ""            # optional path
 storage:
@@ -278,7 +282,7 @@ interfaces:
   - name: eth1
     prefixes: [192.168.110.0/24]            # replaces the interface manager
     replay:
-      file: test/fixtures/site-a-eth1.pcapng  # .pcap, .pcapng or .jsonl
+      file: test/fixtures/site-a-eth1.pcapng  # .pcap, .pcapng (optionally .gz) or .jsonl
       speed: 0                               # 0 = simulated clock, as fast as possible; N = real time x N
 replay: { exit_when_done: false }
 storage: { path: ./dev/hosts.db }
@@ -290,7 +294,7 @@ logging: { level: debug, format: text }
 
 ## 7. Logging
 
-Each event is one journald entry with structured fields (`EVENT=ip_changed`, `IFACE`, `HOST_ID`, `MAC`, `IP` from the evidence, `OLD_VALUE`, `NEW_VALUE`, `RELATED_HOST_ID`, `SOURCE` = the cause, `TS` = event time) and a readable `MESSAGE` such as `IP_CHANGED eth1 00:1b:1b:aa:bb:01 192.168.110.50 -> 192.168.110.51`. Priority: notice for changes, warning for `DUPLICATE_IP_DETECTED`, `MAC_MOVED`, `ACTIVE_DISABLED` and `INTERFACE_DOWN`, error for daemon faults. `journalctl -u lan-sentinel EVENT=ip_changed` works directly. Observations are never logged.
+Each event is one journald entry with structured fields (`EVENT=ip_changed`, `IFACE`, `HOST_ID`, `MAC`, `IP` from the evidence, `OLD_VALUE`, `NEW_VALUE`, `RELATED_HOST_ID`, `SOURCE` = the cause, `TS` = event time) and a readable `MESSAGE` such as `IP_CHANGED eth1 00:1b:1b:aa:bb:01 192.168.110.50 -> 192.168.110.51`. Priority: notice for changes, warning for `DUPLICATE_IP_DETECTED`, `MAC_MOVED`, `ACTIVE_DISABLED`, `INTERFACE_DOWN` and `DATABASE_RECREATED`, error for daemon faults (such as a corrupt database being quarantined). `journalctl -u lan-sentinel EVENT=ip_changed` works directly. Observations are never logged.
 
 ## 8. systemd and privileges
 
@@ -383,6 +387,6 @@ The code base is Linux only. Every make target that runs Go runs in the Linux de
 | systemd unit, sandbox and privileges (systemd container) | `make test-systemd` |
 | Privilege check on real hardware | `tools/capcheck` on the target boards (§8) |
 
-`make test-net` builds the test binaries in the dev container (`build/test-bins.sh`, for the Docker host's architecture), then `test/net/run.sh` creates a bridge network with fixed subnets (`172.31.250.0/24`, `fd5e:5e:1::/64`) standing in for an OT LAN, plus a second network (`172.31.251.0/24`). Simulated hosts are `busybox` containers with fixed MACs: one with a TCP listener on port 502 (`.10`), one without (`.11`, REFUSED), one that is swapped for a host with another MAC on request (`.12`), one that is stopped on request (`.13`), a "PLC" with a real Siemens OUI MAC for vendor lookup (`.14`), and an unused address (`.99`). On the second network a host carries the same MAC as `.10`, so per-interface scoping is tested. Go tests ask for such changes by writing request files (`<action>@<id>.request`) into a shared directory; `run.sh` performs them (swap, stop, connect or disconnect the second network) and acknowledges with `<action>@<id>.done`. The runner container starts with only `CAP_NET_RAW` (plus the capabilities `setpriv` needs to drop privileges) and runs the tests as uid 65534 with ambient `CAP_NET_RAW`, mirroring the systemd unit. It runs `capcheck` with and without the capability, then every Go test package under `test/net` built with the `nettest` tag; those read the network layout from `LS_TEST_*` environment variables.
+`make test-net` builds the test binaries in the dev container (`build/test-bins.sh`, for the Docker host's architecture), then `test/net/run.sh` creates a bridge network with fixed subnets (`172.31.250.0/24`, `fd5e:5e:1::/64`) standing in for an OT LAN, plus a second network (`172.31.251.0/24`). Simulated hosts are `busybox` containers with fixed MACs: one with a TCP listener on port 502 (`.10`), one without (`.11`, REFUSED), one that is swapped for a host with another MAC on request (`.12`), one that is stopped on request (`.13`), a "PLC" with a real Siemens OUI MAC for vendor lookup (`.14`), and an unused address (`.99`). On the second network a host carries the same MAC as `.10`, so per-interface scoping is tested. Go tests ask for such changes by writing request files (`<action>@<id>.request`, holding the action's arguments) into a shared directory; `run.sh` performs them (swap, stop, connect or disconnect the second network, inject frames, add an administratively down interface to the runner's namespace from a helper container) and acknowledges with `<action>@<id>.done`. To inject, a test writes a pcap file of frames from other MACs (DHCP, mDNS, DNS, LLDP, ARP, NDP) and `run.sh` sends it from a separate container with `test/net/inject`; LLDP goes to the broadcast address in these tests because Linux bridges do not forward the 802.1D reserved group addresses. The capture tests check decoding of every protocol, that the box's own frames and VLAN frames are not captured (priority-tagged ones are), that a down interface is refused until it comes up, promiscuous mode with only `CAP_NET_RAW`, the kernel drop counter on an overflowing ring, and the daemon naming hosts from captured frames. The runner container starts with only `CAP_NET_RAW` (plus the capabilities `setpriv` needs to drop privileges) and runs the tests as uid 65534 with ambient `CAP_NET_RAW`, mirroring the systemd unit. It runs `capcheck` with and without the capability, then every Go test package under `test/net` built with the `nettest` tag; those read the network layout from `LS_TEST_*` environment variables.
 
 Docker's kernel is not the target kernel, so the board check in §8 stays mandatory.

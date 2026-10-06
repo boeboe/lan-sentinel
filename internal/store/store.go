@@ -65,6 +65,7 @@ type Store struct {
 	closed bool
 
 	schemaVersion int
+	recovery      *Recovery
 	opErrors      atomic.Uint64
 	commits       atomic.Uint64
 }
@@ -85,7 +86,9 @@ type request struct {
 }
 
 // Open creates the database directory if needed, opens the database in WAL
-// mode, applies migrations and starts the writer goroutine.
+// mode, checks its integrity, applies migrations and starts the writer
+// goroutine. A corrupt database is quarantined next to the original and a
+// new one is created (FR-ST-4); Recovery reports it.
 func Open(ctx context.Context, o Options) (*Store, error) {
 	if o.Path == "" {
 		return nil, errors.New("store: empty database path")
@@ -112,6 +115,34 @@ func Open(ctx context.Context, o Options) (*Store, error) {
 		return nil, fmt.Errorf("create database directory: %w", err)
 	}
 
+	s, err := openChecked(ctx, o)
+	if err != nil && isCorrupt(err) {
+		quarantined, qerr := quarantine(o.Path, o.Clock.Now())
+		if qerr != nil {
+			return nil, errors.Join(err, qerr)
+		}
+		reason := err.Error()
+		if s, err = openChecked(ctx, o); err == nil {
+			s.recovery = &Recovery{QuarantinedTo: quarantined, Reason: reason}
+		}
+	}
+	if err != nil {
+		return nil, err
+	}
+	go s.writer(o.FlushInterval, o.MaxBatch)
+	return s, nil
+}
+
+// Recovery describes a corrupt database found at Open.
+type Recovery struct {
+	QuarantinedTo string // the corrupt file's new name
+	Reason        string
+}
+
+// Recovery returns what Open quarantined, or nil.
+func (s *Store) Recovery() *Recovery { return s.recovery }
+
+func openChecked(ctx context.Context, o Options) (*Store, error) {
 	db, err := sql.Open("sqlite", writerDSN(o.Path))
 	if err != nil {
 		return nil, fmt.Errorf("open database %s: %w", o.Path, err)
@@ -129,7 +160,6 @@ func Open(ctx context.Context, o Options) (*Store, error) {
 		_ = db.Close()
 		return nil, err
 	}
-	go s.writer(o.FlushInterval, o.MaxBatch)
 	return s, nil
 }
 
@@ -140,6 +170,9 @@ func (s *Store) init(ctx context.Context, mfs fs.FS) error {
 	}
 	if !strings.EqualFold(mode, "wal") {
 		return fmt.Errorf("open database %s: journal mode is %q, want wal", s.path, mode)
+	}
+	if err := s.check(ctx); err != nil {
+		return err
 	}
 	ms, err := loadMigrations(mfs)
 	if err != nil {
@@ -154,8 +187,11 @@ func (s *Store) init(ctx context.Context, mfs fs.FS) error {
 }
 
 // writerDSN builds the modernc.org/sqlite DSN for the writer connection.
+// auto_vacuum comes first: it only takes effect on a new, empty database,
+// and lets compaction return freed pages to the file system.
 func writerDSN(path string) string {
 	return "file:" + escapePath(path) + "?" + strings.Join([]string{
+		"_pragma=auto_vacuum(INCREMENTAL)",
 		"_pragma=journal_mode(WAL)",
 		"_pragma=synchronous(NORMAL)",
 		fmt.Sprintf("_pragma=busy_timeout(%d)", busyTimeoutMillis),

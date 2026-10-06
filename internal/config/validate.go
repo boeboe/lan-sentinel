@@ -4,10 +4,10 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
-	"path/filepath"
 	"regexp"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -18,8 +18,10 @@ var (
 	logLevels   = []string{"trace", "debug", "info", "warn", "error"}
 	logFormats  = []string{"journald", "text", "json"}
 	nameTypes   = []string{"mdns", "dhcp", "dns_ptr", "lldp", "netbios"}
-	replayExts  = []string{".pcap", ".pcapng", ".jsonl"}
+	replayExts  = []string{".pcap", ".pcapng", ".pcap.gz", ".pcapng.gz", ".jsonl"}
 	minDBSize   = ByteSize(10 * 1000 * 1000)
+	minRingSize = ByteSize(256 << 10)
+	maxRingSize = ByteSize(256 << 20)
 	minIfPrefix = 8
 )
 
@@ -32,6 +34,9 @@ func Validate(cfg *Config) []FieldError {
 	}
 	v.interfaces(cfg)
 
+	if r := cfg.Passive.RingSize; r < minRingSize || r > maxRingSize {
+		v.add("passive.ring_size", "must be between %s and %s, got %s", minRingSize, maxRingSize, r)
+	}
 	if d := cfg.Neighbor.ResyncInterval.D(); d < time.Second {
 		v.add("neighbor.resync_interval", "must be at least 1s, got %s", cfg.Neighbor.ResyncInterval)
 	}
@@ -109,7 +114,7 @@ func (v *validator) replayInterface(k string, ic InterfaceConfig) {
 	switch {
 	case r.File == "":
 		v.add(k+".replay.file", "is required")
-	case !slices.Contains(replayExts, filepath.Ext(r.File)):
+	case !slices.ContainsFunc(replayExts, func(ext string) bool { return strings.HasSuffix(r.File, ext) }):
 		v.add(k+".replay.file", "must end in one of %v, got %q", replayExts, r.File)
 	}
 	if r.Speed < 0 {

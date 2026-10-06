@@ -6,8 +6,6 @@ import (
 	"net"
 	"net/netip"
 	"time"
-
-	"golang.org/x/net/bpf"
 )
 
 // pending is a placeholder backend for a facility whose real implementation
@@ -24,12 +22,6 @@ func (p pending) err(what string) error {
 }
 
 func (p pending) Backend() string { return p.backend }
-
-type pendingCapturer struct{ pending }
-
-func (p pendingCapturer) Open(context.Context, string, []bpf.RawInstruction, bool) (FrameSource, error) {
-	return nil, p.err("capture")
-}
 
 type pendingTransmitter struct{ pending }
 

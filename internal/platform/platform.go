@@ -27,16 +27,38 @@ type Frame struct {
 	Data      []byte
 }
 
-// CaptureStats are kernel-reported capture counters.
+// CaptureStats are kernel-reported capture counters. Received counts the
+// frames that passed the filter, including those Dropped because the ring
+// was full.
 type CaptureStats struct {
 	Received uint64
 	Dropped  uint64
 }
 
+// ErrLinkDown is returned by ReadFrame when the interface went down or
+// disappeared; the caller closes the source and opens it again later.
+var ErrLinkDown = errors.New("interface is down or gone")
+
+// DefaultRingSize is the capture ring size when CaptureOptions.RingSize is
+// zero.
+const DefaultRingSize = 2 << 20
+
+// CaptureOptions configures a capture handle.
+type CaptureOptions struct {
+	// Filter is a classic-BPF program run by the kernel on every frame.
+	Filter []bpf.RawInstruction
+	// Promiscuous joins PACKET_MR_PROMISC (PACKET_ADD_MEMBERSHIP); it is
+	// dropped with the socket.
+	Promiscuous bool
+	// RingSize is the TPACKET_V3 ring size in bytes, rounded down to whole
+	// blocks; 0 means DefaultRingSize.
+	RingSize int
+}
+
 // FrameSource delivers captured frames for one interface.
 type FrameSource interface {
 	// ReadFrame blocks until a frame arrives, ctx is cancelled or the source
-	// is closed.
+	// is closed. It returns ErrLinkDown when the interface goes away.
 	ReadFrame(ctx context.Context) (Frame, error)
 	Stats() (CaptureStats, error)
 	Close() error
@@ -46,7 +68,7 @@ type FrameSource interface {
 // transmits.
 type Capturer interface {
 	Backend() string
-	Open(ctx context.Context, iface string, filter []bpf.RawInstruction, promiscuous bool) (FrameSource, error)
+	Open(ctx context.Context, iface string, o CaptureOptions) (FrameSource, error)
 }
 
 // Neighbor is one kernel neighbour-table entry.

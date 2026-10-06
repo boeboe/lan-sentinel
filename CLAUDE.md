@@ -53,7 +53,7 @@ Read these before changing anything. If code and docs disagree, stop and ask.
 - Concurrency with `context` and `errgroup`; every goroutine stops on context cancellation.
 - Use `net/netip` for addresses, `net.HardwareAddr` for MACs.
 - Migrations are numbered `.sql` files in `migrations/`, embedded with `go:embed`, applied at startup.
-- Tests: table-driven; decoders tested against pcap fixtures in `test/fixtures/`; correlator tested with golden observation streams in `test/golden/` — the reconstruction scenario (`docs/DATA_MODEL.md` §10) must always pass; platform backends and probes tested in Docker on a test network with simulated hosts, as uid 65534 with only `CAP_NET_RAW` (`test/net/`, build tag `nettest`, `make test-net`).
+- Tests: table-driven; decoders tested against frames built with gopacket (`test/frames`) and pcap fixtures in `test/fixtures/` (synthetic until real site captures are added); correlator tested with golden observation streams in `test/golden/` — the reconstruction scenario (`docs/DATA_MODEL.md` §10) must always pass; platform backends and probes tested in Docker on a test network with simulated hosts, as uid 65534 with only `CAP_NET_RAW` (`test/net/`, build tag `nettest`, `make test-net`).
 - Every decoder gets a `go test -fuzz` target.
 - Coverage of `internal/` (from every test package, `-coverpkg`) must stay at or above 90%; `make check` enforces it. Cover behaviour, not lines: error paths, retries and validation rules count; trivial tests written only for the number do not.
 - Errors wrapped with `%w`; no panics outside `main`.
@@ -74,6 +74,7 @@ make test-systemd # daemon under systemd in a container with the deploy/ unit
 make run-dev      # daemon in the dev container on deploy/config.dev.yaml (replay)
 make tools        # tools/capcheck for linux/amd64 + linux/arm64 (privilege check for boards)
 make oui          # regenerate the embedded IEEE OUI table (each release)
+make fixtures     # regenerate the synthetic pcap fixtures in test/fixtures
 make fmt / tidy   # fix formatting / go.mod
 make shell        # shell in the dev container
 ```

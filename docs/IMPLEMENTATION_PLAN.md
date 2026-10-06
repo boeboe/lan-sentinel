@@ -12,14 +12,16 @@ Six phases, each ending in a shippable build. Passive discovery lands before any
 | 5 | Release builds, hardening, rollout | 2 weeks | **v1.0** on the full fleet; active discovery enabled per site |
 | 6+ | Identification plugins | ongoing | — |
 
-## Open hardware checks
+## Open hardware and field checks
 
-Deferred checks that need real hardware. Each closes a phase's exit criterion; the Docker equivalent already passes on every change, so development continues meanwhile. Record results where noted and tick here.
+Deferred checks that need real hardware or data from real sites. Each closes a phase task or exit criterion; the Docker or replay equivalent already passes on every change, so development continues meanwhile. Record results where noted and tick here.
 
 | | Check | Closes | Docker equivalent (passing) | Record results in |
 | --- | --- | --- | --- | --- |
 | [ ] | `tools/capcheck` under the reference unit on each target board (RevPi Connect, amd64 edge box): every row passes with only `CAP_NET_RAW` | Phase 0 exit | `make test-net` (capcheck with and without `CAP_NET_RAW`), `make test-systemd` (capcheck under the unit's sandbox) | `ARCHITECTURE.md` §8 table |
-| [ ] | Daemon on a target board on a real test LAN: hosts appear from the kernel neighbour table alone, with vendor and per-interface scoping (config with `passive: { enabled: false }` until phase 2) | Phase 1 exit | `TestDaemonFindsHosts` in `make test-net`: two networks, real-OUI vendor, same MAC on both networks as two hosts with `MAC_MOVED` | Phase 1 exit note below |
+| [ ] | Daemon on a target board on a real test LAN: hosts appear from the kernel neighbour table alone, with vendor and per-interface scoping (config with `passive: { enabled: false }`) | Phase 1 exit | `TestDaemonFindsHosts` in `make test-net`: two networks, real-OUI vendor, same MAC on both networks as two hosts with `MAC_MOVED` | Phase 1 exit note below |
+| [ ] | pcap captures from the pilot sites (ARP, DHCP, mDNS, LLDP, NDP from real OT devices) added to `test/fixtures` with decoder table tests | Phase 2 task | Synthetic `test/fixtures/site-a-eth1.pcapng` (`make fixtures`) replayed by `TestCaptureScenario`; decoder tests on gopacket-built frames; fuzz targets | `test/fixtures`, decoder tests |
+| [ ] | Passive-only build for 7 days on 3 pilot sites: < 5% CPU and < 50 MB RSS on a RevPi; an injected IP change and duplicate IP reconstructed | Phase 2 exit | `TestCaptureScenario` (IP change, takeover, duplicate IP and its resolution reconstructed from frames through the daemon); capture tests in `make test-net` | Phase 2 exit note below |
 
 ## Phase 0 — Foundations, platform layer, test infrastructure (2–3 weeks)
 
@@ -27,7 +29,7 @@ Deferred checks that need real hardware. Each closes a phase's exit criterion; t
 - [x] Hygiene gate `make check`: `fmt-check`, `tidy-check`, `vet`, `lint`, `vuln` (`govulncheck` pinned as a Go tool), tests with race and coverage of `internal/` ≥ 90%; `make fuzz` runs every `Fuzz*` target; `make check-all` adds the Docker suites
 - [x] Static cross-compiled builds for `linux/amd64` and `linux/arm64` (`CGO_ENABLED=0`), version/commit/date via `-ldflags`, `SHA256SUMS`
 - [x] Linux dev container (`build/dev.Dockerfile`): every make target that runs Go runs in it, as the calling user, with a cache volume; no macOS stubs or build tags
-- [ ] CI: `make mod-verify check`, `make fuzz`, `make test-net test-systemd`, `make release tools`, all in the dev container — *workflow written, not yet run on GitHub*
+- [x] CI: `make mod-verify check`, `make fuzz`, `make test-net test-systemd`, `make release tools`, all in the dev container — *green on GitHub*
 - [x] Platform layer: the four interfaces in `ARCHITECTURE.md` §3 with fakes for tests, collector registry with availability states
 - [x] `internal/clock` (wall and simulated) used by everything that reads time
 - [x] Config loader: YAML + `LAN_SENTINEL_*` env + flags + defaults, strict validation (unknown keys fail)
@@ -37,7 +39,7 @@ Deferred checks that need real hardware. Each closes a phase's exit criterion; t
 - [x] Daemon lifecycle: context cancellation, `sd_notify` READY/WATCHDOG, graceful shutdown, SIGHUP reload — *verified under systemd in a container (`make test-systemd`)*
 - [x] systemd container test (`make test-systemd`): reference unit unchanged, `Type=notify`, identity and capabilities, reload, clean stop, capcheck under the unit's sandbox, `systemd-analyze security` ≤ 2.5 (now 1.6)
 - [x] Docker network test harness (`make test-net`, `ARCHITECTURE.md` §9): test network with simulated hosts, runner as uid 65534 with only `CAP_NET_RAW`, `tools/capcheck` with and without the capability
-- [ ] Capability check under the reference unit with only `CAP_NET_RAW`: every row of `ARCHITECTURE.md` §8, in Docker and on each target board; record results there. Any failure stops the project for a decision. — *Docker and systemd container: passed; boards deferred, tracked under Open hardware checks*
+- [ ] Capability check under the reference unit with only `CAP_NET_RAW`: every row of `ARCHITECTURE.md` §8, in Docker and on each target board; record results there. Any failure stops the project for a decision. — *Docker and systemd container: passed; boards deferred, tracked under Open hardware and field checks*
 - [x] Golden reconstruction scenario (`DATA_MODEL.md` §10) committed under `test/golden/reconstruction/` as observation stream + expected bindings, events and query answers; a harness that validates the fixture (including that the expected answers follow from the expected bindings) and runs it through the correlator (skipped until phase 1, so CI stays green)
 - [x] `deploy/`: reference unit, `sysusers.d`, `tmpfiles.d`, default config, replay `config.dev.yaml`
 
@@ -56,21 +58,22 @@ Deferred checks that need real hardware. Each closes a phase's exit criterion; t
 - [x] Event engine writing to `events` (with `cause` and `evidence_json` snapshot) and journald
 - [x] OUI vendor lookup (IEEE MA-L/MA-M/MA-S, longest prefix) with a generator (`make oui`) that builds a compact embedded table; optional override file; locally administered flag
 
-**Exit:** `make run-dev` replays the golden stream and the resulting database matches the expected bindings; in the Docker test network and on a test LAN, hosts appear from the kernel neighbour table alone, with vendor and correct per-interface scoping; the golden scenario passes at correlator level except the conflict steps (phase 2). — *Status: replay, golden scenario (including the conflict steps, implemented early) and Docker test network met; real test LAN deferred, tracked under Open hardware checks.*
+**Exit:** `make run-dev` replays the golden stream and the resulting database matches the expected bindings; in the Docker test network and on a test LAN, hosts appear from the kernel neighbour table alone, with vendor and correct per-interface scoping; the golden scenario passes at correlator level except the conflict steps (phase 2). — *Status: replay, golden scenario (including the conflict steps, implemented early) and Docker test network met; real test LAN deferred, tracked under Open hardware and field checks.*
 
 ## Phase 2 — Passive capture (3–4 weeks)
 
-- [ ] `AF_PACKET` capture per interface, BPF filter, optional promiscuous mode, ring buffer sizing, capture-drop metric
-- [ ] Docker network tests for capture: frames from simulated hosts, promiscuous mode, drop counter
-- [ ] Decoders: ARP (incl. gratuitous), IPv4 source, IPv6 + NDP, DHCP (option 12 hostname, 61 client-id, 55 parameter list kept for later fingerprinting), mDNS (A/AAAA/PTR/SRV/TXT), DNS responses, LLDP
-- [ ] Fuzz target per decoder; pcap fixtures from real sites
-- [ ] Replay collector, pcap/pcapng input through the same decoders
-- [ ] Name bindings (`DATA_MODEL.md` §5.4) and `preferred_name` precedence; `HOSTNAME_ADDED/CHANGED/REMOVED`
-- [ ] Conflict detection from capture (conflicting ARP replies, gratuitous ARP) feeding the correlator's conflict handling (done in phase 1); proxy-ARP flagging
-- [ ] Retention, hourly roll-up and compaction job; `max_db_size` enforcement; golden scenario re-run after simulated 7-day compaction gives identical answers and evidence
-- [ ] Startup integrity check with quarantine and recreate
+- [x] `AF_PACKET` capture per interface, BPF filter, optional promiscuous mode, ring buffer sizing (`passive.ring_size`), capture-drop counters; the host's own frames are never captured; reopen with back-off when the interface goes away
+- [x] Docker network tests for capture: frames from other MACs injected from another container, own frames not captured, promiscuous mode with only `CAP_NET_RAW`, drop counter on an overflowing ring, the daemon naming hosts from captured frames
+- [x] Decoders: ARP (incl. gratuitous and probes), IPv4 source, IPv6 + NDP, DHCP (option 12 hostname, 61 client-id, 55 parameter list and 60 vendor class kept for later fingerprinting), mDNS (A/AAAA/PTR/SRV/TXT), DNS PTR responses, LLDP; repeats suppressed for 2 minutes
+- [x] Fuzz target per decoder (and for whole frames)
+- [ ] pcap fixtures from real sites — *synthetic fixture in place (`make fixtures`); real captures tracked under Open hardware and field checks*
+- [x] Replay collector, pcap/pcapng input through the same decoders and refresh suppression
+- [x] Name bindings (`DATA_MODEL.md` §5.4) and `preferred_name` precedence; `HOSTNAME_ADDED/CHANGED/REMOVED`; DNS PTR names attach without presence
+- [x] Conflict detection from capture (conflicting ARP replies, gratuitous ARP) feeding the correlator's conflict handling (done in phase 1); proxy-ARP flagging (`DATA_MODEL.md` §5.2)
+- [x] Retention, hourly roll-up and compaction job; `max_db_size` enforcement; golden scenario re-run after simulated 7-day compaction gives identical answers and evidence
+- [x] Startup integrity check with quarantine and recreate; `DATABASE_RECREATED`
 
-**Exit:** full golden scenario passes at correlator level; passive-only build runs 7 days on 3 pilot sites with < 5% CPU and < 50 MB RSS on a RevPi, and reconstructs an injected IP change and duplicate IP correctly. First field-deployable release (v0.1).
+**Exit:** full golden scenario passes at correlator level; passive-only build runs 7 days on 3 pilot sites with < 5% CPU and < 50 MB RSS on a RevPi, and reconstructs an injected IP change and duplicate IP correctly. First field-deployable release (v0.1). — *Status: golden scenario passes at correlator level, also after a simulated 7-day compaction; the site capture replayed through the daemon reconstructs the IP change and the duplicate IP from frames; capture verified in Docker with only `CAP_NET_RAW`. The pilot run is pending, tracked under Open hardware and field checks.*
 
 ## Phase 3 — Read side: API, CLI, metrics (2–3 weeks)
 

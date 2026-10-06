@@ -60,12 +60,19 @@ func ping(t *testing.T, target netip.Addr) {
 
 // request asks run.sh for an action outside the runner and waits for it.
 // Each request has its own id, so repeating an action waits for the new
-// reply rather than finding the previous one.
-func request(t *testing.T, action string) {
+// reply rather than finding the previous one. Arguments go into the request
+// file.
+func request(t *testing.T, action string, args ...string) {
 	t.Helper()
 	dir := env(t, "LS_TEST_SYNC")
 	name := fmt.Sprintf("%s@%d", action, time.Now().UnixNano())
-	if err := os.WriteFile(filepath.Join(dir, name+".request"), nil, 0o666); err != nil {
+	// Written under another name and renamed, so run.sh never reads a
+	// request before its arguments are in it.
+	tmp := filepath.Join(dir, name+".tmp")
+	if err := os.WriteFile(tmp, []byte(strings.Join(args, " ")+"\n"), 0o666); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(tmp, filepath.Join(dir, name+".request")); err != nil {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(60 * time.Second)
@@ -151,8 +158,13 @@ func TestInterfaces(t *testing.T) {
 	t.Fatalf("%s not listed", iface)
 }
 
+// TestNeighborAppears: pinging a host makes its neighbour entry appear,
+// with a REACHABLE notification. If an earlier test already left the entry
+// REACHABLE, pings change nothing and no notification comes; the snapshot
+// then shows it. (Notifications are also covered by the MAC-change and
+// expiry tests.)
 func TestNeighborAppears(t *testing.T) {
-	target, mac := ip(t, "LS_TEST_OPEN"), env(t, "LS_TEST_OPEN_MAC")
+	target, mac, iface := ip(t, "LS_TEST_OPEN"), env(t, "LS_TEST_OPEN_MAC"), env(t, "LS_TEST_IFACE")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	nbs := platform.New().Neighbors
@@ -160,22 +172,46 @@ func TestNeighborAppears(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	awaitNeighbor(t, ch, target, 20*time.Second, func(ev platform.NeighborEvent) bool {
-		return ev.Neighbor.MAC.String() == mac && ev.Neighbor.State == "REACHABLE"
-	})
-	list, err := nbs.Snapshot(ctx)
-	if err != nil {
-		t.Fatal(err)
+	reachable := func() (platform.Neighbor, bool) {
+		list, err := nbs.Snapshot(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, n := range list {
+			if n.IP == target && n.MAC.String() == mac && n.State == "REACHABLE" {
+				return n, true
+			}
+		}
+		return platform.Neighbor{}, false
 	}
-	for _, n := range list {
-		if n.IP == target {
-			if n.MAC.String() != mac || n.ConfirmedAgo > 10*time.Second || n.Interface != env(t, "LS_TEST_IFACE") {
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		ping(t, target)
+		wait := time.After(2 * time.Second)
+	events:
+		for {
+			select {
+			case ev := <-ch:
+				if ev.Neighbor.IP == target && ev.Neighbor.MAC.String() == mac && ev.Neighbor.State == "REACHABLE" {
+					n, ok := reachable()
+					if !ok || n.Interface != iface || n.ConfirmedAgo > 10*time.Second {
+						t.Errorf("snapshot after the notification = %+v (found %v)", n, ok)
+					}
+					return
+				}
+			case <-wait:
+				break events
+			}
+		}
+		if n, ok := reachable(); ok {
+			if n.Interface != iface {
 				t.Errorf("snapshot entry = %+v", n)
 			}
+			t.Logf("%s was already REACHABLE (no notification): %+v", target, n)
 			return
 		}
 	}
-	t.Errorf("%s missing from the snapshot", target)
+	t.Fatalf("%s never became REACHABLE", target)
 }
 
 func TestNeighborMACChange(t *testing.T) {
@@ -295,12 +331,15 @@ func TestDaemonFindsHosts(t *testing.T) {
 	go func() {
 		errc <- daemon.Run(context.Background(), daemon.Options{Load: config.LoadOptions{Path: cfgPath}, Stderr: log, Signals: signals})
 	}()
+	// The MAC seen on two interfaces is two hosts linked by MAC_MOVED on
+	// whichever was discovered second (that depends on the neighbour dump's
+	// order).
 	for _, want := range []string{
 		"HOST_DISCOVERED " + iface + " " + openMAC,
 		"HOST_DISCOVERED " + iface + " " + closedMAC,
 		"HOST_DISCOVERED " + iface + " " + plcMAC,
 		"HOST_DISCOVERED " + iface2 + " " + openMAC,
-		"MAC_MOVED " + iface2 + " " + openMAC,
+		"MAC_MOVED ",
 	} {
 		deadline := time.Now().Add(30 * time.Second)
 		for !strings.Contains(log.String(), want) {
@@ -355,8 +394,9 @@ func TestDaemonFindsHosts(t *testing.T) {
 	if got := query(`SELECT count(DISTINCT host_id) FROM hosts WHERE mac = '` + openMAC + `'`); got[0] != "2" {
 		t.Errorf("hosts with MAC %s = %v, want 2 (one per interface)", openMAC, got)
 	}
-	if got := query(`SELECT old_value || '>' || new_value FROM events WHERE type = 'MAC_MOVED'`); !slices.Contains(got, iface+">"+iface2) {
-		t.Errorf("MAC_MOVED events = %v, want %s>%s", got, iface, iface2)
+	if got := query(`SELECT old_value || '>' || new_value FROM events WHERE type = 'MAC_MOVED'`); len(got) != 1 ||
+		got[0] != iface+">"+iface2 && got[0] != iface2+">"+iface {
+		t.Errorf("MAC_MOVED events = %v, want one between %s and %s", got, iface, iface2)
 	}
 	prefixes := query(`SELECT c.interface || ' ' || p.prefix FROM context_prefixes p
 		JOIN network_contexts c ON c.id = p.context_id WHERE p.ended_at IS NULL`)

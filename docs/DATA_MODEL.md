@@ -60,9 +60,21 @@ An observation's `time` is the time of the evidence, not of its delivery. For `k
 
 Replayed observations (pcap or JSONL) keep their recorded source and time; there is no separate replay source, so the correlator treats them exactly as live ones.
 
+The capture decoders put protocol detail that is not identity evidence into `meta`:
+
+| Source | `meta` keys |
+| --- | --- |
+| `passive_arp` | `arp`: `request`, `reply`, `gratuitous` (sender IP = target IP) or `probe` (sender IP 0.0.0.0, with `target`, the address probed) |
+| `passive_ndp` | `ndp`: `router_solicitation`, `router_advertisement`, `neighbor_solicitation`, `neighbor_advertisement` (with `flags`: `router`, `solicited`, `override`) or `dad` (from `::`, with `target`) |
+| `passive_dhcp` | `dhcp` (message type), `client_id` (option 61, hex), `parameter_request_list` (option 55), `vendor_class` (option 60) |
+| `passive_mdns` | `services` (service types such as `_http._tcp`), `service_ports` (`_http._tcp=80`), `txt` |
+| `passive_lldp` | `chassis_id`, `port_id`, `port_description`, `system_description`, `capabilities`, `management_ip` |
+
+Which address an observation carries: the ARP sender address (none for a probe); the source address of an NDP message, or the target of an advertisement; `yiaddr` of a DHCP ACK or `ciaddr` of a renewing REQUEST or an INFORM (none for DISCOVER, OFFER, DECLINE, RELEASE, NAK); each A/AAAA address of an mDNS response; the address of a DNS PTR answer; the IPv4/IPv6 header source for `passive_ipv4`/`passive_ipv6`. LLDP observations carry no address.
+
 Sources: `passive_arp`, `passive_ipv4`, `passive_ipv6`, `passive_ndp`, `passive_dhcp`, `passive_mdns`, `passive_dns`, `passive_lldp`, `kernel_neighbor`, `arp_scan`, `icmp_scan`, `ndp_probe`, `tcp_connect`, `udp_probe`.
 
-Events that are not caused by an observation use one of these internal causes instead of a source: `presence` (presence ticker), `expiry` (binding expiry), `iface_monitor` (interface manager), `scheduler` (scan runs), `operator` (API/CLI action).
+Events that are not caused by an observation use one of these internal causes instead of a source: `presence` (presence ticker), `expiry` (binding expiry), `iface_monitor` (interface manager), `scheduler` (scan runs), `operator` (API/CLI action), `integrity_check` (start-up database check).
 
 ## 3. Time and interval semantics
 
@@ -164,7 +176,7 @@ Before the rules: an observation for an interface that is not configured is drop
 ### 5.1 Binding the observation to a host
 
 1. **Observation has a MAC.** The host is the row with `(context_id, mac)`. If none exists, create it and emit `HOST_DISCOVERED`; if the same MAC already exists as a host on another context, also emit `MAC_MOVED` on the new host with `related_host_id` set to the other host. Update `hosts.last_seen` and presence.
-2. **Observation has no MAC but has an IP** (TCP/UDP/ICMP probe results). If exactly one open binding for that IP exists in the context, attach to that host. If there are none or several (conflict), the observation is stored with `host_id = NULL`, changes no state, and increments `lan_sentinel_observations_unbound_total{source}`. A MAC-less observation never creates a host.
+2. **Observation has no MAC but has an IP** (TCP/UDP/ICMP probe results, DNS PTR answers). If exactly one open binding for that IP exists in the context, attach to that host. If there are none or several (conflict), the observation is stored with `host_id = NULL`, changes no state, and increments `lan_sentinel_observations_unbound_total{source}`. A MAC-less observation never creates a host. A `passive_dns` observation is a resolver's statement about another host, not evidence from the host itself: it only adds its name (§5.4) and neither updates presence nor confirms the binding.
 3. **Observation has neither** — dropped and counted the same way.
 
 ### 5.2 Which IPs are attributed
@@ -175,7 +187,13 @@ An IP from an observation is bound to the host only if it is on-link for the con
 - IPv6: link-local, or inside an open prefix, or the source is `passive_ndp`, `ndp_probe` or `kernel_neighbor`.
 - `passive_ipv4` / `passive_ipv6` source addresses outside these rules are ignored for binding, because the frame's source MAC is the router's.
 
-A host whose MAC answers ARP for IPs that are already bound to other live hosts, or for more than `identity.proxy_arp_threshold` (default 16) addresses, is flagged `proxy_arp` in `identifications`. Its further ARP-only claims do not open or take over bindings; they are recorded as observations only.
+**Proxy ARP.** Only ARP answers count: `passive_arp` replies and `arp_scan` results. A MAC is flagged `proxy_arp` when its answers within `identity.address_expiry` (default 24 h) claim two or more distinct IPs that are held by other live hosts, or more than `identity.proxy_arp_threshold` (default 16) distinct IPs; older claims are forgotten, so a device that changes address now and then is not a proxy. A late answer (§5.3) is counted but never sets the flag. A single contested answer stays an ordinary duplicate-IP conflict (§5.3). Requests and gratuitous ARP announce the sender's own address: they never count towards proxy ARP, but they do raise duplicate-IP conflicts. When the flag is set:
+
+- an `identifications` row (`proxy_arp` = `true`, confidence 0.8, the observation's source, evidence with the counts) is written, and `VENDOR_IDENTIFIED` with new value `proxy_arp=true` records it in history;
+- the host's bindings that only its ARP answers supported are closed at the observation's time (`IP_REMOVED`, followed by `DUPLICATE_IP_RESOLVED` where a conflict ends);
+- from then on its ARP answers open, refresh or take over nothing, except to refresh addresses it holds on other evidence (its own ARP requests, IP traffic, DHCP); they are recorded as observations only.
+
+The flag is kept across restarts (from `identifications`); the claim counts start again after a restart.
 
 ### 5.3 Address binding lifecycle
 
@@ -197,7 +215,7 @@ Bindings are **not** closed when a host becomes MISSING: the last known state re
 
 ### 5.4 Names
 
-A new name of a given type on a host opens a binding (`HOSTNAME_ADDED`). If the host already has an open name of the same type, that one is closed at `obs.ts` and the event is `HOSTNAME_CHANGED` instead. Open names not confirmed for `identity.name_expiry` (default 7 d) are closed with `HOSTNAME_REMOVED`. `preferred_name` is recomputed from open names using `identity.hostname_preference`.
+Names are last-known attributes with provenance and freshness: each binding keeps `first_seen`, `last_seen` (the last confirmation) and the `source` that opened it. A new name of a given type on a host opens a binding (`HOSTNAME_ADDED`, also when the same observation discovered the host). If the host already has an open name of the same type and a different name of that type arrives, the old one is closed at `obs.ts` and the event is `HOSTNAME_CHANGED` instead, so a host has at most one open name per type. That is the only way a name closes. Time alone never closes a name: on a switched port DHCP names are often seen only at boot and mDNS names only when someone queries, so not seeing a naming protocol again is not evidence that the name changed. This holds while the host stays visible and after it becomes MISSING. A name not confirmed for `identity.name_expiry` (default 7 d) is shown as *stale* when it is read (API, CLI), the way a binding past its `last_seen` is shown as unconfirmed; nothing is written. As with addresses, an observation older than the open name's last confirmation or the type's last change only refreshes and never changes a name. `preferred_name` is recomputed whenever a name opens or is replaced: the open name of the first type listed in `identity.hostname_preference`, stale or not; types missing from the list are never preferred.
 
 ### 5.5 Services
 
@@ -227,7 +245,7 @@ Thresholds are configurable (`presence:`). Transitions into MISSING emit `HOST_D
 | `MAC_MOVED` | `mac-moved` | warning | A MAC known on another interface appeared on this one (new host, `related_host_id` = the other) |
 | `HOSTNAME_ADDED` | `name-added` | notice | New name with provenance |
 | `HOSTNAME_CHANGED` | `name-changed` | notice | Name of a given type changed |
-| `HOSTNAME_REMOVED` | `name-removed` | notice | Name expired |
+| `HOSTNAME_REMOVED` | `name-removed` | notice | Reserved: a name closed without a replacement. No v1 rule does this (§5.4) |
 | `SERVICE_OPENED` | `service-opened` | notice | Probe result became OPEN |
 | `SERVICE_CLOSED` | `service-closed` | notice | Probe result left OPEN |
 | `VENDOR_IDENTIFIED` | `vendor-identified` | info | Manufacturer or device type determined or changed |
@@ -240,6 +258,7 @@ Thresholds are configurable (`presence:`). Transitions into MISSING emit `HOST_D
 | `INTERFACE_UP` | `interface-up` | notice | Monitored interface came up |
 | `INTERFACE_DOWN` | `interface-down` | warning | Monitored interface went down |
 | `SUBNET_CHANGED` | `subnet-changed` | notice | A `context_prefixes` binding opened or closed |
+| `DATABASE_RECREATED` | `db-recreated` | warning | The database failed the start-up integrity check; it was quarantined and this new one created (FR-ST-4) |
 
 ### Values
 
@@ -254,11 +273,12 @@ Thresholds are configurable (`presence:`). Transitions into MISSING emit `HOST_D
 | `HOSTNAME_*` | old name (`type:name`) | new name (`type:name`) | |
 | `SERVICE_OPENED` | previous state (empty for a first result) | `proto/port` | IP and state in evidence |
 | `SERVICE_CLOSED` | `proto/port` | new state | IP in evidence |
-| `VENDOR_IDENTIFIED` | old value | new value (`field=value`) | Not emitted for the OUI manufacturer set at discovery (recorded in `identifications`, source `oui`, confidence 0.7); reserved for later changes |
+| `VENDOR_IDENTIFIED` | old value | new value (`field=value`) | Not emitted for the OUI manufacturer set at discovery (recorded in `identifications`, source `oui`, confidence 0.7). Emitted with `proxy_arp=true` when a host is flagged as a proxy-ARP device (§5.2) |
 | `DUPLICATE_IP_DETECTED` | — | IP | `host_id` = new claimer, `related_host_id` = existing holder |
 | `DUPLICATE_IP_RESOLVED` | — | IP | `host_id` = remaining holder, `related_host_id` = the host that left |
 | `SCAN_*`, `ACTIVE_*`, `INTERFACE_*` | — | summary text | no host |
 | `SUBNET_CHANGED` | prefix closed | prefix opened | no host |
+| `DATABASE_RECREATED` | — | quarantined file (`<path>.corrupt-<UTC time>`) | no host or context; evidence `reason` = the integrity-check failure; always the new database's first event |
 
 ### Provenance
 
@@ -278,7 +298,7 @@ Every event is self-contained, so pruning observations never weakens history:
 
 ## 9. Retention and compaction
 
-Configurable per site under `storage.retention`. Defaults: raw observations 7 days; hourly roll-ups (one row per host, source, IP, MAC and hour, including unbound observations with `host_id` NULL) 90 days; events 2 years. `max_db_size` (default 200 MB) prunes raw observations first, then roll-ups, then the oldest events. Compaction runs hourly in small batches so it never blocks the writer. Current-state and binding tables (`network_contexts`, `context_prefixes`, `hosts`, `addresses`, `address_sources`, `names`, `services`, `identifications`) are not pruned by age.
+Configurable per site under `storage.retention`. Defaults: raw observations 7 days; hourly roll-ups (one row per host, source, IP, MAC and hour, including unbound observations with `host_id` NULL) 90 days; events 2 years. Raw observations past their retention are folded into roll-ups (adding to an existing row for the same hour) and deleted; roll-ups and events past theirs are deleted. `max_db_size` (default 200 MB) then applies to the data size (pages minus free pages): while above it, the oldest raw observations are rolled up first, then the oldest roll-ups and finally the oldest events are deleted, regardless of age. Freed pages are returned to the file system (`auto_vacuum=INCREMENTAL`). Compaction runs at start-up and hourly in batches of 2,000 rows, each its own committed op, so it never blocks the writer; replay mode does not compact. Current-state and binding tables (`network_contexts`, `context_prefixes`, `hosts`, `addresses`, `address_sources`, `names`, `services`, `identifications`) are not pruned by age. Because every event carries its evidence (§7), answers and provenance are unchanged by compaction (§10).
 
 ## 10. Golden reconstruction scenario
 

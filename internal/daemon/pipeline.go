@@ -6,6 +6,8 @@ import (
 	"sync"
 	"time"
 
+	"lan-sentinel/internal/collect/capture"
+	"lan-sentinel/internal/collect/capture/decoders"
 	"lan-sentinel/internal/collect/neighbor"
 	"lan-sentinel/internal/collect/replay"
 	"lan-sentinel/internal/config"
@@ -28,7 +30,7 @@ func openReplay(cfg *config.Config) (*replay.Player, error) {
 		sources = append(sources, replay.Source{Interface: ic.Name, File: ic.Replay.File, Prefixes: ic.Prefixes})
 		speed = ic.Replay.Speed
 	}
-	return replay.Open(replay.Options{Sources: sources, Speed: speed})
+	return replay.Open(replay.Options{Sources: sources, Speed: speed, Protocols: decoders.Protocols(cfg.Passive.Protocols)})
 }
 
 // startPipeline starts the correlator and the collectors. d.stop shuts them
@@ -45,7 +47,7 @@ func (d *Daemon) startPipeline(ctx context.Context) error {
 	engine := events.NewEngine(d.store, d.log, nil)
 	d.correlator, err = correlate.New(ctx, correlate.Options{
 		Store: d.store, Events: engine, Vendors: vendors, Clock: d.clock, Logger: d.log, Config: cfg,
-		DataDriven: cfg.ReplayMode(),
+		DataDriven: cfg.ReplayMode(), Recovery: d.store.Recovery(),
 	})
 	if err != nil {
 		return fmt.Errorf("start correlator: %w", err)
@@ -96,7 +98,21 @@ func (d *Daemon) startPipeline(ctx context.Context) error {
 		nb := neighbor.New(neighbor.Options{Source: d.backends.Neighbors, Bus: d.bus, Clock: d.clock, Interfaces: live,
 			Resync: cfg.Neighbor.ResyncInterval.D(), Registry: d.registry, Logger: d.log})
 		start(platform.CollectorNeighbor, nb.Run)
-		d.reportPending(ctx, cfg)
+		var captured []capture.Interface
+		for _, ic := range cfg.Interfaces {
+			if ic.PassiveEnabled() {
+				captured = append(captured, capture.Interface{Name: ic.Name, Promiscuous: ic.Passive.Promiscuous})
+			} else {
+				d.registry.Set(ic.Name, platform.CollectorCapture, d.backends.Capturer.Backend(), platform.StateDisabled, nil)
+			}
+		}
+		if len(captured) > 0 {
+			d.capture = capture.New(capture.Options{Capturer: d.backends.Capturer, Bus: d.bus, Clock: d.clock,
+				Interfaces: captured, Protocols: decoders.Protocols(cfg.Passive.Protocols), RingSize: int(cfg.Passive.RingSize),
+				Registry: d.registry, Logger: d.log})
+			start(platform.CollectorCapture, d.capture.Run)
+		}
+		d.reportPending(cfg)
 	}
 
 	d.stop = func() {
@@ -117,27 +133,10 @@ func (d *Daemon) startPipeline(ctx context.Context) error {
 }
 
 // reportPending records collectors whose implementation lands in a later
-// phase: capture (phase 2) and the probe engines (phase 4).
-func (d *Daemon) reportPending(ctx context.Context, cfg *config.Config) {
-	b := d.backends
-	report := func(iface, collector, backend string, err error) {
-		state := platform.StateRunning
-		if err != nil {
-			state = platform.StateFailed
-			d.log.Warn("collector unavailable", "interface", iface, "collector", collector, "backend", backend, "err", err)
-		}
-		d.registry.Set(iface, collector, backend, state, err)
-	}
+// phase: the probe engines (phase 4).
+func (d *Daemon) reportPending(cfg *config.Config) {
+	backend := d.backends.Transmitter.Backend()
 	for _, ic := range cfg.Interfaces {
-		if ic.PassiveEnabled() {
-			src, err := b.Capturer.Open(ctx, ic.Name, nil, ic.Passive.Promiscuous)
-			if err == nil {
-				_ = src.Close()
-			}
-			report(ic.Name, platform.CollectorCapture, b.Capturer.Backend(), err)
-		} else {
-			d.registry.Set(ic.Name, platform.CollectorCapture, b.Capturer.Backend(), platform.StateDisabled, nil)
-		}
 		for _, p := range []struct {
 			name    string
 			enabled bool
@@ -147,11 +146,12 @@ func (d *Daemon) reportPending(ctx context.Context, cfg *config.Config) {
 			{platform.CollectorTCP, cfg.Active.TCP.Enabled},
 		} {
 			if !ic.Active.Enabled || !p.enabled {
-				d.registry.Set(ic.Name, p.name, b.Transmitter.Backend(), platform.StateDisabled, nil)
+				d.registry.Set(ic.Name, p.name, backend, platform.StateDisabled, nil)
 				continue
 			}
-			report(ic.Name, p.name, b.Transmitter.Backend(),
-				fmt.Errorf("probe engine: %w (planned for phase 4)", platform.ErrNotImplemented))
+			err := fmt.Errorf("probe engine: %w (planned for phase 4)", platform.ErrNotImplemented)
+			d.log.Warn("collector unavailable", "interface", ic.Name, "collector", p.name, "backend", backend, "err", err)
+			d.registry.Set(ic.Name, p.name, backend, platform.StateFailed, err)
 		}
 	}
 }

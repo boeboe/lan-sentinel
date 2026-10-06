@@ -168,3 +168,6 @@ SYN scanning; generic UDP port scanning; IPv6 sweeping; running on or building f
 | Kill switch | Persists across restarts when set via API/CLI; audited with events |
 | Extra OT controls | `scan plan` dry run and per-protocol / per-host TCP budgets in v1 |
 | Extra CLI | `observations list`, `hosts evidence`, `active enable` and `active disable` in v1 |
+| Corrupt database | Quarantined as `<path>.corrupt-<UTC time>`, a new one created, logged as an error and recorded as the new database's first event, `DATABASE_RECREATED` (decided 6 Oct 2026) |
+| Proxy ARP vs duplicate IP | Only ARP answers count. Two or more contested addresses, or more than `proxy_arp_threshold` addresses, flag proxy ARP; a single contested address is a duplicate IP. Gratuitous ARP never counts as proxy behaviour but does raise duplicate-IP conflicts (`DATA_MODEL.md` §5.2, decided 6 Oct 2026) |
+| Name expiry | Names are last-known attributes: they close only when a different name of the same type replaces them, never because time passed, whether the host stays visible or goes MISSING. `name_expiry` only marks a name stale when read and never clears `preferred_name` (`DATA_MODEL.md` §5.4, decided 6 Oct 2026, replacing the same day's expire-like-addresses rule) |

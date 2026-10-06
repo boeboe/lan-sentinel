@@ -1,11 +1,12 @@
 # Local development in the dev container: `make run-dev`.
-# Replays the golden reconstruction scenario; nothing is captured or sent.
+# Replays the synthetic site capture (test/fixtures, `make fixtures`) through
+# the capture decoders; nothing is captured or sent.
 version: 1
 interfaces:
   - name: eth1
     prefixes: [192.168.110.0/24]
     replay:
-      file: test/golden/reconstruction/observations.jsonl
+      file: test/fixtures/site-a-eth1.pcapng
       speed: 0          # simulated clock, as fast as possible
 replay: { exit_when_done: false }
 storage: { path: ./dev/hosts.db }

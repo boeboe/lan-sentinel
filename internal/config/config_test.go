@@ -153,6 +153,7 @@ func TestValidation(t *testing.T) {
 		{"promisc without passive", minimal + "    passive: { enabled: false, promiscuous: true }\n", "interfaces[0].passive.promiscuous", "requires passive"},
 		{"replay needs prefixes", "version: 1\ninterfaces:\n  - name: eth1\n    replay: { file: x.jsonl }\n", "interfaces[0].prefixes", "required"},
 		{"replay bad extension", "version: 1\ninterfaces:\n  - name: eth1\n    prefixes: [10.0.0.0/24]\n    replay: { file: x.txt }\n", "interfaces[0].replay.file", "must end in"},
+		{"replay gzipped capture", "version: 1\ninterfaces:\n  - name: eth1\n    prefixes: [10.0.0.0/24]\n    replay: { file: site.pcapng.gz }\n", "", ""},
 		{"replay and live mixed", "version: 1\ninterfaces:\n  - name: eth0\n  - name: eth1\n    prefixes: [10.0.0.0/24]\n    replay: { file: x.jsonl }\n", "interfaces", "cannot be mixed"},
 		{"replay exclusive with active", "version: 1\ninterfaces:\n  - name: eth1\n    prefixes: [10.0.0.0/24]\n    replay: { file: x.jsonl }\n    active: { enabled: true, networks: [10.0.0.0/24] }\n", "interfaces[0].active.enabled", "mutually exclusive"},
 		{"budget above global", minimal + "active: { budgets: { arp: { packets_per_second: 30 } } }\n", "active.budgets.arp.packets_per_second", "exceeds the global"},
@@ -169,6 +170,9 @@ func TestValidation(t *testing.T) {
 		{"socket path too long", minimal + "api: { socket: /" + strings.Repeat("x", 110) + " }\n", "api.socket", "limited to 107"},
 		{"bad log level", minimal + "logging: { level: verbose }\n", "logging.level", "must be one of"},
 		{"db size too small", minimal + "storage: { retention: { max_db_size: 1MB } }\n", "storage.retention.max_db_size", "at least 10MB"},
+		{"ring too small", minimal + "passive: { ring_size: 64KiB }\n", "passive.ring_size", "between 256KiB and 256MiB, got 64KiB"},
+		{"ring too large", minimal + "passive: { ring_size: 1GB }\n", "passive.ring_size", "between 256KiB and 256MiB"},
+		{"ring size", minimal + "passive: { ring_size: 8MiB }\n", "", ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -216,6 +220,9 @@ func TestScalarTypes(t *testing.T) {
 		if (err != nil) != tt.bad || (!tt.bad && b != tt.want) {
 			t.Errorf("parse(%q) = %d, %v", tt.in, b, err)
 		}
+	}
+	if s := ByteSize(2 << 20).String(); s != "2MiB" {
+		t.Errorf("2 MiB prints as %s", s)
 	}
 	if s := ByteSize(200_000_000).String(); s != "200MB" {
 		t.Errorf("String = %q", s)

@@ -13,19 +13,19 @@ import (
 func TestCapturer(t *testing.T) {
 	c := NewCapturer()
 	ctx := context.Background()
-	src, err := c.Open(ctx, "eth1", nil, true)
+	src, err := c.Open(ctx, "eth1", platform.CaptureOptions{Promiscuous: true, RingSize: 1 << 20})
 	if err != nil {
 		t.Fatal(err)
 	}
 	fs := c.Source("eth1")
-	if !fs.Promiscuous {
-		t.Error("promiscuous flag not recorded")
+	if !fs.Options.Promiscuous || fs.Options.RingSize != 1<<20 || c.Opens("eth1") != 1 {
+		t.Error("options or open count not recorded")
 	}
 	for range 70 { // buffer is 64: the rest are dropped like a full ring
 		fs.Inject(time.Unix(1, 0), []byte{1})
 	}
 	st, _ := src.Stats()
-	if st.Received != 64 || st.Dropped != 6 {
+	if st.Received != 70 || st.Dropped != 6 {
 		t.Errorf("stats = %+v", st)
 	}
 	cctx, cancel := context.WithCancel(ctx)
@@ -36,9 +36,21 @@ func TestCapturer(t *testing.T) {
 	if _, err := src.ReadFrame(cctx); !errors.Is(err, context.Canceled) {
 		t.Errorf("ReadFrame after cancel = %v", err)
 	}
-	c.OpenErr = errors.New("permission denied")
-	if _, err := c.Open(ctx, "eth2", nil, false); err == nil {
-		t.Error("OpenErr not returned")
+	fs.Inject(time.Unix(2, 0), []byte{2})
+	fs.LinkDown()
+	if f, err := src.ReadFrame(ctx); err != nil || f.Data[0] != 2 {
+		t.Errorf("queued frame before link down: %v, %v", f, err)
+	}
+	if _, err := src.ReadFrame(ctx); !errors.Is(err, platform.ErrLinkDown) {
+		t.Errorf("ReadFrame after LinkDown = %v", err)
+	}
+	_ = src.Close()
+	if !fs.Closed() {
+		t.Error("Close not recorded")
+	}
+	c.SetOpenErr(errors.New("permission denied"))
+	if _, err := c.Open(ctx, "eth2", platform.CaptureOptions{}); err == nil || c.Opens("eth2") != 1 {
+		t.Error("OpenErr not returned or open not counted")
 	}
 }
 

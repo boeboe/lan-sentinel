@@ -29,7 +29,7 @@ RUN       := docker run --rm -v "$(CURDIR)":/src -w /src -v $(CACHE_VOL):/cache 
 	-e LDFLAGS="$(LDFLAGS)" -e FUZZTIME=$(FUZZTIME) $(DEV_IMAGE)
 
 .DEFAULT_GOAL := help
-.PHONY: help all dev-image shell build release tools oui fmt fmt-check tidy tidy-check mod-verify vet lint vuln \
+.PHONY: help all dev-image shell build release tools oui fixtures fmt fmt-check tidy tidy-check mod-verify vet lint vuln \
 	test coverage cover fuzz test-net test-systemd check check-all run-dev clean clean-cache
 
 help: ## This help
@@ -63,6 +63,9 @@ tools: dev-image ## capcheck for linux/amd64 and linux/arm64 into dist/tools/ (p
 
 oui: dev-image ## Regenerate data/oui/oui.tsv.gz from the IEEE registries (each release)
 	@$(RUN) go run ./data/oui/gen -out data/oui/oui.tsv.gz
+
+fixtures: dev-image ## Regenerate the synthetic pcap fixtures in test/fixtures
+	@$(RUN) go run ./test/fixtures/gen -dir test/fixtures
 
 # --- hygiene -----------------------------------------------------------------
 

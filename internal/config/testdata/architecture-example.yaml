@@ -11,6 +11,7 @@ interfaces:
       exclude:  [192.168.110.1]
 passive:
   protocols: { arp: true, ipv4: true, ipv6: false, dhcp: true, mdns: true, dns: true, lldp: true }
+  ring_size: 2MiB                   # AF_PACKET ring per captured interface (256KiB-256MiB)
 neighbor:
   resync_interval: 10m              # full neighbour-table dump in addition to notifications
 active:
@@ -43,7 +44,7 @@ identity:
   hostname_preference: [mdns, dhcp, dns_ptr, lldp]
   address_overlap: 5m         # older open IPv4 binding is replaced, not kept alongside
   address_expiry: 24h         # unconfirmed binding closed while host is otherwise seen
-  name_expiry: 168h
+  name_expiry: 168h           # names not confirmed this long show as stale; they are never closed by time
   proxy_arp_threshold: 16
   oui_override: ""            # optional path
 storage:

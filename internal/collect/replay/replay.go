@@ -1,5 +1,7 @@
 // Package replay feeds recorded observations through the daemon (FR-RP-1,
-// FR-RP-2). It merges every replay file into one time-ordered stream and
+// FR-RP-2): JSONL observation streams, or pcap/pcapng captures decoded by
+// the capture decoders. It merges every replay file into one time-ordered
+// stream and
 // drives the simulated clock: as fast as possible (speed 0) or in real time
 // scaled by a speed factor. Observations are published with PublishWait,
 // never dropped, so a replay is complete and deterministic.
@@ -17,9 +19,16 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
+	"github.com/gopacket/gopacket"
+	"github.com/gopacket/gopacket/layers"
+	"github.com/gopacket/gopacket/pcapgo"
+
 	"lan-sentinel/internal/clock"
+	"lan-sentinel/internal/collect/capture"
+	"lan-sentinel/internal/collect/capture/decoders"
 	"lan-sentinel/internal/observation"
 	"lan-sentinel/internal/platform"
 )
@@ -47,10 +56,12 @@ type Player struct {
 
 // Options configures a Player.
 type Options struct {
-	Sources  []Source
-	Speed    float64
-	Registry *platform.Registry
-	Logger   *slog.Logger
+	Sources []Source
+	Speed   float64
+	// Protocols selects the decoders for pcap and pcapng files.
+	Protocols decoders.Protocols
+	Registry  *platform.Registry
+	Logger    *slog.Logger
 }
 
 // Open opens every source and reads ahead to the first observation, so the
@@ -61,7 +72,7 @@ func Open(o Options) (*Player, error) {
 	}
 	p := &Player{sources: o.Sources, speed: o.Speed, registry: o.Registry, log: o.Logger}
 	for _, s := range o.Sources {
-		r, err := openReader(s)
+		r, err := openReader(s, o.Protocols)
 		if err != nil {
 			p.Close()
 			p.report(s.Interface, platform.StateFailed, err)
@@ -177,30 +188,36 @@ func (p *Player) earliest() *reader {
 	return best
 }
 
-// reader reads one JSONL file one observation ahead.
+// reader reads one replay file one observation ahead.
 type reader struct {
 	src  Source
 	f    *os.File
-	sc   *bufio.Scanner
-	line int
+	pull func() (*observation.Observation, error) // nil at end of file
 	next *observation.Observation
 }
 
-func openReader(s Source) (*reader, error) {
-	switch filepath.Ext(s.File) {
-	case ".jsonl":
-	case ".pcap", ".pcapng":
-		return nil, fmt.Errorf("replay %s: pcap input arrives with the decoders in phase 2", s.File)
-	default:
-		return nil, fmt.Errorf("replay %s: unsupported file type", s.File)
-	}
+func openReader(s Source, p decoders.Protocols) (*reader, error) {
 	f, err := os.Open(s.File)
 	if err != nil {
 		return nil, fmt.Errorf("replay: %w", err)
 	}
-	r := &reader{src: s, f: f, sc: bufio.NewScanner(f)}
-	r.sc.Buffer(make([]byte, 64*1024), 1<<20)
-	if err := r.advance(); err != nil {
+	r := &reader{src: s, f: f}
+	switch filepath.Ext(strings.TrimSuffix(s.File, ".gz")) {
+	case ".jsonl":
+		if strings.HasSuffix(s.File, ".gz") {
+			err = errors.New("compressed JSONL is not supported")
+			break
+		}
+		r.pull = jsonlPull(r)
+	case ".pcap", ".pcapng":
+		r.pull, err = pcapPull(f, s.Interface, p)
+	default:
+		err = errors.New("unsupported file type (want .jsonl, .pcap, .pcapng, .pcap.gz or .pcapng.gz)")
+	}
+	if err == nil {
+		err = r.advance()
+	}
+	if err != nil {
 		_ = f.Close()
 		return nil, fmt.Errorf("replay %s: %w", s.File, err)
 	}
@@ -209,29 +226,104 @@ func openReader(s Source) (*reader, error) {
 
 // advance reads the next observation (nil at end of file).
 func (r *reader) advance() error {
-	r.next = nil
-	for r.sc.Scan() {
-		r.line++
-		b := bytes.TrimSpace(r.sc.Bytes())
-		if len(b) == 0 {
-			continue
+	var err error
+	r.next, err = r.pull()
+	return err
+}
+
+// jsonlPull reads observations from a JSONL file (docs/DATA_MODEL.md §2).
+func jsonlPull(r *reader) func() (*observation.Observation, error) {
+	sc := bufio.NewScanner(r.f)
+	sc.Buffer(make([]byte, 64*1024), 1<<20)
+	line := 0
+	return func() (*observation.Observation, error) {
+		for sc.Scan() {
+			line++
+			b := bytes.TrimSpace(sc.Bytes())
+			if len(b) == 0 {
+				continue
+			}
+			var o observation.Observation
+			if err := json.Unmarshal(b, &o); err != nil {
+				return nil, fmt.Errorf("line %d: %w", line, err)
+			}
+			switch o.Interface {
+			case "":
+				o.Interface = r.src.Interface
+			case r.src.Interface:
+			default:
+				return nil, fmt.Errorf("line %d: observation for %s in the replay file of %s", line, o.Interface, r.src.Interface)
+			}
+			return &o, nil
 		}
-		var o observation.Observation
-		if err := json.Unmarshal(b, &o); err != nil {
-			return fmt.Errorf("line %d: %w", r.line, err)
+		if err := sc.Err(); err != nil && !errors.Is(err, io.EOF) {
+			return nil, fmt.Errorf("line %d: %w", line+1, err)
 		}
-		switch o.Interface {
-		case "":
-			o.Interface = r.src.Interface
-		case r.src.Interface:
-		default:
-			return fmt.Errorf("line %d: observation for %s in the replay file of %s", r.line, o.Interface, r.src.Interface)
-		}
-		r.next = &o
-		return nil
+		return nil, nil
 	}
-	if err := r.sc.Err(); err != nil && !errors.Is(err, io.EOF) {
-		return fmt.Errorf("line %d: %w", r.line+1, err)
+}
+
+// packetReader is the part of pcapgo's pcap and pcapng readers replay uses.
+type packetReader interface {
+	ReadPacketData() ([]byte, gopacket.CaptureInfo, error)
+}
+
+// inboundReader reads a pcapng file and skips packets recorded as
+// outbound: frames the capturing host sent, which live capture never sees.
+type inboundReader struct{ ng *pcapgo.NgReader }
+
+func (r inboundReader) ReadPacketData() ([]byte, gopacket.CaptureInfo, error) {
+	for {
+		data, ci, opts, err := r.ng.ReadPacketDataWithOptions()
+		if err != nil || opts.Flags == nil || opts.Flags.Direction&pcapgo.NgEpbFlagDirectionMask != pcapgo.NgEpbFlagDirectionOutbound {
+			return data, ci, err
+		}
 	}
-	return nil
+}
+
+// pcapPull decodes a pcap or pcapng capture (optionally gzipped) with the
+// capture decoders and refresh suppression, exactly as live capture would.
+// Only Ethernet captures can be replayed; in a pcapng file, packets of
+// interfaces with another link type are skipped, and so are packets
+// recorded as outbound. A classic pcap file records no direction, so a
+// capture taken on the box itself includes the box's own frames.
+func pcapPull(f *os.File, iface string, p decoders.Protocols) (func() (*observation.Observation, error), error) {
+	var pr packetReader
+	if ng, err := pcapgo.NewNgReader(f, pcapgo.DefaultNgReaderOptions); err == nil {
+		if ng.LinkType() != layers.LinkTypeEthernet {
+			return nil, fmt.Errorf("link type %s: only Ethernet captures can be replayed", ng.LinkType())
+		}
+		pr = inboundReader{ng}
+	} else {
+		if _, err := f.Seek(0, io.SeekStart); err != nil {
+			return nil, err
+		}
+		r, err := pcapgo.NewReader(f)
+		if err != nil {
+			return nil, fmt.Errorf("not a pcap or pcapng file: %w", err)
+		}
+		if r.LinkType() != layers.LinkTypeEthernet {
+			return nil, fmt.Errorf("link type %s: only Ethernet captures can be replayed", r.LinkType())
+		}
+		pr = r
+	}
+	dec := capture.NewDecoder(p)
+	var pending []observation.Observation
+	packet := 0
+	return func() (*observation.Observation, error) {
+		for len(pending) == 0 {
+			data, ci, err := pr.ReadPacketData()
+			if errors.Is(err, io.EOF) {
+				return nil, nil
+			}
+			packet++
+			if err != nil {
+				return nil, fmt.Errorf("packet %d: %w", packet, err)
+			}
+			pending = dec.Decode(ci.Timestamp.UTC(), iface, data)
+		}
+		o := pending[0]
+		pending = pending[1:]
+		return &o, nil
+	}, nil
 }

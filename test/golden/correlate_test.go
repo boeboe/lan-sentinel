@@ -4,10 +4,12 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/netip"
 	"path/filepath"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -38,7 +40,9 @@ ORDER BY id`
 
 // runCorrelator replays the stream through the correlator into a fresh
 // database and compares bindings, events, the unbound count and the query
-// answers with the scenario's expectations.
+// answers with the scenario's expectations; then it compacts the database
+// as it would be a week later and checks that every answer and every
+// event's evidence is unchanged (docs/DATA_MODEL.md §10).
 func runCorrelator(t *testing.T, obs []observation.Observation, exp Expected) {
 	ctx := context.Background()
 	start := obs[0].Time
@@ -79,20 +83,77 @@ func runCorrelator(t *testing.T, obs []observation.Observation, exp Expected) {
 		t.Fatalf("%d store writes failed", st.OpErrors())
 	}
 
-	err = st.View(ctx, func(ctx context.Context, tx *sql.Tx) error {
-		labels := hostLabels(t, ctx, tx, exp)
-		compareBindings(t, ctx, tx, exp, labels)
-		compareEvents(t, ctx, tx, exp, labels)
-		compareQueries(t, ctx, tx, exp, labels)
-		compareHistory(t, ctx, tx, exp, labels)
-		return nil
+	check := func(t *testing.T) {
+		err := st.View(ctx, func(ctx context.Context, tx *sql.Tx) error {
+			labels := hostLabels(t, ctx, tx, exp)
+			compareBindings(t, ctx, tx, exp, labels)
+			compareEvents(t, ctx, tx, exp, labels)
+			compareQueries(t, ctx, tx, exp, labels)
+			compareHistory(t, ctx, tx, exp, labels)
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Run("answers", check)
+	if got := c.Unbound(); got != uint64(exp.Unbound) {
+		t.Errorf("unbound observations = %d, want %d", got, exp.Unbound)
+	}
+
+	eventsBefore := dump(t, st, `SELECT * FROM events ORDER BY id`)
+	stored := dump(t, st, `SELECT count(*) FROM observations`)
+	week := 7 * 24 * time.Hour
+	res, err := st.Compact(ctx, store.Retention{Observations: week, Rollups: 90 * 24 * time.Hour, Events: 730 * 24 * time.Hour},
+		obs[len(obs)-1].Time.Add(week+time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Run("answers after 7-day compaction", check)
+	if fmt.Sprint(res.RolledUp) != stored[0] || dump(t, st, `SELECT count(*) FROM observations`)[0] != "0" ||
+		dump(t, st, `SELECT sum(count) FROM observation_rollups`)[0] != stored[0] {
+		t.Errorf("compaction rolled up %d of %s observations", res.RolledUp, stored[0])
+	}
+	if after := dump(t, st, `SELECT * FROM events ORDER BY id`); strings.Join(after, "\n") != strings.Join(eventsBefore, "\n") {
+		t.Errorf("events changed by compaction:\nbefore %v\nafter  %v", eventsBefore, after)
+	}
+}
+
+// dump renders every row of a query as text.
+func dump(t *testing.T, st *store.Store, query string) []string {
+	t.Helper()
+	var out []string
+	err := st.View(context.Background(), func(ctx context.Context, tx *sql.Tx) error {
+		rows, err := tx.QueryContext(ctx, query)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		cols, err := rows.Columns()
+		if err != nil {
+			return err
+		}
+		for rows.Next() {
+			vals := make([]any, len(cols))
+			ptrs := make([]any, len(cols))
+			for i := range vals {
+				ptrs[i] = &vals[i]
+			}
+			if err := rows.Scan(ptrs...); err != nil {
+				return err
+			}
+			parts := make([]string, len(vals))
+			for i, v := range vals {
+				parts[i] = fmt.Sprint(v)
+			}
+			out = append(out, strings.Join(parts, "|"))
+		}
+		return rows.Err()
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := c.Unbound(); got != uint64(exp.Unbound) {
-		t.Errorf("unbound observations = %d, want %d", got, exp.Unbound)
-	}
+	return out
 }
 
 func ms(t time.Time) int64 { return t.UnixMilli() }

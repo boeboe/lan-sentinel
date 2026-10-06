@@ -72,12 +72,14 @@ var byteUnits = []struct {
 	{"B", 1},
 }
 
+// String uses the largest unit that divides the size, binary before
+// decimal: 2MiB, 200MB, 1500B.
 func (b ByteSize) String() string {
 	v := int64(b)
 	for _, u := range []struct {
 		suffix string
 		mult   int64
-	}{{"GB", 1e9}, {"MB", 1e6}, {"KB", 1e3}} {
+	}{{"GiB", 1 << 30}, {"MiB", 1 << 20}, {"KiB", 1 << 10}, {"GB", 1e9}, {"MB", 1e6}, {"KB", 1e3}} {
 		if v != 0 && v%u.mult == 0 {
 			return strconv.FormatInt(v/u.mult, 10) + u.suffix
 		}

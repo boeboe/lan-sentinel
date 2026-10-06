@@ -11,8 +11,6 @@ import (
 	"sync"
 	"time"
 
-	"golang.org/x/net/bpf"
-
 	"lan-sentinel/internal/platform"
 )
 
@@ -23,45 +21,80 @@ var ErrClosed = errors.New("fake: closed")
 type Capturer struct {
 	mu      sync.Mutex
 	sources map[string]*FrameSource
+	opens   map[string]int
 	// OpenErr, if set, is returned by Open.
 	OpenErr error
+	// startDown makes new sources fail with ErrLinkDown at once, like a
+	// socket bound to an administratively down interface.
+	startDown bool
 }
 
 // NewCapturer returns an empty fake capturer.
-func NewCapturer() *Capturer { return &Capturer{sources: map[string]*FrameSource{}} }
+func NewCapturer() *Capturer {
+	return &Capturer{sources: map[string]*FrameSource{}, opens: map[string]int{}}
+}
 
 // Backend implements platform.Capturer.
 func (c *Capturer) Backend() string { return "fake" }
 
 // Open implements platform.Capturer.
-func (c *Capturer) Open(_ context.Context, iface string, filter []bpf.RawInstruction, promisc bool) (platform.FrameSource, error) {
+func (c *Capturer) Open(_ context.Context, iface string, o platform.CaptureOptions) (platform.FrameSource, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.opens[iface]++
 	if c.OpenErr != nil {
 		return nil, c.OpenErr
 	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	src := &FrameSource{iface: iface, Filter: filter, Promiscuous: promisc, frames: make(chan platform.Frame, 64), done: make(chan struct{})}
+	src := &FrameSource{iface: iface, Options: o, frames: make(chan platform.Frame, 64), done: make(chan struct{}),
+		down: make(chan struct{})}
+	if c.startDown {
+		src.LinkDown()
+	}
 	c.sources[iface] = src
 	return src, nil
 }
 
-// Source returns the frame source opened for iface, or nil.
+// SetStartDown makes sources opened from now on fail with
+// platform.ErrLinkDown at once (true) or work normally (false).
+func (c *Capturer) SetStartDown(down bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.startDown = down
+}
+
+// SetOpenErr sets the error Open returns (nil to succeed again).
+func (c *Capturer) SetOpenErr(err error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.OpenErr = err
+}
+
+// Source returns the frame source last opened for iface, or nil.
 func (c *Capturer) Source(iface string) *FrameSource {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.sources[iface]
 }
 
+// Opens returns how many times Open was called for iface.
+func (c *Capturer) Opens(iface string) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.opens[iface]
+}
+
 // FrameSource is a fake capture handle.
 type FrameSource struct {
-	iface       string
-	Filter      []bpf.RawInstruction
-	Promiscuous bool
-	frames      chan platform.Frame
-	done        chan struct{}
-	closeOnce   sync.Once
-	mu          sync.Mutex
-	stats       platform.CaptureStats
+	iface     string
+	Options   platform.CaptureOptions
+	frames    chan platform.Frame
+	done      chan struct{}
+	down      chan struct{}
+	closeOnce sync.Once
+	downOnce  sync.Once
+	mu        sync.Mutex
+	stats     platform.CaptureStats
+	closed    bool
 }
 
 // Inject delivers a frame to the reader, dropping it (and counting the drop)
@@ -69,12 +102,23 @@ type FrameSource struct {
 func (s *FrameSource) Inject(t time.Time, data []byte) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.stats.Received++
 	select {
 	case s.frames <- platform.Frame{Time: t, Interface: s.iface, Data: data}:
-		s.stats.Received++
 	default:
 		s.stats.Dropped++
 	}
+}
+
+// LinkDown makes ReadFrame return platform.ErrLinkDown once the frames
+// already queued have been read.
+func (s *FrameSource) LinkDown() { s.downOnce.Do(func() { close(s.down) }) }
+
+// Closed reports whether Close was called.
+func (s *FrameSource) Closed() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.closed
 }
 
 // ReadFrame implements platform.FrameSource.
@@ -82,6 +126,13 @@ func (s *FrameSource) ReadFrame(ctx context.Context) (platform.Frame, error) {
 	select {
 	case f := <-s.frames:
 		return f, nil
+	default:
+	}
+	select {
+	case f := <-s.frames:
+		return f, nil
+	case <-s.down:
+		return platform.Frame{}, platform.ErrLinkDown
 	case <-s.done:
 		return platform.Frame{}, ErrClosed
 	case <-ctx.Done():
@@ -99,6 +150,9 @@ func (s *FrameSource) Stats() (platform.CaptureStats, error) {
 // Close implements platform.FrameSource.
 func (s *FrameSource) Close() error {
 	s.closeOnce.Do(func() { close(s.done) })
+	s.mu.Lock()
+	s.closed = true
+	s.mu.Unlock()
 	return nil
 }
 

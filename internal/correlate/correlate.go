@@ -37,9 +37,10 @@ const ouiConfidence = 0.7
 
 // Internal event causes (docs/DATA_MODEL.md §2).
 const (
-	causePresence = "presence"
-	causeExpiry   = "expiry"
-	causeIface    = "iface_monitor"
+	causePresence  = "presence"
+	causeExpiry    = "expiry"
+	causeIface     = "iface_monitor"
+	causeIntegrity = "integrity_check"
 )
 
 // Options configures a Correlator.
@@ -56,6 +57,9 @@ type Options struct {
 	Tick       time.Duration
 	// NewID returns host ids; default UUIDv7.
 	NewID func() string
+	// Recovery, if set, is the corrupt database the store quarantined at
+	// start-up; New records it as the new database's first event.
+	Recovery *store.Recovery
 }
 
 // Correlator is the identity engine.
@@ -104,6 +108,10 @@ func New(ctx context.Context, o Options) (*Correlator, error) {
 		return nil, err
 	}
 	now := c.clock.Now()
+	if r := o.Recovery; r != nil {
+		c.emit(ctx, events.Event{TS: now, Type: events.DatabaseRecreated, New: r.QuarantinedTo, Cause: causeIntegrity,
+			Evidence: events.Evidence{TS: now, Reason: r.Reason}})
+	}
 	for _, ic := range o.Config.Interfaces {
 		if _, ok := c.st.contexts[ic.Name]; ok {
 			continue

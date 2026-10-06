@@ -8,6 +8,7 @@ rm -rf "$OUT"
 mkdir -p "$OUT"
 go build -trimpath -o "$OUT/lan-sentinel" ./cmd/lan-sentinel
 go build -trimpath -o "$OUT/capcheck" ./tools/capcheck
+go build -trimpath -o "$OUT/inject" ./test/net/inject
 for pkg in $(go list -tags nettest -f '{{if .TestGoFiles}}{{.ImportPath}}{{end}}' ./test/net/...); do
 	go test -c -tags nettest -o "$OUT/$(echo "$pkg" | tr / _).test" "$pkg"
 done

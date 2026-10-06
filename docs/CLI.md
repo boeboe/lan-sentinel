@@ -169,7 +169,8 @@ Addresses:
   192.168.110.200  2026-10-03 11:24:10 → open   sources: passive_arp, kernel_neighbor, arp_scan
 
 Names:
-  hmi01.local      mdns
+  hmi01.local      mdns   confirmed 2h ago
+  HMI01            dhcp   confirmed 12d ago (stale)
 
 Services:
   tcp/80   OPEN     13s ago

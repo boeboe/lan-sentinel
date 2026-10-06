@@ -33,7 +33,7 @@ const (
 	MACMoved            Type = "MAC_MOVED"
 	HostnameAdded       Type = "HOSTNAME_ADDED"
 	HostnameChanged     Type = "HOSTNAME_CHANGED"
-	HostnameRemoved     Type = "HOSTNAME_REMOVED"
+	HostnameRemoved     Type = "HOSTNAME_REMOVED" // reserved: no v1 rule closes a name without a replacement
 	ServiceOpened       Type = "SERVICE_OPENED"
 	ServiceClosed       Type = "SERVICE_CLOSED"
 	VendorIdentified    Type = "VENDOR_IDENTIFIED"
@@ -46,6 +46,7 @@ const (
 	InterfaceUp         Type = "INTERFACE_UP"
 	InterfaceDown       Type = "INTERFACE_DOWN"
 	SubnetChanged       Type = "SUBNET_CHANGED"
+	DatabaseRecreated   Type = "DATABASE_RECREATED"
 )
 
 // Severity is an event's severity.
@@ -91,6 +92,7 @@ func init() {
 		{InterfaceUp, "interface-up", Notice},
 		{InterfaceDown, "interface-down", Warning},
 		{SubnetChanged, "subnet-changed", Notice},
+		{DatabaseRecreated, "db-recreated", Warning},
 	} {
 		catalogue[s.Type] = s
 	}

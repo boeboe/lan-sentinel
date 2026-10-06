@@ -53,6 +53,32 @@ type host struct {
 	evidence   events.Evidence
 	bindings   map[netip.Addr]*binding // open bindings
 	services   map[string]*serviceRow
+	names      map[observation.NameType]*nameRow // open name per type
+	nameChange map[observation.NameType]time.Time
+	preferred  string
+
+	// Proxy-ARP detection (docs/DATA_MODEL.md §5.2): when this MAC last
+	// answered ARP for each address, and for those held by another live host.
+	proxyARP    bool
+	arpClaims   map[netip.Addr]time.Time
+	arpOverlaps map[netip.Addr]time.Time
+}
+
+type nameRow struct {
+	id        int64
+	name      string
+	typ       observation.NameType
+	source    observation.Source
+	firstSeen time.Time
+	lastSeen  time.Time
+}
+
+func newHost() *host {
+	return &host{
+		bindings: map[netip.Addr]*binding{}, services: map[string]*serviceRow{},
+		names: map[observation.NameType]*nameRow{}, nameChange: map[observation.NameType]time.Time{},
+		arpClaims: map[netip.Addr]time.Time{}, arpOverlaps: map[netip.Addr]time.Time{},
+	}
 }
 
 type binding struct {
@@ -62,6 +88,9 @@ type binding struct {
 	conflict  bool
 	firstSeen time.Time
 	lastSeen  time.Time
+	// arpOnly: opened by an ARP reply and not confirmed by other evidence
+	// since (bindings loaded at start-up count as confirmed).
+	arpOnly bool
 }
 
 type serviceRow struct {
@@ -87,7 +116,7 @@ type state struct {
 	holders      map[ipKey][]*binding       // open bindings per IP
 	ipLastChange map[ipKey]time.Time
 
-	nextContextID, nextPrefixID, nextAddressID, nextObservationID, nextServiceID int64
+	nextContextID, nextPrefixID, nextAddressID, nextObservationID, nextServiceID, nextNameID int64
 }
 
 func newState() *state {
@@ -192,11 +221,12 @@ func (s *state) load(ctx context.Context, tx *sql.Tx) error {
 		return nil
 	})
 	byID := map[string]*host{}
-	q(`SELECT host_id, context_id, mac, coalesce(vendor, ''), presence, first_seen, last_seen FROM hosts ORDER BY first_seen, host_id`, func(r *sql.Rows) error {
-		h := &host{bindings: map[netip.Addr]*binding{}, services: map[string]*serviceRow{}}
+	q(`SELECT host_id, context_id, mac, coalesce(vendor, ''), presence, coalesce(preferred_name, ''), first_seen, last_seen
+		FROM hosts ORDER BY first_seen, host_id`, func(r *sql.Rows) error {
+		h := newHost()
 		var cid, first, last int64
 		var mac, presence string
-		if err := r.Scan(&h.id, &cid, &mac, &h.vendor, &presence, &first, &last); err != nil {
+		if err := r.Scan(&h.id, &cid, &mac, &h.vendor, &presence, &h.preferred, &first, &last); err != nil {
 			return err
 		}
 		var err error
@@ -261,12 +291,47 @@ func (s *state) load(ctx context.Context, tx *sql.Tx) error {
 		}
 		return nil
 	})
+	q(`SELECT id, host_id, name, name_type, source, first_seen, last_seen FROM names WHERE ended_at IS NULL`, func(r *sql.Rows) error {
+		n := &nameRow{}
+		var hid, typ, src string
+		var first, last int64
+		if err := r.Scan(&n.id, &hid, &n.name, &typ, &src, &first, &last); err != nil {
+			return err
+		}
+		n.typ, n.source, n.firstSeen, n.lastSeen = observation.NameType(typ), observation.Source(src), fromMS(first), fromMS(last)
+		if h := byID[hid]; h != nil {
+			h.names[n.typ] = n
+		}
+		return nil
+	})
+	q(`SELECT DISTINCT host_id FROM identifications WHERE field = 'proxy_arp' AND value = 'true'`, func(r *sql.Rows) error {
+		var hid string
+		if err := r.Scan(&hid); err != nil {
+			return err
+		}
+		if h := byID[hid]; h != nil {
+			h.proxyARP = true
+		}
+		return nil
+	})
+	q(`SELECT host_id, name_type, max(max(first_seen), max(coalesce(ended_at, 0))) FROM names GROUP BY host_id, name_type`, func(r *sql.Rows) error {
+		var hid, typ string
+		var t int64
+		if err := r.Scan(&hid, &typ, &t); err != nil {
+			return err
+		}
+		if h := byID[hid]; h != nil {
+			h.nameChange[observation.NameType(typ)] = fromMS(t)
+		}
+		return nil
+	})
 	for _, c := range []struct {
 		table string
 		dst   *int64
 	}{
 		{"network_contexts", &s.nextContextID}, {"context_prefixes", &s.nextPrefixID},
 		{"addresses", &s.nextAddressID}, {"observations", &s.nextObservationID}, {"services", &s.nextServiceID},
+		{"names", &s.nextNameID},
 	} {
 		q(`SELECT coalesce(max(id), 0) FROM `+c.table, func(r *sql.Rows) error { return r.Scan(c.dst) })
 	}

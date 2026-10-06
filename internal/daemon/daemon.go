@@ -20,6 +20,7 @@ import (
 
 	"lan-sentinel/internal/buildinfo"
 	"lan-sentinel/internal/clock"
+	"lan-sentinel/internal/collect/capture"
 	"lan-sentinel/internal/collect/replay"
 	"lan-sentinel/internal/config"
 	"lan-sentinel/internal/correlate"
@@ -60,7 +61,8 @@ type Daemon struct {
 	backends platform.Backends
 	ready    chan struct{}
 
-	player     *replay.Player // replay mode only
+	player     *replay.Player     // replay mode only
+	capture    *capture.Collector // live mode with passive capture
 	bus        *observation.Bus
 	correlator *correlate.Correlator
 	replayDone chan struct{}
@@ -144,6 +146,10 @@ func (d *Daemon) Run(ctx context.Context) error {
 		return fmt.Errorf("open store: %w", err)
 	}
 	d.store = st
+	if r := st.Recovery(); r != nil {
+		d.log.Error("database was corrupt; quarantined it and created a new one",
+			"quarantined", r.QuarantinedTo, "reason", r.Reason)
+	}
 	d.log.Info("database ready", "path", st.Path(), "schema_version", st.SchemaVersion())
 
 	if err := d.startPipeline(ctx); err != nil {
@@ -154,6 +160,15 @@ func (d *Daemon) Run(ctx context.Context) error {
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	var wg sync.WaitGroup
+	// A replay does not compact: its database should depend only on the
+	// recorded data, not on when the simulated clock's ticks were handled.
+	if !d.cfg.Load().ReplayMode() {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			d.store.RunCompaction(runCtx, d.clock, compactionInterval, d.retention, d.log)
+		}()
+	}
 	if iv, ok := d.notifier.WatchdogInterval(); ok {
 		interval := time.Duration(iv)
 		ticker := d.clock.NewTicker(interval / 2) // armed before readiness
@@ -182,6 +197,15 @@ func (d *Daemon) Run(ctx context.Context) error {
 	}
 	d.log.Info("lan-sentinel stopped")
 	return nil
+}
+
+// compactionInterval is how often retention and the size cap are applied
+// (docs/DATA_MODEL.md §9).
+const compactionInterval = time.Hour
+
+func (d *Daemon) retention() store.Retention {
+	r := d.cfg.Load().Storage.Retention
+	return store.Retention{Observations: r.Observations.D(), Rollups: r.Rollups.D(), Events: r.Events.D(), MaxDBSize: int64(r.MaxDBSize)}
 }
 
 func (d *Daemon) loop(ctx context.Context) string {

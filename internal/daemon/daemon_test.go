@@ -15,10 +15,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gopacket/gopacket/layers"
+
 	"lan-sentinel/internal/clock"
 	"lan-sentinel/internal/config"
 	"lan-sentinel/internal/platform"
 	"lan-sentinel/internal/platform/fake"
+	"lan-sentinel/test/frames"
 )
 
 type syncBuffer struct {
@@ -73,6 +76,7 @@ func (f *fakeNotifier) count(c string) int {
 }
 
 type harness struct {
+	capt     *fake.Capturer
 	neigh    *fake.Neighbors
 	ifaces   *fake.Interfaces
 	t        *testing.T
@@ -112,8 +116,8 @@ func startWith(t *testing.T, cfg string, watchdog time.Duration, setup func(*fak
 		sim: clock.NewSim(time.Date(2026, 10, 1, 10, 0, 0, 0, time.UTC)), errc: make(chan error, 1),
 	}
 	h.writeConfig(strings.ReplaceAll(cfg, "$DIR", dir))
-	backends, _, neigh, ifaces, _ := fake.Backends()
-	h.neigh, h.ifaces = neigh, ifaces
+	backends, capt, neigh, ifaces, _ := fake.Backends()
+	h.capt, h.neigh, h.ifaces = capt, neigh, ifaces
 	if setup != nil {
 		setup(neigh, ifaces)
 	}
@@ -346,6 +350,12 @@ func TestLivePipeline(t *testing.T) {
 	h.waitState("eth1", platform.CollectorNeighbor, platform.StateRunning)
 	h.waitState("eth1", platform.CollectorInterface, platform.StateRunning)
 	h.waitLog("HOST_DISCOVERED eth1 00:1b:1b:12:34:56 192.168.110.50")
+	// Captured frames reach the correlator too: an mDNS announcement names
+	// the host.
+	h.waitState("eth1", platform.CollectorCapture, platform.StateRunning)
+	h.capt.Source("eth1").Inject(h.sim.Now(), frames.MDNS4(mac, "192.168.110.50",
+		[]layers.DNSResourceRecord{frames.A("plc-7.local", "192.168.110.50")}, nil))
+	h.waitLog("HOSTNAME_ADDED eth1 00:1b:1b:12:34:56 mdns:plc-7.local")
 	h.stop()
 
 	db := filepath.Join(h.dir, "data", "hosts.db")
@@ -353,12 +363,13 @@ func TestLivePipeline(t *testing.T) {
 		query string
 		want  []string
 	}{
-		{`SELECT mac || ' ' || vendor || ' ' || presence FROM hosts`, []string{"00:1b:1b:12:34:56 Siemens AG ACTIVE"}},
+		{`SELECT mac || ' ' || vendor || ' ' || presence || ' ' || preferred_name FROM hosts`, []string{"00:1b:1b:12:34:56 Siemens AG ACTIVE plc-7.local"}},
 		{`SELECT ip || ' ' || (ended_at IS NULL) FROM addresses`, []string{"192.168.110.50 1"}},
-		{`SELECT source FROM address_sources`, []string{"kernel_neighbor"}},
+		{`SELECT source FROM address_sources ORDER BY source`, []string{"kernel_neighbor", "passive_mdns"}},
 		{`SELECT prefix FROM context_prefixes WHERE ended_at IS NULL`, []string{"192.168.110.0/24"}},
-		{`SELECT type FROM events ORDER BY id`, []string{"SUBNET_CHANGED", "HOST_DISCOVERED"}},
-		{`SELECT json_extract(meta_json, '$.neighbor_state') FROM observations`, []string{"REACHABLE"}},
+		// The interface manager and the neighbour collector run concurrently.
+		{`SELECT type FROM events ORDER BY type`, []string{"HOSTNAME_ADDED", "HOST_DISCOVERED", "SUBNET_CHANGED"}},
+		{`SELECT json_extract(meta_json, '$.neighbor_state') FROM observations WHERE source = 'kernel_neighbor'`, []string{"REACHABLE"}},
 	}
 	for _, tt := range tests {
 		if got := queryDB(t, db, tt.query); strings.Join(got, "|") != strings.Join(tt.want, "|") {
@@ -408,5 +419,45 @@ func TestReplayExitsWhenDone(t *testing.T) {
 	}
 	if got := queryDB(t, db, `SELECT min(first_seen) FROM network_contexts`); got[0] != "1790848800000" {
 		t.Errorf("context first_seen = %v, want the replay's first observation (2026-10-01T10:00:00Z)", got)
+	}
+}
+
+// TestCorruptDatabaseRecreated: a corrupt database is quarantined, a new one
+// created, and the new database's first event records it (FR-ST-4).
+func TestCorruptDatabaseRecreated(t *testing.T) {
+	dir := t.TempDir()
+	golden, err := filepath.Abs("../../test/golden/reconstruction/observations.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	db := filepath.Join(dir, "hosts.db")
+	if err := os.WriteFile(db, []byte(strings.Repeat("not a database ", 500)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfgPath := filepath.Join(dir, "config.yaml")
+	cfg := "version: 1\ninterfaces:\n  - name: eth1\n    prefixes: [192.168.110.0/24]\n    replay: { file: " + golden +
+		" }\nreplay: { exit_when_done: true }\nstorage: { path: " + db + " }\napi: { socket: ./api.sock }\nlogging: { format: text }\n"
+	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	log := &syncBuffer{}
+	backends, _, _, _, _ := fake.Backends()
+	if err := Run(context.Background(), Options{Load: config.LoadOptions{Path: cfgPath}, Stderr: log, Backends: &backends,
+		Notifier: &fakeNotifier{}, Signals: make(chan os.Signal)}); err != nil {
+		t.Fatalf("Run: %v\n%s", err, log)
+	}
+	if !strings.Contains(log.String(), "database was corrupt; quarantined it and created a new one") ||
+		!strings.Contains(log.String(), "DATABASE_RECREATED") {
+		t.Errorf("log lacks the recovery:\n%s", log)
+	}
+	matches, _ := filepath.Glob(db + ".corrupt-*")
+	if len(matches) != 1 {
+		t.Fatalf("quarantined files = %v", matches)
+	}
+	got := queryDB(t, db, `SELECT type || ' ' || severity || ' ' || cause || ' ' || new_value || ' ' || json_extract(evidence_json, '$.reason')
+		FROM events ORDER BY id LIMIT 1`)
+	want := "DATABASE_RECREATED warning integrity_check " + matches[0] + " open database " + db
+	if len(got) != 1 || !strings.HasPrefix(got[0], want) {
+		t.Errorf("first event = %v, want prefix %q", got, want)
 	}
 }

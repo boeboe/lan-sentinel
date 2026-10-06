@@ -49,6 +49,8 @@ check "effective capabilities are CAP_NET_RAW only" grep -Eq '^CapEff:\s+0000000
 check "bounding set is CAP_NET_RAW only" grep -Eq '^CapBnd:\s+0000000000002000$' <<<"$status"
 check "database created in /data/lan-sentinel" x test -f /data/lan-sentinel/hosts.db
 check "events go to the journal" journal_has "lan-sentinel running"
+check "passive capture runs under the unit (AF_PACKET)" wait_for 10 journal_has "capture started"
+check "no capture failures" bash -c "! docker exec $NAME journalctl -u lan-sentinel --no-pager -o cat | grep -q 'capture unavailable'"
 
 x systemctl reload lan-sentinel
 check "SIGHUP reload" wait_for 10 journal_has "configuration reloaded"

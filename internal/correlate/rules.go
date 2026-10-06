@@ -40,14 +40,18 @@ func (c *Correlator) observe(ctx context.Context, o observation.Observation) {
 	obsID := c.st.nextObservationID
 	ev := events.EvidenceFrom(o)
 
-	// §5.1: bind the observation to a host.
+	// §5.1: bind the observation to a host. A MAC-less name observation
+	// (a DNS answer) describes the holder of the IP but is not evidence that
+	// it is present or still holds the address.
 	var h *host
-	discovered := false
+	discovered, nameOnly := false, false
 	if mac != nil {
 		h, discovered = c.bindMAC(ctx, n, mac, o, obsID, ev)
 	} else if hs := c.st.holders[ipKey{n.id, ip}]; len(hs) == 1 {
-		h = hs[0].host
-		c.seen(ctx, h, o, ev)
+		h, nameOnly = hs[0].host, o.Source == observation.PassiveDNS
+		if !nameOnly {
+			c.seen(ctx, h, o, ev)
+		}
 	}
 	hostID := ""
 	if h != nil {
@@ -59,11 +63,14 @@ func (c *Correlator) observe(ctx context.Context, o observation.Observation) {
 	if h == nil {
 		return
 	}
-	if ip.IsValid() {
+	if ip.IsValid() && !nameOnly {
 		c.attribute(ctx, h, ip, o, obsID, ev, discovered)
 	}
 	if o.Service != nil {
 		c.service(ctx, h, *o.Service, o, obsID, ev)
+	}
+	if o.Hostname != "" && validNameType(o.NameType) {
+		c.name(ctx, h, o, obsID, ev)
 	}
 }
 
@@ -74,10 +81,8 @@ func (c *Correlator) bindMAC(ctx context.Context, n *netContext, mac net.Hardwar
 		c.seen(ctx, h, o, ev)
 		return h, false
 	}
-	h := &host{
-		id: c.newID(), ctx: n, mac: append(net.HardwareAddr(nil), mac...), firstSeen: o.Time, lastSeen: o.Time,
-		evidence: ev, bindings: map[netip.Addr]*binding{}, services: map[string]*serviceRow{},
-	}
+	h := newHost()
+	h.id, h.ctx, h.mac, h.firstSeen, h.lastSeen, h.evidence = c.newID(), n, append(net.HardwareAddr(nil), mac...), o.Time, o.Time, ev
 	if c.vendors != nil {
 		h.vendor, _ = c.vendors.Lookup(mac)
 	}
@@ -178,16 +183,22 @@ func (c *Correlator) attribute(ctx context.Context, h *host, ip netip.Addr, o ob
 		return
 	}
 	k := ipKey{n.id, ip}
+	// A late observation (older than the last change of the host or the IP)
+	// only refreshes open bindings; it never changes them.
+	late := o.Time.Before(h.lastChange) || o.Time.Before(c.st.ipLastChange[k])
+	reply := isARPReply(o)
+	if reply && c.proxyClaim(ctx, h, ip, o, obsID, ev, late) {
+		return
+	}
 	if b := h.bindings[ip]; b != nil {
 		if o.Time.After(b.lastSeen) {
 			b.lastSeen = o.Time
 		}
+		b.arpOnly = b.arpOnly && reply
 		c.dbBindingSeen(ctx, b, o.Source, o.Time)
 		return
 	}
-	// A late observation (older than the last change of the host or the IP)
-	// only refreshes open bindings; it never changes them.
-	if o.Time.Before(h.lastChange) || o.Time.Before(c.st.ipLastChange[k]) {
+	if late {
 		return
 	}
 	cause := string(o.Source)
@@ -227,7 +238,7 @@ func (c *Correlator) attribute(ctx context.Context, h *host, ip netip.Addr, o ob
 	}
 
 	c.st.nextAddressID++
-	nb := &binding{id: c.st.nextAddressID, host: h, ip: ip, conflict: len(rivals) > 0, firstSeen: o.Time, lastSeen: o.Time}
+	nb := &binding{id: c.st.nextAddressID, host: h, ip: ip, conflict: len(rivals) > 0, firstSeen: o.Time, lastSeen: o.Time, arpOnly: reply}
 	c.st.addBinding(nb)
 	c.dbOpenBinding(ctx, nb, o.Source)
 	c.changed(h, k, o.Time)

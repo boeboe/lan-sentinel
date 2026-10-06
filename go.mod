@@ -5,6 +5,7 @@ go 1.26.0
 require (
 	github.com/coreos/go-systemd/v22 v22.7.0
 	github.com/google/uuid v1.6.0
+	github.com/gopacket/gopacket v1.7.4
 	github.com/spf13/cobra v1.10.2
 	github.com/vishvananda/netlink v1.3.1
 	go.yaml.in/yaml/v3 v3.0.5

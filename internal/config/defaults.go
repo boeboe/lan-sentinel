@@ -16,9 +16,10 @@ const (
 func Defaults() *Config {
 	return &Config{
 		Version: 1,
-		Passive: PassiveConfig{Protocols: PassiveProtocols{
-			ARP: true, IPv4: true, IPv6: false, DHCP: true, MDNS: true, DNS: true, LLDP: true,
-		}},
+		Passive: PassiveConfig{
+			Protocols: PassiveProtocols{ARP: true, IPv4: true, IPv6: false, DHCP: true, MDNS: true, DNS: true, LLDP: true},
+			RingSize:  2 << 20,
+		},
 		Neighbor: NeighborConfig{ResyncInterval: Duration(10 * time.Minute)},
 		Active: ActiveConfig{
 			StartupDelay:        Duration(30 * time.Second),

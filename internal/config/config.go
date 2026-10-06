@@ -74,6 +74,8 @@ type InterfaceReplay struct {
 // PassiveConfig holds global passive-capture settings.
 type PassiveConfig struct {
 	Protocols PassiveProtocols `yaml:"protocols" json:"protocols"`
+	// RingSize is the AF_PACKET ring buffer per captured interface.
+	RingSize ByteSize `yaml:"ring_size" json:"ring_size"`
 }
 
 // PassiveProtocols enables individual decoders.
@@ -171,9 +173,11 @@ type IdentityConfig struct {
 	HostnamePreference []string `yaml:"hostname_preference" json:"hostname_preference"`
 	AddressOverlap     Duration `yaml:"address_overlap" json:"address_overlap"`
 	AddressExpiry      Duration `yaml:"address_expiry" json:"address_expiry"`
-	NameExpiry         Duration `yaml:"name_expiry" json:"name_expiry"`
-	ProxyARPThreshold  int      `yaml:"proxy_arp_threshold" json:"proxy_arp_threshold"`
-	OUIOverride        string   `yaml:"oui_override" json:"oui_override"`
+	// NameExpiry marks a name not confirmed for this long as stale when it
+	// is read; it never closes the name (docs/DATA_MODEL.md §5.4).
+	NameExpiry        Duration `yaml:"name_expiry" json:"name_expiry"`
+	ProxyARPThreshold int      `yaml:"proxy_arp_threshold" json:"proxy_arp_threshold"`
+	OUIOverride       string   `yaml:"oui_override" json:"oui_override"`
 }
 
 // StorageConfig configures the SQLite database.

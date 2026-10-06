@@ -12,12 +12,12 @@ import (
 )
 
 func TestNewReportsPendingBackends(t *testing.T) {
-	// Capture (phase 2) and transmit (phase 4) report ErrNotImplemented.
+	// Transmit (phase 4) reports ErrNotImplemented.
 	want := platform.ErrNotImplemented
 	b := platform.New()
 	ctx := context.Background()
-	if _, err := b.Capturer.Open(ctx, "eth0", nil, false); !errors.Is(err, want) {
-		t.Errorf("Capturer.Open err = %v, want %v", err, want)
+	if b.Capturer.Backend() != "afpacket" {
+		t.Errorf("capture backend = %q", b.Capturer.Backend())
 	}
 	if err := b.Transmitter.SendFrame(ctx, "eth0", nil); !errors.Is(err, want) {
 		t.Errorf("Transmitter.SendFrame err = %v", err)
@@ -55,7 +55,7 @@ func TestFakes(t *testing.T) {
 	defer cancel()
 	b, capt, neigh, _, tx := fake.Backends()
 
-	src, err := b.Capturer.Open(ctx, "eth1", nil, true)
+	src, err := b.Capturer.Open(ctx, "eth1", platform.CaptureOptions{Promiscuous: true})
 	if err != nil {
 		t.Fatal(err)
 	}
