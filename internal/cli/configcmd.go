@@ -9,15 +9,16 @@ import (
 	"github.com/spf13/cobra"
 	"go.yaml.in/yaml/v3"
 
+	"lan-sentinel/internal/api"
 	"lan-sentinel/internal/config"
 )
 
 func (a *app) configCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "config",
-		Short: "Show or validate the configuration",
+		Short: "Show, validate or reload the configuration",
 	}
-	c.AddCommand(a.configValidateCmd(), a.configShowCmd())
+	c.AddCommand(a.configValidateCmd(), a.configShowCmd(), a.configReloadCmd())
 	return c
 }
 
@@ -186,4 +187,59 @@ func (a *app) showSources(l *config.Loaded) error {
 		return writeCSV(a.out(), []string{"key", "value", "source"}, rows)
 	}
 	return writeTable(a.out(), []string{"KEY", "VALUE", "SOURCE"}, rows)
+}
+
+func (a *app) configReloadCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "reload",
+		Short: "Make the running daemon re-read its configuration file",
+		Long: "Makes the daemon re-read the configuration file it was started with (--config\n" +
+			"does not change which), as systemctl reload does, and prints what took effect.\n" +
+			"Probes, each interface's active settings, intervals, thresholds and the log\n" +
+			"level apply at once. Changes to the set of interfaces, passive capture,\n" +
+			"storage, the API, metrics or the log format need a restart: they are listed\n" +
+			"and keep their running values. A file that does not validate changes nothing\n" +
+			"(exit 2 with the errors); check it first with config validate.",
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if err := onlyFormats(a.g.output, "table", "json"); err != nil {
+				return err
+			}
+			if a.g.offline {
+				return failf(ExitUsage, "%s needs the running daemon; it does not work with --offline", cmd.CommandPath())
+			}
+			res, err := a.client().ReloadConfig(cmd.Context())
+			if err != nil {
+				return a.failed(err)
+			}
+			if a.g.output == "json" {
+				return writeJSON(a.output(), res)
+			}
+			printReload(a.output(), res)
+			return nil
+		},
+	}
+}
+
+func printReload(w io.Writer, res api.ReloadResult) {
+	fmt.Fprintf(w, "Configuration %s reloaded.\n", res.Path)
+	if len(res.Applied)+len(res.NotApplied) == 0 {
+		fmt.Fprintln(w, "No changes.")
+		return
+	}
+	changes := func(cs []config.Change) [][]string {
+		rows := make([][]string, len(cs))
+		for i, c := range cs {
+			rows[i] = []string{"  " + c.Key, c.Old, c.New}
+		}
+		return rows
+	}
+	if len(res.Applied) > 0 {
+		fmt.Fprintln(w, "\nApplied:")
+		_ = writeTable(w, []string{"  KEY", "OLD", "NEW"}, changes(res.Applied))
+	}
+	if len(res.NotApplied) > 0 {
+		fmt.Fprintln(w, "\nNot applied, needs a restart (sudo systemctl restart lan-sentinel):")
+		_ = writeTable(w, []string{"  KEY", "RUNNING", "FILE"}, changes(res.NotApplied))
+	}
 }

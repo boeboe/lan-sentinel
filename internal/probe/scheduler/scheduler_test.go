@@ -487,6 +487,36 @@ func TestReloadChangesIntervalAndEnabled(t *testing.T) {
 	}
 }
 
+// An interface's active discovery follows reloads: off at start, a reload
+// that enables it starts its passes, one that disables it stops them.
+func TestReloadTogglesInterfaceActive(t *testing.T) {
+	cfg := baseConfig()
+	cfg.Active.StartupDelay = 0
+	cfg.Active.Jitter = 0
+	cfg.Interfaces[0].Active.Enabled = false
+	r := newRig(t, cfg)
+	r.start()
+	r.waitState(probe.ARP, platform.StateDisabled)
+	r.sim.Advance(time.Hour)
+	r.eng[probe.ARP].quiet(t)
+
+	setActive := func(on bool) {
+		r.setConfig(func(c *config.Config) {
+			c.Interfaces = slices.Clone(c.Interfaces)
+			c.Interfaces[0].Active.Enabled = on
+		})
+	}
+	setActive(true)
+	r.waitState(probe.ARP, platform.StateRunning)
+	if took := r.advanceUntil(probe.ARP, time.Second); took > 5*time.Second {
+		t.Errorf("first pass %v after a reload enabled the interface", took)
+	}
+	setActive(false)
+	r.waitState(probe.ARP, platform.StateDisabled)
+	r.sim.Advance(time.Hour)
+	r.eng[probe.ARP].quiet(t)
+}
+
 // advanceUntil moves the clock in steps until p runs and returns how far it
 // moved; it tolerates the loop re-arming its timer between steps.
 func (r *rig) advanceUntil(p probe.Protocol, step time.Duration) time.Duration {

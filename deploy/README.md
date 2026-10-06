@@ -37,7 +37,7 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now lan-sentinel
 ```
 
-Edit `/etc/lan-sentinel/config.yaml` for the site (interfaces, and active discovery only after review, see below), then `sudo systemctl reload lan-sentinel`. The API socket and the database are root's (mode 0660 and 0640): run `lan-sentinel` commands with `sudo`.
+Edit `/etc/lan-sentinel/config.yaml` for the site (interfaces, and active discovery only after review, see below), check it with `sudo lan-sentinel config validate`, then apply it with `sudo lan-sentinel config reload`, which prints what took effect and what needs `sudo systemctl restart lan-sentinel` (new interfaces, passive capture, storage, API, metrics, log format). The API socket and the database are root's (mode 0660 and 0640): run `lan-sentinel` commands with `sudo`.
 
 Then check:
 
@@ -88,11 +88,11 @@ Runs are serialised, so two releases never pick the same version. If a run fails
    | `lan_sentinel_db_size_bytes` | approaching `storage.retention.max_db_size` (budget: < 200 MB after 90 days on a 50-host LAN) |
    | process CPU and RSS (`systemctl show -p CPUUsageNSec,MemoryCurrent lan-sentinel`) | above 5% CPU or 50 MB on a RevPi Connect |
 
-   A misbehaving decoder is switched off fleet-wide through `passive.protocols` and `systemctl reload lan-sentinel`, without a new build.
+   A misbehaving decoder is switched off fleet-wide through `passive.protocols` and `systemctl restart lan-sentinel`, without a new build (the protocols are compiled into the capture filter, so a reload does not change them).
 4. Active discovery on the pilot sites, then site by site after reviewing the site's device mix:
    - set `active.enabled: true` with the site's `networks` and `exclude` (fragile devices, gateways) on the interface, and the periodic probes under `active:`; `lan-sentinel config validate` shows the sweep size and duration;
    - preview with `lan-sentinel scan plan --profile <profile>`, then `lan-sentinel scan run --profile <profile>` while someone watches the devices;
-   - `systemctl reload lan-sentinel` to start the periodic probes;
+   - `sudo lan-sentinel config reload` to start the periodic probes (it lists `interfaces[N].active.enabled` as applied);
    - watch `lan_sentinel_probe_total` and `lan_sentinel_probe_throttled_total`.
 
    If anything misbehaves: `lan-sentinel active disable --reason "..."` stops every probe at once and stays set across restarts (`active enable` clears it). `LAN_SENTINEL_ACTIVE_DISABLED=1` in the unit's environment forces it off fleet-wide.
@@ -102,7 +102,7 @@ Runs are serialised, so two releases never pick the same version. If a run fails
 | Task | Command |
 | --- | --- |
 | Status | `systemctl status lan-sentinel`, `sudo lan-sentinel daemon status` |
-| Reload configuration | `sudo systemctl reload lan-sentinel` |
+| Reload configuration | `sudo lan-sentinel config reload` (prints what took effect; `systemctl reload lan-sentinel` does the same silently) |
 | Events in the journal | `journalctl -u lan-sentinel EVENT=ip_changed` |
 | Security exposure | `systemd-analyze security lan-sentinel` (target ≤ 2.5) |
 

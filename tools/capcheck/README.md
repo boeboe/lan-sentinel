@@ -17,19 +17,19 @@ Build both targets with `make tools` (output in `dist/tools/`). `make test-net` 
 
 ## On a target board: run it as the daemon runs
 
-Run it on each target board as the daemon runs: root, with only `CAP_NET_RAW` in the bounding set and the reference unit's sandboxing:
+Run it on each target board as the daemon runs: root, with only `CAP_NET_RAW` in the bounding set and the installed unit's sandboxing. Running it plainly, with or without `sudo`, tests something else: no capabilities at all, or all of them.
+
+From the unpacked release, with `lan-sentinel.service` installed (`deploy/README.md`), and the interface and a target on it (the gateway, say) filled in:
 
 ```bash
-sudo systemd-run --pty --wait --collect \
-  -p CapabilityBoundingSet=CAP_NET_RAW \
-  -p NoNewPrivileges=true -p ProtectSystem=strict -p ProtectHome=true -p PrivateTmp=true \
-  -p PrivateDevices=true -p ProtectKernelTunables=true -p ProtectKernelModules=true \
-  -p ProtectControlGroups=true -p RestrictNamespaces=true -p LockPersonality=true \
-  -p MemoryDenyWriteExecute=true -p SystemCallArchitectures=native \
-  -p "RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_PACKET AF_NETLINK" \
-  -p "SystemCallFilter=@system-service" -p "SystemCallFilter=~@privileged @resources" \
-  -p "SystemCallFilter=adjtimex" -p SystemCallErrorNumber=EPERM \
-  /usr/local/bin/capcheck --interface eth1 --arp-target 192.168.110.1
+sudo install -m 0755 capcheck /usr/local/bin/capcheck
+mapfile -t props < <(systemctl cat lan-sentinel.service | awk '
+  /^\[/ { svc = ($0 == "[Service]"); next }
+  svc && /^[A-Za-z]/ && $0 !~ /^(Type|ExecStart|ExecReload|WatchdogSec|Restart|RuntimeDirectory|RuntimeDirectoryMode|PrivateIPC)=/ { print "-p" $0 }')
+sudo systemd-run --pty --wait --collect "${props[@]}" \
+  /usr/local/bin/capcheck --interface eth0 --arp-target 192.168.0.1 --icmp-target 192.168.0.1 --tcp-target 192.168.0.1:80
 ```
 
-The `privilege` line must show `CAP_NET_RAW` only, and the `adjtimex read` row must pass: the daemon reads the clock's sync state that way (NFR-REL-2), so the unit's call filter has to allow it. `make test-systemd` passes every `[Service]` setting of the reference unit instead of this list. Record the kernel version, board, Debian release, `systemd-analyze security lan-sentinel` exposure and results in `docs/ARCHITECTURE.md` §8.
+The transient unit gets every `[Service]` setting of the installed unit except the service plumbing and `PrivateIPC=`, which systemd 247 does not know (capcheck uses no IPC). capcheck has to be in `/usr/local/bin`, because `PrivateTmp=` and `ProtectHome=` hide `/tmp` and home directories from it. `--tcp-target` needs a port that is open or closed on the target; each target gets one probe.
+
+The `privilege` line must read `CapEff=0x2000: euid 0 (root), CAP_NET_RAW`, and every row must pass or skip, including `adjtimex read`: the daemon reads the clock's sync state that way (NFR-REL-2), so the unit's call filter has to allow it. `make test-systemd` runs the same check on Debian 11, 12 and 13. Record the board, kernel, Debian release, `systemd-analyze security lan-sentinel` exposure and results in `docs/ARCHITECTURE.md` §8.

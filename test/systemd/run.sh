@@ -6,7 +6,7 @@
 # It runs once per target Debian release (RELEASES, default: the targets
 # bullseye, bookworm and trixie, systemd 247, 252 and 257).
 # Checks Type=notify start-up, the service identity and capabilities, the
-# clock sync state, the database, SIGHUP reload, clean shutdown and the
+# clock sync state, the database, SIGHUP and `config reload`, clean shutdown and the
 # systemd-analyze score, and runs tools/capcheck as a transient unit with
 # exactly the reference unit's [Service] sandboxing and capabilities.
 set -euo pipefail
@@ -27,6 +27,9 @@ cp deploy/lan-sentinel.service deploy/config.yaml deploy/README.md "$work/"
 # The install commands of the runbook, the block after "### 2. Install".
 install_block=$(awk '/^### 2\. Install/ { f = 1; next } f && /^```bash/ { p = 1; next } p && /^```/ { exit } p' deploy/README.md)
 [ -n "$install_block" ] || { echo "test-systemd: no install block in deploy/README.md" >&2; exit 2; }
+# The board audit, the block after "## On a target board".
+audit_block=$(awk '/^## On a target board/ { f = 1; next } f && /^```bash/ { p = 1; next } p && /^```/ { exit } p' tools/capcheck/README.md)
+[ -n "$audit_block" ] || { echo "test-systemd: no board audit block in tools/capcheck/README.md" >&2; exit 2; }
 
 x() { docker exec "$NAME" "$@"; }
 total=0
@@ -91,47 +94,38 @@ x systemctl reload lan-sentinel
 check "SIGHUP reload" wait_for 10 journal_has "configuration reloaded"
 check "still active after reload" x systemctl is-active --quiet lan-sentinel
 
+# config reload as an operator runs it: one change applies, one needs a
+# restart, and an invalid file changes nothing (exit 2).
+exits() { # exits CODE COMMAND...
+	local want=$1
+	shift
+	"$@" >/dev/null 2>&1
+	[ $? = "$want" ]
+}
+x sed -i 's/level: info/level: debug/; s/promiscuous: false/promiscuous: true/' /etc/lan-sentinel/config.yaml
+x sudo lan-sentinel config reload >"$work/reload.txt" 2>&1 || true
+check "config reload applies the log level" grep -Eq '^  logging\.level +info +debug$' "$work/reload.txt"
+check "config reload lists a restart-only change" grep -Eq '^  interfaces\[0\]\.passive\.promiscuous +false +true$' "$work/reload.txt"
+x sed -i 's/level: debug/level: loud/' /etc/lan-sentinel/config.yaml
+check "config reload rejects an invalid file" exits 2 x sudo lan-sentinel config reload
+check "the rejection is logged" journal_has "configuration reload rejected"
+x sed -i 's/level: loud/level: info/; s/promiscuous: true/promiscuous: false/' /etc/lan-sentinel/config.yaml
+if [ "$fail" != 0 ] || [ -n "${KEEP_JOURNAL:-}" ]; then cat "$work/reload.txt"; fi
+
 score=$(x systemd-analyze security lan-sentinel --no-pager 2>/dev/null | grep 'Overall exposure level' | grep -oE '[0-9]+\.[0-9]+' || true)
 check "systemd-analyze security exposure ${score:-unknown} <= 2.5 (NFR-SEC-1)" awk -v s="${score:-99}" 'BEGIN { exit !(s <= 2.5) }'
 if [ -n "${KEEP_JOURNAL:-}" ]; then x journalctl -u lan-sentinel --no-pager -o short-monotonic; fi
 
-# capcheck under the unit's own sandbox: every [Service] setting except the
-# ones that describe the daemon process itself.
-props=()
-while IFS= read -r line; do
-	props+=(-p "$line")
-done < <(x systemctl cat lan-sentinel.service | awk '
-	/^\[/ { svc = ($0 == "[Service]"); next }
-	svc && /^[A-Za-z]/ && $0 !~ /^(Type|ExecStart|ExecReload|WatchdogSec|Restart|RuntimeDirectory|RuntimeDirectoryMode)=/')
 gw_hex=$(x awk '$2 == "00000000" { print $3; exit }' /proc/net/route)
 gw=$(printf '%d.%d.%d.%d' "0x${gw_hex:6:2}" "0x${gw_hex:4:2}" "0x${gw_hex:2:2}" "0x${gw_hex:0:2}")
-# capcheck is not installed (the board audit runs it from the unpacked
-# release); the sandbox hides /root, so put it where the unit can see it.
-x install -m 0755 /root/release/capcheck /usr/local/bin/capcheck
-echo "info: capcheck under the unit sandbox ($((${#props[@]} / 2)) settings), ARP/ICMP target $gw"
-# A unit file only warns about a setting its systemd does not know (e.g.
-# PrivateIPC= before systemd 248) and runs without it; a transient unit
-# refuses it, so leave such settings out the same way.
-passed=0
-for _ in 1 2 3 4 5; do
-	if x systemd-run --quiet --wait --pipe --collect "${props[@]}" \
-		/usr/local/bin/capcheck --interface eth0 --capture 2s --arp-target "$gw" --icmp-target "$gw" >"$work/capcheck.txt" 2>&1; then
-		passed=1
-		break
-	fi
-	unknown=$(sed -nE 's/.*Unknown assignment: ([A-Za-z]+)=.*/\1/p' "$work/capcheck.txt" | head -1)
-	[ -n "$unknown" ] || break
-	echo "info: this systemd does not know $unknown= (the unit runs without it too); capcheck runs without it"
-	kept=()
-	for ((i = 0; i < ${#props[@]}; i += 2)); do
-		[[ ${props[$((i + 1))]} == "$unknown="* ]] || kept+=("${props[$i]}" "${props[$((i + 1))]}")
-	done
-	props=("${kept[@]}")
-done
-if [ "$passed" = 1 ]; then
-	echo "ok:   capcheck passes under the reference unit's sandbox"
+# The board audit of tools/capcheck/README.md, run as written there but on
+# the container's gateway, without a terminal, and with a short capture.
+audit=$(printf '%s\n' "$audit_block" | sed -e 's/--pty/--pipe --quiet/' -e "s/192\.168\.0\.1/$gw/g" -e 's|/usr/local/bin/capcheck |&--capture 2s |')
+echo "info: capcheck under the unit sandbox, as in tools/capcheck/README.md, targets $gw"
+if docker exec -w /root/release "$NAME" bash -euo pipefail -c "$audit" >"$work/capcheck.txt" 2>&1; then
+	echo "ok:   capcheck passes under the installed unit's sandbox"
 else
-	echo "FAIL: capcheck under the reference unit's sandbox" >&2
+	echo "FAIL: capcheck under the installed unit's sandbox" >&2
 	fail=1
 fi
 check "capcheck sees root with CAP_NET_RAW only" grep -Eq '^privilege: +CapEff=0x2000: euid 0 \(root\), CAP_NET_RAW$' "$work/capcheck.txt"

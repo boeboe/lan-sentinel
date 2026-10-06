@@ -9,19 +9,32 @@ import (
 	"net"
 	"net/http"
 
+	"lan-sentinel/internal/config"
 	"lan-sentinel/internal/platform"
 	"lan-sentinel/internal/probe"
 	"lan-sentinel/internal/probe/scheduler"
 	"lan-sentinel/internal/store"
 )
 
-// Control is what the daemon does on operator requests: the kill switch
-// and operator scans (docs/API.md, Operator endpoints).
+// Control is what the daemon does on operator requests: the kill switch,
+// operator scans and configuration reloads (docs/API.md, Operator
+// endpoints).
 type Control interface {
 	DisableActive(ctx context.Context, actor, reason string) (store.ActiveState, error)
 	EnableActive(ctx context.Context, actor, reason string) (store.ActiveState, error)
 	PlanScan(ctx context.Context, req probe.Request) (probe.Plan, error)
 	Scan(ctx context.Context, req probe.Request, actor string) (scheduler.ScanResult, error)
+	ReloadConfig(ctx context.Context, actor string) (ReloadResult, error)
+}
+
+// ReloadResult is what a configuration reload changed.
+type ReloadResult struct {
+	Path string `json:"path"`
+	// Applied lists the keys whose new values took effect.
+	Applied []config.Change `json:"applied"`
+	// NotApplied lists changed keys that need a restart: they keep their
+	// running values (Old) until then.
+	NotApplied []config.Change `json:"not_applied"`
 }
 
 // Errors a Control returns, mapped to 409 Conflict.
@@ -31,6 +44,10 @@ var (
 	// ErrNoScanner: replay mode runs no probes.
 	ErrNoScanner = errors.New("active discovery does not run in replay mode")
 )
+
+// ErrConfigRejected means the configuration file did not load or
+// validate; nothing changed (422).
+var ErrConfigRejected = errors.New("configuration rejected; the running configuration is unchanged")
 
 // SwitchRequest is the body of /v1/active/disable and /v1/active/enable.
 type SwitchRequest struct {
@@ -176,4 +193,25 @@ func (s *Server) scan(w http.ResponseWriter, r *http.Request) {
 func aborted(res scheduler.ScanResult) bool {
 	n := len(res.Interfaces)
 	return n > 0 && res.Interfaces[n-1].Aborted != ""
+}
+
+// configReload re-reads the daemon's configuration file, as SIGHUP does:
+// 200 with what changed, 422 when the file is rejected.
+func (s *Server) configReload(w http.ResponseWriter, r *http.Request) {
+	if !s.control(w) {
+		return
+	}
+	if err := decode(r, &struct{}{}); err != nil {
+		s.fail(w, err)
+		return
+	}
+	res, err := s.o.Control.ReloadConfig(r.Context(), actor(r))
+	switch {
+	case errors.Is(err, ErrConfigRejected):
+		writeJSON(w, http.StatusUnprocessableEntity, errorBody{err.Error()})
+	case err != nil:
+		s.controlFail(w, err)
+	default:
+		writeJSON(w, http.StatusOK, res)
+	}
 }

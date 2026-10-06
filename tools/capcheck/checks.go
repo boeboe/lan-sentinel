@@ -207,9 +207,13 @@ func runChecks(ctx context.Context, o options, ifi ifaceInfo) []result {
 	}))
 
 	rs = append(rs, check("ICMP via ping socket", "none if GID in net.ipv4.ping_group_range", func() (string, error) {
-		rng, _ := os.ReadFile("/proc/sys/net/ipv4/ping_group_range")
+		// ProcSubset=pid (the reference unit) hides /proc/sys.
+		rng := "unreadable"
+		if b, err := os.ReadFile("/proc/sys/net/ipv4/ping_group_range"); err == nil {
+			rng = strings.Join(strings.Fields(string(b)), "-")
+		}
 		d, err := pingSocket(o.icmpTarget)
-		return strings.TrimSpace(d + "; ping_group_range=" + strings.Join(strings.Fields(string(rng)), "-")), err
+		return strings.TrimSpace(d + "; ping_group_range=" + rng), err
 	}))
 	rs = append(rs, check("ICMP via raw socket", raw, rawICMPSocket))
 

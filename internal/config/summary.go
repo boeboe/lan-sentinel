@@ -19,8 +19,59 @@ type Setting struct {
 // Settings flattens the effective configuration into sorted key/value pairs
 // for `config show --sources`.
 func (l *Loaded) Settings() ([]Setting, error) {
+	out, err := flatten(l.Config)
+	if err != nil {
+		return nil, err
+	}
+	for i := range out {
+		out[i].Source = l.SourceOf(out[i].Key)
+	}
+	return out, nil
+}
+
+// Change is a key whose effective value differs between two
+// configurations.
+type Change struct {
+	Key string `json:"key"`
+	Old string `json:"old"`
+	New string `json:"new"`
+}
+
+// Diff lists the keys whose values differ from old to next, sorted, keyed
+// as `config show --sources` keys them. A key only one side has (a list of
+// interfaces grew or shrank) is "" on the other.
+func Diff(old, next *Config) ([]Change, error) {
+	a, err := flatten(old)
+	if err != nil {
+		return nil, err
+	}
+	b, err := flatten(next)
+	if err != nil {
+		return nil, err
+	}
+	values := make(map[string]string, len(a))
+	for _, s := range a {
+		values[s.Key] = s.Value
+	}
+	out := []Change{}
+	for _, s := range b {
+		v, ok := values[s.Key]
+		delete(values, s.Key)
+		if !ok || v != s.Value {
+			out = append(out, Change{Key: s.Key, Old: v, New: s.Value})
+		}
+	}
+	for k, v := range values {
+		out = append(out, Change{Key: k, Old: v})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Key < out[j].Key })
+	return out, nil
+}
+
+// flatten turns c into sorted key/value pairs, without sources.
+func flatten(c *Config) ([]Setting, error) {
 	var n yaml.Node
-	if err := n.Encode(l.Config); err != nil {
+	if err := n.Encode(c); err != nil {
 		return nil, fmt.Errorf("encode config: %w", err)
 	}
 	var out []Setting
@@ -29,7 +80,7 @@ func (l *Loaded) Settings() ([]Setting, error) {
 		switch n.Kind {
 		case yaml.MappingNode:
 			if len(n.Content) == 0 && prefix != "" {
-				out = append(out, Setting{Key: prefix, Value: "{}", Source: l.SourceOf(prefix)})
+				out = append(out, Setting{Key: prefix, Value: "{}"})
 			}
 			for i := 0; i+1 < len(n.Content); i += 2 {
 				walk(n.Content[i+1], join(prefix, n.Content[i].Value))
@@ -45,9 +96,9 @@ func (l *Loaded) Settings() ([]Setting, error) {
 			for i, c := range n.Content {
 				vals[i] = c.Value
 			}
-			out = append(out, Setting{Key: prefix, Value: "[" + strings.Join(vals, ", ") + "]", Source: l.SourceOf(prefix)})
+			out = append(out, Setting{Key: prefix, Value: "[" + strings.Join(vals, ", ") + "]"})
 		default:
-			out = append(out, Setting{Key: prefix, Value: n.Value, Source: l.SourceOf(prefix)})
+			out = append(out, Setting{Key: prefix, Value: n.Value})
 		}
 	}
 	walk(&n, "")

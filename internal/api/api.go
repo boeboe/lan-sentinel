@@ -126,6 +126,7 @@ func New(o Options) *Server {
 		"/v1/active/enable":  s.activeEnable,
 		"/v1/scans/plan":     s.scanPlan,
 		"/v1/scans":          s.scan,
+		"/v1/config/reload":  s.configReload,
 	} {
 		s.mux.HandleFunc(path, postOnly(h))
 	}

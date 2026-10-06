@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/netip"
 	"path/filepath"
 	"strings"
@@ -38,6 +39,11 @@ type control struct {
 	err     error
 	scan    *scheduler.ScanResult
 	scanErr error
+	reload  api.ReloadResult
+}
+
+func (c *control) ReloadConfig(context.Context, string) (api.ReloadResult, error) {
+	return c.reload, c.err
 }
 
 func (c *control) DisableActive(_ context.Context, actor, reason string) (store.ActiveState, error) {
@@ -122,6 +128,63 @@ func TestActiveCommands(t *testing.T) {
 				t.Errorf("exit %d (want %d)\nstdout: %s\nstderr: %s", code, tt.code, out, stderr)
 			}
 		})
+	}
+}
+
+func TestConfigReload(t *testing.T) {
+	f := serveControl(t)
+	changed := api.ReloadResult{
+		Path:       "/etc/lan-sentinel/config.yaml",
+		Applied:    []config.Change{{Key: "interfaces[0].active.enabled", Old: "false", New: "true"}, {Key: "logging.level", Old: "info", New: "debug"}},
+		NotApplied: []config.Change{{Key: "interfaces[1].name", New: "eth2"}},
+	}
+	unchanged := api.ReloadResult{Path: "/etc/lan-sentinel/config.yaml", Applied: []config.Change{}, NotApplied: []config.Change{}}
+	rejected := fmt.Errorf("%w: %w", api.ErrConfigRejected, errors.New("invalid configuration /etc/lan-sentinel/config.yaml:\n  active.arp.interval: must be positive"))
+	tests := []struct {
+		name    string
+		args    []string
+		res     api.ReloadResult
+		err     error
+		code    int
+		out     []string
+		errText string
+	}{
+		{"applied and not applied", []string{"config", "reload"}, changed, nil, 0, []string{
+			"Configuration /etc/lan-sentinel/config.yaml reloaded.\n\nApplied:\n",
+			"  interfaces[0].active.enabled  false  true\n",
+			"  logging.level                 info   debug\n",
+			"Not applied, needs a restart (sudo systemctl restart lan-sentinel):\n  KEY                 RUNNING  FILE\n  interfaces[1].name           eth2\n",
+		}, ""},
+		{"no changes", []string{"config", "reload"}, unchanged, nil, 0, []string{"reloaded.\nNo changes.\n"}, ""},
+		{"json", []string{"-o", "json", "config", "reload"}, unchanged, nil, 0, []string{`"applied": []`, `"not_applied": []`}, ""},
+		{"quiet", []string{"--quiet", "config", "reload"}, changed, nil, 0, nil, ""},
+		{"rejected", []string{"config", "reload"}, api.ReloadResult{}, rejected, ExitError, nil, "configuration rejected; the running configuration is unchanged: invalid configuration /etc/lan-sentinel/config.yaml:\n  active.arp.interval: must be positive"},
+		{"offline", []string{"--offline", "config", "reload"}, api.ReloadResult{}, nil, ExitUsage, nil, "needs the running daemon"},
+		{"csv", []string{"-o", "csv", "config", "reload"}, api.ReloadResult{}, nil, ExitUsage, nil, "csv"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f.ctl.reload, f.ctl.err = tt.res, tt.err
+			code, out, stderr := f.run(t, tt.args...)
+			if code != tt.code || !strings.Contains(stderr, tt.errText) {
+				t.Errorf("exit %d (want %d)\nstdout: %s\nstderr: %s", code, tt.code, out, stderr)
+			}
+			for _, want := range tt.out {
+				if !strings.Contains(out, want) {
+					t.Errorf("stdout lacks %q:\n%s", want, out)
+				}
+			}
+			if tt.out == nil && out != "" {
+				t.Errorf("stdout = %q, want nothing", out)
+			}
+		})
+	}
+	// No daemon on the socket.
+	var out, errb bytes.Buffer
+	code := Execute(context.Background(), Env{Args: []string{"--socket", filepath.Join(t.TempDir(), "none.sock"), "config", "reload"},
+		Stdout: &out, Stderr: &errb, Location: time.UTC})
+	if code != ExitUnreachable {
+		t.Errorf("no daemon: exit %d, %s", code, errb.String())
 	}
 }
 

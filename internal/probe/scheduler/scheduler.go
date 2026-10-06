@@ -1,5 +1,6 @@
 // Package scheduler runs the probe engines (docs/ARCHITECTURE.md §5): one
-// periodic loop per interface with active discovery and per protocol,
+// periodic loop per configured interface and protocol, probing while the
+// interface has active discovery enabled,
 // with a startup delay, interval jitter, randomised target order and
 // timeout back-off, and operator scans gated by the same planner as
 // `scan plan`. Every probe goes through the shared budget, which checks
@@ -116,8 +117,10 @@ func New(o Options) *Scheduler {
 	}
 }
 
-// Reload applies a reloaded configuration: budgets now, intervals and
-// enabled probes at each loop's next step.
+// Reload applies a reloaded configuration: budgets now; intervals,
+// enabled probes and each interface's active settings at each loop's next
+// step. The policy checks every probe against the new configuration at
+// once.
 func (s *Scheduler) Reload() {
 	s.o.Budget.SetLimits(probe.LimitsFrom(s.o.Config().Active))
 	s.mu.Lock()
@@ -208,15 +211,19 @@ func portLabel(cfg *config.Config, p probe.Protocol, port int) string {
 	return "other"
 }
 
-// Run starts a loop per interface with active discovery and per protocol
-// and blocks until ctx is cancelled. Interfaces are restart-only.
+// Run starts a loop per configured interface and protocol and blocks
+// until ctx is cancelled. The set of interfaces is restart-only; whether
+// one has active discovery follows reloads.
 func (s *Scheduler) Run(ctx context.Context) error {
 	var wg sync.WaitGroup
 	for _, ic := range s.o.Config().Interfaces {
 		for _, p := range Protocols {
-			if !ic.Active.Enabled || s.o.Engines[p] == nil {
+			if s.o.Engines[p] == nil {
 				s.report(ic.Name, p, platform.StateDisabled, nil)
 				continue
+			}
+			if !ic.Active.Enabled {
+				s.report(ic.Name, p, platform.StateDisabled, nil) // until a reload enables it
 			}
 			wg.Add(1)
 			go func(iface string, p probe.Protocol) {
@@ -266,9 +273,14 @@ func (s *Scheduler) loop(ctx context.Context, iface string, p probe.Protocol) {
 	var next time.Time
 	first, failed := true, false
 	for ctx.Err() == nil {
+		// The channels first: a reload or switch change after this point
+		// closes them, so the loop never waits on a stale configuration.
+		reload, changed := s.reloaded(), s.o.Switch.Changed()
 		cfg := s.o.Config()
 		enabled, interval := probeConfig(cfg, p)
-		reload, changed := s.reloaded(), s.o.Switch.Changed()
+		if ic, ok := probe.InterfaceConfig(cfg, iface); !ok || !ic.Active.Enabled {
+			enabled = false
+		}
 		switch {
 		case !enabled:
 			s.report(iface, p, platform.StateDisabled, nil)

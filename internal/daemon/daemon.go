@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/signal"
 	"reflect"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -80,6 +81,7 @@ type Daemon struct {
 
 	sw       *probe.Switch        // the kill switch
 	switchMu sync.Mutex           // serialises kill-switch changes
+	reloadMu sync.Mutex           // serialises reloads (SIGHUP and the API)
 	budget   *probe.Budget        // live mode only
 	sched    *scheduler.Scheduler // live mode only
 }
@@ -251,7 +253,7 @@ func (d *Daemon) loop(ctx context.Context) string {
 		case sig := <-d.opts.Signals:
 			switch sig {
 			case syscall.SIGHUP:
-				d.reload()
+				_, _ = d.reload("SIGHUP") // the outcome is logged
 			default:
 				return "signal " + sig.String()
 			}
@@ -292,14 +294,14 @@ func (d *Daemon) setupLogging() error {
 // Collectors returns the current collector states.
 func (d *Daemon) Collectors() []platform.CollectorStatus { return d.registry.List() }
 
-// restartOnly lists config sections that SIGHUP cannot change (FR-CFG-3).
-// keep copies the running value into the newly loaded config.
+// restartOnly lists config sections that a reload cannot change
+// (FR-CFG-3). keep copies the running value into the newly loaded config.
 var restartOnly = []struct {
 	key  string
 	get  func(*config.Config) any
 	keep func(old, next *config.Config)
 }{
-	{"interfaces", func(c *config.Config) any { return c.Interfaces }, func(o, n *config.Config) { n.Interfaces = o.Interfaces }},
+	{"interfaces", func(c *config.Config) any { return interfaceShape(c.Interfaces) }, keepInterfaces},
 	{"passive", func(c *config.Config) any { return c.Passive }, func(o, n *config.Config) { n.Passive = o.Passive }},
 	{"storage", func(c *config.Config) any { return c.Storage }, func(o, n *config.Config) { n.Storage = o.Storage }},
 	{"api", func(c *config.Config) any { return c.API }, func(o, n *config.Config) { n.API = o.API }},
@@ -308,28 +310,56 @@ var restartOnly = []struct {
 	{"replay", func(c *config.Config) any { return c.Replay }, func(o, n *config.Config) { n.Replay = o.Replay }},
 }
 
-// reload re-reads the configuration on SIGHUP. Probes, intervals, thresholds
-// and the log level take effect; restart-only sections keep their running
-// values and a warning names them. An invalid file is rejected as a whole.
-func (d *Daemon) reload() {
+// interfaceShape is the restart-only part of the interfaces: all but each
+// interface's active settings, which a reload applies.
+func interfaceShape(ics []config.InterfaceConfig) []config.InterfaceConfig {
+	out := slices.Clone(ics)
+	for i := range out {
+		out[i].Active = config.InterfaceActive{}
+	}
+	return out
+}
+
+// keepInterfaces keeps the running interfaces, each with its active
+// settings from the new file if the file still has it.
+func keepInterfaces(old, next *config.Config) {
+	active := make(map[string]config.InterfaceActive, len(next.Interfaces))
+	for _, ic := range next.Interfaces {
+		active[ic.Name] = ic.Active
+	}
+	kept := slices.Clone(old.Interfaces)
+	for i := range kept {
+		if a, ok := active[kept[i].Name]; ok {
+			kept[i].Active = a
+		}
+	}
+	next.Interfaces = kept
+}
+
+// ReloadConfig implements api.Control: the reload SIGHUP triggers, on an
+// operator request, answering what changed.
+func (d *Daemon) ReloadConfig(_ context.Context, actor string) (api.ReloadResult, error) {
+	return d.reload(actor)
+}
+
+// reload re-reads the configuration file. Probes (each interface's active
+// settings included), intervals, thresholds and the log level take effect;
+// restart-only sections keep their running values and are reported as not
+// applied. A file that does not load or validate, or whose kept running
+// values would not validate with the rest of it, is rejected as a whole and
+// changes nothing.
+func (d *Daemon) reload(actor string) (api.ReloadResult, error) {
+	d.reloadMu.Lock()
+	defer d.reloadMu.Unlock()
 	d.notify("reloading", d.notifier.Reloading)
 	defer d.notify("ready", d.notifier.Ready)
 
 	loaded, err := config.Load(d.opts.Load)
 	if err != nil {
-		var ve *config.ValidationError
-		if errors.As(err, &ve) {
-			msgs := make([]string, len(ve.Errors))
-			for i, fe := range ve.Errors {
-				msgs[i] = fe.String()
-			}
-			d.log.Error("configuration reload rejected; keeping the running configuration", "path", ve.Path, "errors", msgs)
-			return
-		}
-		d.log.Error("configuration reload failed; keeping the running configuration", "err", err)
-		return
+		return api.ReloadResult{}, d.rejected(actor, err)
 	}
 	old, next := d.cfg.Load(), loaded.Config
+	file := *next
 	var ignored []string
 	for _, r := range restartOnly {
 		if !reflect.DeepEqual(r.get(old), r.get(next)) {
@@ -338,12 +368,24 @@ func (d *Daemon) reload() {
 		}
 	}
 	if len(ignored) > 0 {
-		d.log.Warn("configuration changes need a restart and were not applied", "keys", ignored)
+		if errs := config.Validate(next); len(errs) > 0 {
+			return api.ReloadResult{}, d.rejected(actor, &config.ValidationError{Path: loaded.Path, Errors: errs})
+		}
+	}
+	res := api.ReloadResult{Path: loaded.Path}
+	if res.Applied, err = config.Diff(old, next); err == nil {
+		res.NotApplied, err = config.Diff(next, &file)
+	}
+	if err != nil {
+		d.log.Error("configuration reload failed; keeping the running configuration", "err", err, "actor", actor)
+		return api.ReloadResult{}, err
 	}
 	lvl, err := logging.ParseLevel(next.Logging.Level)
 	if err != nil { // already validated; defensive
-		d.log.Error("configuration reload: bad log level", "err", err)
-		return
+		return api.ReloadResult{}, d.rejected(actor, err)
+	}
+	if len(ignored) > 0 {
+		d.log.Warn("configuration changes need a restart and were not applied", "keys", ignored)
 	}
 	d.level.Set(lvl)
 	d.cfg.Store(next)
@@ -356,7 +398,28 @@ func (d *Daemon) reload() {
 	if d.sched != nil {
 		d.sched.Reload()
 	}
-	d.log.Info("configuration reloaded", "path", loaded.Path, "log_level", next.Logging.Level)
+	applied := make([]string, len(res.Applied))
+	for i, c := range res.Applied {
+		applied[i] = c.Key
+	}
+	d.log.Info("configuration reloaded", "path", loaded.Path, "actor", actor, "applied", applied, "log_level", next.Logging.Level)
+	return res, nil
+}
+
+// rejected logs a configuration that cannot be applied and returns the
+// error for the API.
+func (d *Daemon) rejected(actor string, err error) error {
+	var ve *config.ValidationError
+	if errors.As(err, &ve) {
+		msgs := make([]string, len(ve.Errors))
+		for i, fe := range ve.Errors {
+			msgs[i] = fe.String()
+		}
+		d.log.Error("configuration reload rejected; keeping the running configuration", "path", ve.Path, "actor", actor, "errors", msgs)
+	} else {
+		d.log.Error("configuration reload failed; keeping the running configuration", "actor", actor, "err", err)
+	}
+	return fmt.Errorf("%w: %w", api.ErrConfigRejected, err)
 }
 
 // Config returns the configuration currently in effect.

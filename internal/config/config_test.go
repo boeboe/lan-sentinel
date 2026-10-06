@@ -2,7 +2,9 @@ package config
 
 import (
 	"errors"
+	"net/netip"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -257,6 +259,46 @@ func TestScalarTypes(t *testing.T) {
 	}
 	if err := a.UnmarshalText([]byte("nope")); err == nil {
 		t.Error("expected error for invalid address")
+	}
+}
+
+func TestDiff(t *testing.T) {
+	old := Defaults()
+	old.Interfaces = []InterfaceConfig{{Name: "eth1"}}
+	if d, err := Diff(old, old); err != nil || d == nil || len(d) != 0 {
+		t.Errorf("no change = %#v, %v", d, err)
+	}
+	next := *old
+	next.Interfaces = []InterfaceConfig{
+		{Name: "eth1", Active: InterfaceActive{Enabled: true, Networks: []netip.Prefix{netip.MustParsePrefix("192.168.110.0/24")}}},
+		{Name: "eth2"},
+	}
+	next.Logging.Level = "debug"
+	d, err := Diff(old, &next)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]Change{}
+	for _, c := range d {
+		got[c.Key] = c
+	}
+	for _, want := range []Change{
+		{"interfaces[0].active.enabled", "false", "true"},
+		{"interfaces[0].active.networks", "", "[192.168.110.0/24]"},
+		{"interfaces[1].name", "", "eth2"},
+		{"logging.level", "info", "debug"},
+	} {
+		if got[want.Key] != want {
+			t.Errorf("%s = %+v, want %+v", want.Key, got[want.Key], want)
+		}
+	}
+	if _, ok := got["interfaces[0].name"]; ok || !slices.IsSortedFunc(d, func(a, b Change) int { return strings.Compare(a.Key, b.Key) }) {
+		t.Errorf("diff = %+v", d)
+	}
+	// The other way round, keys only the old side has have an empty new value.
+	back, _ := Diff(&next, old)
+	if !slices.Contains(back, Change{"interfaces[1].name", "eth2", ""}) {
+		t.Errorf("removed interface = %+v", back)
 	}
 }
 

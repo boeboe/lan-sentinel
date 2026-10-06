@@ -7,6 +7,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -254,6 +255,79 @@ func TestReloadAppliesBudgets(t *testing.T) {
 	if err != nil || plan.Rates.GlobalPPS != 30 {
 		t.Errorf("plan rates = %+v, %v", plan.Rates, err)
 	}
+}
+
+// A reload through the API applies each interface's active settings,
+// lists restart-only changes as not applied, and rejects a file that does
+// not validate as a whole.
+func TestReloadConfigThroughTheAPI(t *testing.T) {
+	const eth1 = "  - name: eth1\n    active: { enabled: true, networks: [192.168.110.0/24] }\n"
+	off := strings.Replace(testConfig("$DIR", "info", activeConfig), "enabled: true", "enabled: false", 1)
+	h := startWith(t, off, 0, activeLinks)
+	defer h.stop()
+	h.waitState("eth1", platform.CollectorARP, platform.StateDisabled)
+	client := api.NewClient(filepath.Join(h.dir, "api.sock"), 5*time.Second)
+	ctx := context.Background()
+
+	// Switching active discovery on takes effect without a restart.
+	h.writeConfig(testConfig(h.dir, "info", activeConfig))
+	res, err := client.ReloadConfig(ctx)
+	if err != nil || res.Path != h.cfgPath || len(res.NotApplied) != 0 ||
+		len(res.Applied) != 1 || res.Applied[0] != (config.Change{Key: "interfaces[0].active.enabled", Old: "false", New: "true"}) {
+		t.Fatalf("enable = %+v, %v", res, err)
+	}
+	h.waitState("eth1", platform.CollectorARP, platform.StateRunning)
+	h.waitLog("applied=[interfaces[0].active.enabled]")
+
+	// A new interface needs a restart; the active change beside it applies.
+	h.writeConfig(strings.Replace(testConfig(h.dir, "debug", activeConfig), eth1,
+		strings.Replace(eth1, "enabled: true", "enabled: false", 1)+"  - name: eth2\n", 1))
+	res, err = client.ReloadConfig(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	applied := map[string]bool{}
+	for _, c := range res.Applied {
+		applied[c.Key] = true
+	}
+	if len(res.Applied) != 2 || !applied["interfaces[0].active.enabled"] || !applied["logging.level"] {
+		t.Errorf("applied = %+v", res.Applied)
+	}
+	if !slices.Contains(res.NotApplied, config.Change{Key: "interfaces[1].name", New: "eth2"}) {
+		t.Errorf("not applied = %+v", res.NotApplied)
+	}
+	if cfg := h.d.Config(); len(cfg.Interfaces) != 1 || cfg.Interfaces[0].Active.Enabled || cfg.Logging.Level != "debug" {
+		t.Errorf("running config = %+v", cfg)
+	}
+	h.waitState("eth1", platform.CollectorARP, platform.StateDisabled)
+
+	// An invalid file changes nothing.
+	h.writeConfig(testConfig(h.dir, "loud", activeConfig))
+	if _, err := client.ReloadConfig(ctx); !errors.Is(err, api.ErrConfigRejected) || !strings.Contains(err.Error(), "logging.level") {
+		t.Errorf("invalid file: %v", err)
+	}
+	if h.d.Config().Logging.Level != "debug" {
+		t.Errorf("rejected reload changed the level to %s", h.d.Config().Logging.Level)
+	}
+}
+
+// The running values a reload keeps must validate with the new file: an
+// interface that is still monitored keeps its wide network, which the new
+// file no longer allows, so the reload is rejected.
+func TestReloadRevalidatesKeptValues(t *testing.T) {
+	wide := strings.Replace(testConfig("$DIR", "info", "active: { startup_delay: 24h, allow_wide_scan: true }\n"),
+		"storage:", "  - name: eth2\n    active: { enabled: true, networks: [10.0.0.0/20] }\nstorage:", 1)
+	h := startWith(t, wide, 0, activeLinks)
+	defer h.stop()
+	h.writeConfig(testConfig(h.dir, "info", activeConfig))
+	_, err := h.d.ReloadConfig(context.Background(), "bart")
+	if !errors.Is(err, api.ErrConfigRejected) || !strings.Contains(err.Error(), "interfaces[1].active.networks[0]") {
+		t.Fatalf("reload = %v", err)
+	}
+	if cfg := h.d.Config(); !cfg.Active.AllowWideScan || len(cfg.Interfaces) != 2 {
+		t.Errorf("running config changed: %+v", cfg.Active)
+	}
+	h.waitLog("actor=bart")
 }
 
 // After shutdown the correlator is gone: kill-switch requests fail at once

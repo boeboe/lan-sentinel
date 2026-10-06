@@ -3,6 +3,7 @@ package api_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"lan-sentinel/internal/api"
+	"lan-sentinel/internal/config"
 	"lan-sentinel/internal/probe"
 	"lan-sentinel/internal/probe/scheduler"
 	"lan-sentinel/internal/store"
@@ -30,6 +32,7 @@ type control struct {
 	scan    scheduler.ScanResult
 	scanErr error
 	plan    probe.Plan
+	reload  api.ReloadResult
 }
 
 func (c *control) note(actor, reason string) {
@@ -56,6 +59,11 @@ func (c *control) PlanScan(_ context.Context, req probe.Request) (probe.Plan, er
 func (c *control) Scan(_ context.Context, req probe.Request, actor string) (scheduler.ScanResult, error) {
 	c.note(actor, req.Profile)
 	return c.scan, c.scanErr
+}
+
+func (c *control) ReloadConfig(_ context.Context, actor string) (api.ReloadResult, error) {
+	c.note(actor, "reload")
+	return c.reload, c.err
 }
 
 // currentUser is how PeerUser names this process's user.
@@ -166,6 +174,34 @@ func TestScanEndpoints(t *testing.T) {
 	}
 }
 
+func TestConfigReloadEndpoint(t *testing.T) {
+	ctl := &control{reload: api.ReloadResult{
+		Path:       "/etc/lan-sentinel/config.yaml",
+		Applied:    []config.Change{{Key: "interfaces[0].active.enabled", Old: "false", New: "true"}},
+		NotApplied: []config.Change{{Key: "storage.path", Old: "/data/a.db", New: "/data/b.db"}},
+	}}
+	c, _, _ := startControl(t, ctl)
+	ctx := context.Background()
+
+	res, err := c.ReloadConfig(ctx)
+	if err != nil || res.Path != ctl.reload.Path || len(res.Applied) != 1 || res.Applied[0].New != "true" || res.NotApplied[0].Key != "storage.path" {
+		t.Fatalf("reload = %+v, %v", res, err)
+	}
+	if ctl.actors[0] != currentUser() {
+		t.Errorf("actor = %q, want the caller (SO_PEERCRED)", ctl.actors[0])
+	}
+
+	ctl.err = fmt.Errorf("%w: %w", api.ErrConfigRejected, errors.New("invalid configuration /etc/lan-sentinel/config.yaml:\n  active.arp.interval: must be positive"))
+	_, err = c.ReloadConfig(ctx)
+	if status(err) != http.StatusUnprocessableEntity || !errors.Is(err, api.ErrConfigRejected) || !strings.Contains(err.Error(), "active.arp.interval") {
+		t.Errorf("rejected file: %v", err)
+	}
+	ctl.err = errors.New("encode config: boom")
+	if _, err := c.ReloadConfig(ctx); status(err) != http.StatusInternalServerError || errors.Is(err, api.ErrConfigRejected) {
+		t.Errorf("reload failing: %v", err)
+	}
+}
+
 func TestOperatorRequestsAreChecked(t *testing.T) {
 	ctl := &control{}
 	_, socket, listen := startControl(t, ctl)
@@ -186,6 +222,9 @@ func TestOperatorRequestsAreChecked(t *testing.T) {
 		{"bad scan body", http.MethodPost, "/v1/scans", `[]`, http.StatusBadRequest},
 		{"bad enable body", http.MethodPost, "/v1/active/enable", `3`, http.StatusBadRequest},
 		{"empty body enables", http.MethodPost, "/v1/active/enable", ``, http.StatusOK},
+		{"get reload is not allowed", http.MethodGet, "/v1/config/reload", "", http.StatusMethodNotAllowed},
+		{"reload takes no fields", http.MethodPost, "/v1/config/reload", `{"path":"/tmp/x.yaml"}`, http.StatusBadRequest},
+		{"empty body reloads", http.MethodPost, "/v1/config/reload", ``, http.StatusOK},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -209,8 +248,16 @@ func TestOperatorRequestsAreChecked(t *testing.T) {
 		t.Fatal(err)
 	}
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusMethodNotAllowed || len(ctl.actors) != 1 {
+	if resp.StatusCode != http.StatusMethodNotAllowed || len(ctl.actors) != 2 {
 		t.Errorf("POST on TCP: %d, control calls %d", resp.StatusCode, len(ctl.actors))
+	}
+	resp, err = http.Post("http://"+listen+"/v1/config/reload", "application/json", strings.NewReader(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusMethodNotAllowed || len(ctl.actors) != 2 {
+		t.Errorf("reload on TCP: %d, control calls %d", resp.StatusCode, len(ctl.actors))
 	}
 }
 
@@ -221,7 +268,7 @@ func TestOperatorWithoutControlOrPeer(t *testing.T) {
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Errorf("without control: %d", rec.Code)
 	}
-	for _, path := range []string{"/v1/active/disable", "/v1/active/enable", "/v1/scans/plan"} {
+	for _, path := range []string{"/v1/active/disable", "/v1/active/enable", "/v1/scans/plan", "/v1/config/reload"} {
 		rec := httptest.NewRecorder()
 		srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{"reason":"x"}`)))
 		if rec.Code != http.StatusServiceUnavailable {

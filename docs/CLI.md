@@ -8,7 +8,7 @@ lan-sentinel [global options] <command> <subcommand> [options]
 
 ## 1. How commands reach data
 
-- **Online (default):** commands talk to the running daemon over `/run/lan-sentinel/api.sock`. This gives consistent reads and is required for `scan run`, `active enable|disable`, `watch` and `daemon status`.
+- **Online (default):** commands talk to the running daemon over `/run/lan-sentinel/api.sock`. This gives consistent reads and is required for `scan run`, `active enable|disable`, `config reload`, `watch` and `daemon status`.
 - **Offline (`--offline`):** the CLI opens the database directly, read-only. Read commands (`hosts`, `events`, `observations`, `services`, `interfaces`, `db`, `scan plan`) still work when the daemon will not start. Commands that need the daemon refuse `--offline` with exit 64 and a clear message.
 
 `lan-sentinel daemon run` stays in the foreground; systemd owns the process. No double-fork daemonisation.
@@ -61,13 +61,14 @@ The daemon runs as root with `UMask=0027` and the data directory is `0750 root:r
 | `scan run` | Operator-triggered scan, bound by the same safety controls | `--interface`, `--network` (repeatable), `--arp`, `--icmp`, `--tcp <port>` (repeatable), `--udp <probe>` (`ntp`, `enip`; repeatable), `--profile`, `--allow-wide` | 4 |
 | `config show` | Effective config after merging defaults, file, env and flags | `--sources` | 0 |
 | `config validate` | Validate a config before rollout | `--config` | 0 |
+| `config reload` | Make the running daemon re-read its configuration file and print what took effect and what needs a restart | `-o json` | 5 |
 | `db info` | Path, schema version, journal mode, size, WAL size, row counts | | 3 |
 | `db check` | SQLite integrity check | | 3 |
 | `version` | Version, commit, commit date (release builds are reproducible), Go version, architecture; `--quiet` prints the version alone | | 0 |
 
 There are no merge or split commands: within an interface a host is its MAC (`DATA_MODEL.md` §1).
 
-Deferred past v1: `daemon reload` (use `systemctl reload lan-sentinel`), `neighbors list`, `interfaces show`, `scan status`, `db vacuum`, `db export`.
+Deferred past v1: `neighbors list`, `interfaces show`, `scan status`, `db vacuum`, `db export`.
 
 ## 4. Behaviour details
 
@@ -151,6 +152,10 @@ Online, the daemon answers from what its single writer has committed, at most on
 ### `config validate` output
 
 Prints interfaces with passive/active mode, active scan networks with the number of addresses a sweep covers and how long one takes at the ARP rate, enabled probes and ports, per-protocol budgets, the expert override `active.max_sweep_targets` when it is above 65,536, and the estimated maximum probe rate. Exit 0 if valid, 2 with per-key errors otherwise.
+
+### `config reload`
+
+Makes the daemon re-read the configuration file it was started with, exactly as `systemctl reload lan-sentinel` (SIGHUP) does, through `POST /v1/config/reload` (`API.md`); `--config` does not change which file. The reload is all or nothing: a file that does not load or validate changes nothing, and the command prints the per-key errors and exits 2. Otherwise it prints the keys whose new values took effect (key, old, new) and the changed keys that need a restart (key, running value, value in the file), which keep their running values; with neither, `No changes.` Exit 0 in both cases. What a reload applies and what needs a restart is FR-CFG-3: each interface's `active` settings (enabling or disabling active discovery, networks, excludes), the probes and their intervals, budgets, presence thresholds, identity settings and the log level apply at once; adding, removing or renaming interfaces, their passive settings, `passive`, `storage`, `api`, `metrics`, `logging.format` and `replay` need a restart. Keys are named as in `config show --sources`. The daemon logs the reload with the calling Unix user and the applied keys. Check the file first with `config validate`, and preview a newly enabled interface's sweep with `scan plan`. Needs the daemon; `-o json` prints `ReloadResult`.
 
 ### `config show --sources`
 

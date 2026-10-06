@@ -32,13 +32,16 @@ type Error struct {
 
 func (e *Error) Error() string { return e.Message }
 
-// Unwrap maps 404 and 400 to the store's errors.
+// Unwrap maps 404 and 400 to the store's errors and 422 to
+// ErrConfigRejected.
 func (e *Error) Unwrap() error {
 	switch e.Status {
 	case http.StatusNotFound:
 		return store.ErrNotFound
 	case http.StatusBadRequest:
 		return store.ErrBadQuery
+	case http.StatusUnprocessableEntity:
+		return ErrConfigRejected
 	}
 	return nil
 }
@@ -133,6 +136,14 @@ func (c *Client) EnableActive(ctx context.Context, reason string) (store.ActiveS
 	var st store.ActiveState
 	err := c.post(ctx, c.http, "/v1/active/enable", SwitchRequest{Reason: reason}, &st)
 	return st, err
+}
+
+// ReloadConfig makes the daemon re-read its configuration file. A rejected
+// file is an *Error that wraps ErrConfigRejected.
+func (c *Client) ReloadConfig(ctx context.Context) (ReloadResult, error) {
+	var res ReloadResult
+	err := c.post(ctx, c.http, "/v1/config/reload", struct{}{}, &res)
+	return res, err
 }
 
 // PlanScan computes a scan plan in the daemon.
