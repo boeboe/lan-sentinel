@@ -44,9 +44,9 @@ func (d *Daemon) startPipeline(ctx context.Context) error {
 	}
 	d.log.Info("vendor table loaded", "assignments", vendors.Len())
 	d.bus = observation.NewBus(observation.DefaultBusSize)
-	engine := events.NewEngine(d.store, d.log, nil)
+	d.events = events.NewEngine(d.store, d.log, nil)
 	d.correlator, err = correlate.New(ctx, correlate.Options{
-		Store: d.store, Events: engine, Vendors: vendors, Clock: d.clock, Logger: d.log, Config: cfg,
+		Store: d.store, Events: d.events, Vendors: vendors, Clock: d.clock, Logger: d.log, Config: cfg,
 		DataDriven: cfg.ReplayMode(), Recovery: d.store.Recovery(),
 	})
 	if err != nil {
@@ -80,7 +80,13 @@ func (d *Daemon) startPipeline(ctx context.Context) error {
 				return err
 			}
 			if ctx.Err() == nil {
-				_ = d.store.Flush(ctx)
+				// The writer's flush ticker runs on the simulated clock,
+				// which stops with the replay: commit what is queued so the
+				// API and --offline see all of it.
+				if err := d.store.Flush(ctx); err != nil {
+					return err
+				}
+				d.log.Info("replay data committed")
 				if cfg.Replay.ExitWhenDone {
 					d.replayDone <- struct{}{}
 				}
@@ -92,9 +98,9 @@ func (d *Daemon) startPipeline(ctx context.Context) error {
 		for _, ic := range cfg.Interfaces {
 			live = append(live, ic.Name)
 		}
-		mgr := iface.New(iface.Options{Monitor: d.backends.Interfaces, Bus: d.bus, Clock: d.clock, Interfaces: live,
+		d.ifaces = iface.New(iface.Options{Monitor: d.backends.Interfaces, Bus: d.bus, Clock: d.clock, Interfaces: live,
 			Registry: d.registry, Logger: d.log})
-		start(platform.CollectorInterface, mgr.Run)
+		start(platform.CollectorInterface, d.ifaces.Run)
 		nb := neighbor.New(neighbor.Options{Source: d.backends.Neighbors, Bus: d.bus, Clock: d.clock, Interfaces: live,
 			Resync: cfg.Neighbor.ResyncInterval.D(), Registry: d.registry, Logger: d.log})
 		start(platform.CollectorNeighbor, nb.Run)

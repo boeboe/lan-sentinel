@@ -45,13 +45,13 @@ The daemon runs with `UMask=0027` and the data directory is `0750 lan-sentinel:l
 | --- | --- | --- | --- |
 | `daemon run` | Run the service in the foreground | `--config`, `--log-level` | 0 |
 | `daemon status` | Version, platform, PID, uptime, DB health, interfaces, host counts, kill-switch state, last scan, and per-interface collector state (`running`/`disabled`/`unsupported`/`failed` + error) | `-o json`; `--quiet` exit codes | 3 |
-| `hosts list` | Inventory: MAC, IP, hostname, vendor, interface, presence, last seen | `--interface`, `--active`, `--stale`, `--vendor`, `--port`, `--seen-within` | 3 |
+| `hosts list` | Inventory: MAC, IP, hostname, vendor, interface, presence, last seen. `--active`: live hosts (ACTIVE or RECENT); `--stale`: the others (STALE or MISSING); `--port`: an OPEN service on that port; `--vendor`: substring of vendor or manufacturer | `--interface`, `--active`, `--stale`, `--vendor`, `--port`, `--seen-within` | 3 |
 | `hosts show <host-id>` | Full record of one host | | 3 |
-| `hosts find <query>` | Current or point-in-time holder(s) with addresses, names and services and their sources | `--interface`, `--at <time>` | 3 |
-| `hosts history <query>` | Event timeline for a host, MAC, IP or name | `--interface`, `--since`, `--until` | 3 |
-| `hosts evidence <query>` | Why we believe what we believe about a host: per attribute, the sources, first/last seen and counts, plus the evidence snapshots of its events | `--interface`, `--since` | 3 |
+| `hosts find <query>` | Current or point-in-time holder(s) with addresses, names and services and their sources; exit 1 when nothing matches | `--interface`, `--at <time>`, `--ip`/`--mac`/`--hostname`/`--id` | 3 |
+| `hosts history <query>` | Event timeline for a host, MAC, IP or name | `--interface`, `--since`, `--until`, `--ip`/`--mac`/`--hostname`/`--id` | 3 |
+| `hosts evidence <query>` | Why we believe what we believe about a host: per attribute, the sources, first/last seen and counts, plus the evidence snapshots of its events; every host that ever matched the query; exit 1 when none | `--interface`, `--since`, `--ip`/`--mac`/`--hostname`/`--id` | 3 |
 | `observations list` | Raw observations within retention; hourly roll-ups with `--rollups` | `--host`, `--interface`, `--mac`, `--ip`, `--source`, `--unbound`, `--since`, `--until`, `--limit`, `--rollups` | 3 |
-| `events list` | All events on this box | `--since`, `--until`, `--type`, `--interface`, `--mac`, `--ip` | 3 |
+| `events list` | Events on this box, the latest `--limit` (default 1000) in time order | `--since`, `--until`, `--type`, `--interface`, `--mac`, `--ip`, `--limit` | 3 |
 | `services list` | Probe results per host and port | `--port`, `--state`, `--interface` | 3 (data from 4) |
 | `interfaces list` | State, MAC, current prefixes, passive/active per interface | | 3 |
 | `watch` | Live event stream | `--interface`, `--type`, `--port` | 3 |
@@ -73,7 +73,7 @@ Deferred past v1: `daemon reload` (use `systemctl reload lan-sentinel`), `neighb
 
 ### Query auto-detection (`hosts find`, `hosts history`, `hosts evidence`)
 
-The argument is classified in this order: host UUID → MAC (any of `aa:bb:..`, `aa-bb-..`, `aabb.ccdd.eeff`) → IPv4 → IPv6 → hostname. Explicit flags `--ip`, `--mac`, `--hostname`, `--id` override detection. Multiple matches (e.g. the same IP or MAC on two interfaces) are all shown, grouped by interface, unless `--interface` is given.
+The argument is classified in this order: host UUID → MAC (any of `aa:bb:..`, `aa-bb-..`, `aabb.ccdd.eeff`) → IPv4 → IPv6 → hostname. Instead of the argument, one of `--ip`, `--mac`, `--hostname`, `--id` gives the query with an explicit kind (e.g. `--hostname cafe.babe.f00d` for a name that looks like a MAC); a value that is not of that kind is a usage error (exit 64). Hostnames match case-insensitively. Multiple matches (e.g. the same IP or MAC on two interfaces) are all shown, grouped by interface, unless `--interface` is given.
 
 ### `hosts find`
 
@@ -81,15 +81,15 @@ Without `--at`, shows hosts with an open binding for the query. With `--at T`, u
 
 | Holders at T | Output | Exit |
 | --- | --- | --- |
-| 1 | The host record, its binding interval, and `Replaced by:` the next binding for that IP (if any) and the host's next address (if any). If `T > last_seen` the binding is marked `unconfirmed since <last_seen>`. | 0 |
-| ≥ 2 | Every holder, each marked `CONFLICT`, plus the `DUPLICATE_IP_DETECTED` event that covers T | 0 |
-| 0 | `no holder at T`, plus the previous binding (holder and end time) and the next binding (holder and start time) | 1 |
+| 1 | The host, its binding interval with sources, `Replaced by:` the next binding for that IP (if any) and `Moved to:` the host's next address (if any). If `T > last_seen` the binding is marked `unconfirmed since <last_seen>`. | 0 |
+| ≥ 2 | Every holder, each binding marked `CONFLICT`, plus the `DUPLICATE_IP_DETECTED` event that covers T | 0 |
+| 0 | `No holder of <ip> at T`, plus the previous binding (holder and end time) and the next binding (holder and start time) | 1 |
 
 For a MAC or name query, `--at` shows the host and the addresses and names in effect at T.
 
 ### `hosts history`
 
-- Host UUID or MAC: every event for that host (for a MAC, for each context it appears in).
+- Host UUID or MAC: every event for that host, including those where it is the related host (the other side of a conflict or MAC move); for a MAC, for each context it appears in.
 - IP: every event whose old value, new value or evidence IP (`evidence_json.ip`) is that IP, across all hosts that ever held it, in time order. This is the IP's ownership timeline, including service and conflict events seen on it.
 - Name: every event for hosts that ever held that name.
 
@@ -99,7 +99,7 @@ For each attribute (each address, name, service, identification) the sources tha
 
 ### `observations list`
 
-Columns: time, interface, source, MAC, IP, hostname, service, host ID. `--unbound` shows observations that matched no host. Observations older than raw retention are only available with `--rollups` (one row per host, source, MAC, IP and hour, with count). Default `--limit` 1000.
+Columns: time, interface, source, MAC, IP, hostname, service, host ID. The latest `--limit` rows, in time order. `--unbound` shows observations that matched no host. Observations older than raw retention are only available with `--rollups` (one row per host, source, MAC, IP and hour, with count). Default `--limit` 1000.
 
 ### `active disable` / `active enable`
 
@@ -123,7 +123,15 @@ Computes the same plan, prints it, and refuses (exit 2) if `scan plan` would. Ot
 
 ### Time arguments
 
-`--since`/`--seen-within` accept durations (`24h`, `7d`) or timestamps. `--at`/`--until` accept `YYYY-MM-DD`, `YYYY-MM-DD HH:MM[:SS]` (local time) or RFC 3339.
+`--since`/`--seen-within` accept durations (`24h`, `7d`, `90m`) counted back from now, or timestamps. `--at`/`--until` accept `YYYY-MM-DD`, `YYYY-MM-DD HH:MM[:SS]` (local time) or RFC 3339. Tables show local time.
+
+### Output formats
+
+Lists (`hosts list`, `hosts history`, `observations list`, `events list`, `services list`, `interfaces list`) support all four formats; `json` is the API's objects (`API.md`), `csv` uses RFC 3339 UTC times and empty cells for missing values. Hostnames and other text come from the network, so a CSV cell starting with `=`, `+`, `-`, `@`, tab or carriage return is prefixed with `'` to keep spreadsheets from running it as a formula. Records (`hosts show`, `hosts find`, `daemon status`, `db info`, `db check`) support `table` and `json`; `hosts evidence` also `jsonl`; `watch` prints a line per event or, with `-o jsonl`/`json`, the event objects. `--quiet` prints nothing and leaves the answer to the exit code.
+
+### Online reads
+
+Online, the daemon answers from what its single writer has committed, at most one 5-second batch behind; `watch` is live. Offline and online answers come from the same queries, and each command is one snapshot (`hosts evidence` included). `--mac` and `--ip` filters accept any written form. A socket the caller may not open is exit 2 with a hint to join the service group (the daemon may be running); no daemon on the socket is exit 3.
 
 ### Event type names
 
@@ -149,56 +157,110 @@ Prints every effective key with where its value came from (default, file path, `
 
 ## 5. Examples
 
+The host, history, event, evidence and service outputs are from the golden reconstruction scenario (`DATA_MODEL.md` §10), with host IDs shortened; `interfaces list`, `watch` and `daemon status` show a live box. A name not confirmed for `name_expiry` is marked `(stale)` in the Names list.
+
 ```bash
-$ lan-sentinel hosts list --interface eth1
-MAC                IP               HOSTNAME        VENDOR        IFACE  STATE   LAST SEEN
-00:0c:26:8e:1b:d6  192.168.110.200  hmi01.local     Weintek Labs  eth1   ACTIVE  12s ago
-00:1b:1b:12:34:56  192.168.110.60   inverter.local  Siemens       eth1   RECENT  14m ago
+$ lan-sentinel hosts list
+MAC                IP              HOSTNAME     VENDOR              IFACE  STATE   LAST SEEN
+00:1e:c9:00:00:01  -               plant-sw-01  Dell Inc.           eth0   ACTIVE  58m ago
+00:0c:26:aa:bb:03  192.168.110.51  -            Weintek Labs. Inc.  eth1   STALE   2h ago
+00:1b:1b:aa:bb:01  192.168.110.52  -            Siemens AG          eth1   STALE   1h ago
+00:1b:1b:aa:bb:02  192.168.110.50  plc-b.local  Siemens AG          eth1   ACTIVE  59m ago
 ```
 
 ```bash
-$ lan-sentinel hosts find 192.168.110.200
-Host ID:     3db0ce66-38c2-4f50-a1ce-a593cb872f88
+$ lan-sentinel hosts find 192.168.110.50
+Host ID:     01a10f56-890f-7282-…
 Interface:   eth1
-MAC:         00:0c:26:8e:1b:d6  Weintek Labs
+MAC:         00:1b:1b:aa:bb:02  Siemens AG
 State:       ACTIVE
-First seen:  2026-10-03 11:24:10
-Last seen:   2026-10-05 19:52:44
+Name:        plc-b.local
+First seen:  2026-10-01 12:00:00
+Last seen:   2026-10-01 14:01:00
 
 Addresses:
-  192.168.110.200  2026-10-03 11:24:10 → open   sources: passive_arp, kernel_neighbor, arp_scan
+  192.168.110.50   2026-10-01 12:00:00 → open   sources: passive_arp, tcp_connect, passive_mdns
 
 Names:
-  hmi01.local      mdns   confirmed 2h ago
-  HMI01            dhcp   confirmed 12d ago (stale)
+  plc-b.local      mdns     confirmed 59m ago
 
 Services:
-  tcp/80   OPEN     13s ago
-  tcp/502  REFUSED  2m ago
+  tcp/502  OPEN        1h ago
+
+Identification:
+  manufacturer=Siemens AG  oui  confidence 0.70
 ```
 
 ```bash
 $ lan-sentinel hosts find 192.168.110.50 --interface eth1 --at "2026-10-01 10:30"
-Host ID:     8f0e2a71-5c1d-4d4e-9a0b-2b7f3c9e1d22
-MAC:         00:1b:1b:aa:bb:01  Siemens
-Binding:     192.168.110.50  2026-10-01 10:00:00 → 2026-10-01 11:00:00  (unconfirmed since 10:00:00)
+Host ID:     01a10f56-890f-70c4-…
+Interface:   eth1
+MAC:         00:1b:1b:aa:bb:01  Siemens AG
+Binding:     192.168.110.50   2026-10-01 10:00:00 → 2026-10-01 11:00:00   sources: passive_arp   (unconfirmed since 2026-10-01 10:00:00)
 Replaced by: 192.168.110.50 → 00:1b:1b:aa:bb:02 from 2026-10-01 12:00:00
-             host moved to 192.168.110.51 at 2026-10-01 11:00:00 (IP_CHANGED, passive_dhcp)
+Moved to:    192.168.110.51 at 2026-10-01 11:00:00
+```
+
+```bash
+$ lan-sentinel hosts find 192.168.110.51 --interface eth1 --at "2026-10-01 13:10"
+Host ID:     01a10f56-890f-7343-…
+Interface:   eth1
+MAC:         00:0c:26:aa:bb:03  Weintek Labs. Inc.
+Binding:     192.168.110.51   2026-10-01 13:00:00 → open   sources: passive_arp   CONFLICT   (unconfirmed since 2026-10-01 13:00:00)
+Conflict:    2026-10-01 13:00:00 DUPLICATE_IP_DETECTED 192.168.110.51 between 00:0c:26:aa:bb:03 and 00:1b:1b:aa:bb:01
+
+Host ID:     01a10f56-890f-70c4-…
+Interface:   eth1
+MAC:         00:1b:1b:aa:bb:01  Siemens AG
+Binding:     192.168.110.51   2026-10-01 11:00:00 → 2026-10-01 13:30:00   sources: passive_dhcp, kernel_neighbor   CONFLICT   (unconfirmed since 2026-10-01 12:58:00)
+Moved to:    192.168.110.52 at 2026-10-01 13:30:00
+Conflict:    2026-10-01 13:00:00 DUPLICATE_IP_DETECTED 192.168.110.51 between 00:0c:26:aa:bb:03 and 00:1b:1b:aa:bb:01
+```
+
+```bash
+$ lan-sentinel hosts find 192.168.110.50 --interface eth1 --at "2026-10-01 11:30"; echo $?
+No holder of 192.168.110.50 at 2026-10-01 11:30:00.
+Previous:    192.168.110.50 held by 00:1b:1b:aa:bb:01 on eth1 until 2026-10-01 11:00:00
+Next:        192.168.110.50 held by 00:1b:1b:aa:bb:02 on eth1 from 2026-10-01 12:00:00
+1
 ```
 
 ```bash
 $ lan-sentinel hosts history 192.168.110.50 --interface eth1
-2026-10-01 10:00:00  HOST_DISCOVERED  eth1  00:1b:1b:aa:bb:01  192.168.110.50   passive_arp
-2026-10-01 11:00:00  IP_CHANGED       eth1  00:1b:1b:aa:bb:01  .50 -> .51       passive_dhcp
-2026-10-01 12:00:00  HOST_DISCOVERED  eth1  00:1b:1b:aa:bb:02  192.168.110.50   passive_arp
-2026-10-01 14:00:00  SERVICE_OPENED   eth1  00:1b:1b:aa:bb:02  tcp/502          tcp_connect
+TIME                 TYPE             IFACE  MAC                VALUE                             RELATED  CAUSE
+2026-10-01 10:00:00  HOST_DISCOVERED  eth1   00:1b:1b:aa:bb:01  192.168.110.50                    -        passive_arp
+2026-10-01 11:00:00  IP_CHANGED       eth1   00:1b:1b:aa:bb:01  192.168.110.50 -> 192.168.110.51  -        passive_dhcp
+2026-10-01 12:00:00  HOST_DISCOVERED  eth1   00:1b:1b:aa:bb:02  192.168.110.50                    -        passive_arp
+2026-10-01 14:00:00  SERVICE_OPENED   eth1   00:1b:1b:aa:bb:02  tcp/502                           -        tcp_connect
 ```
 
 ```bash
 $ lan-sentinel events list --type duplicate-ip --since 24h
-2026-10-05 14:22:31  DUPLICATE_IP_DETECTED  eth0  192.168.0.1
-    e8:48:b8:47:09:73
-    38:43:7d:96:6a:91
+TIME                 TYPE                   IFACE  MAC                VALUE           RELATED            CAUSE
+2026-10-01 13:00:00  DUPLICATE_IP_DETECTED  eth1   00:0c:26:aa:bb:03  192.168.110.51  00:1b:1b:aa:bb:01  passive_arp
+```
+
+```bash
+$ lan-sentinel hosts evidence 00:0c:26:aa:bb:03
+Host 01a10f56-890f-7343-…  00:0c:26:aa:bb:03  on eth1
+
+Addresses:
+  192.168.110.51   2026-10-01 13:00:00 → open
+      passive_arp      first 2026-10-01 13:00:00  last 2026-10-01 13:00:00
+
+Identification:
+  manufacturer=Weintek Labs. Inc.  oui  confidence 0.70  {"mac":"00:0c:26:aa:bb:03","registry":"IEEE"}
+
+Observations (raw and roll-ups):
+  passive_arp      192.168.110.51        1  first 2026-10-01 13:00:00  last 2026-10-01 13:00:00
+
+Events:
+  2026-10-01 13:00:00  HOST_DISCOVERED        192.168.110.51  (passive_arp)
+      evidence {"interface":"eth1","ip":"192.168.110.51","mac":"00:0c:26:aa:bb:03","source":"passive_arp","ts":"2026-10-01T13:00:00Z"}
+  2026-10-01 13:00:00  DUPLICATE_IP_DETECTED  192.168.110.51  (passive_arp)
+      evidence {"interface":"eth1","ip":"192.168.110.51","mac":"00:0c:26:aa:bb:03","source":"passive_arp","ts":"2026-10-01T13:00:00Z"}
+  2026-10-01 13:30:00  DUPLICATE_IP_RESOLVED  192.168.110.51  (passive_dhcp)
+      evidence {"interface":"eth1","ip":"192.168.110.52","mac":"00:1b:1b:aa:bb:01","source":"passive_dhcp","ts":"2026-10-01T13:30:00Z"}
 ```
 
 ```bash
@@ -218,16 +280,22 @@ Active discovery disabled (persists across restarts). Clear with: lan-sentinel a
 
 ```bash
 $ lan-sentinel watch --interface eth1
-19:42:12  HOST_DISCOVERED  eth1  192.168.110.200  00:0c:26:8e:1b:d6  Weintek Labs
-19:43:04  IP_CHANGED       eth1  192.168.110.60 -> 192.168.110.61  00:1b:1b:12:34:56
-19:43:18  SERVICE_OPENED   eth1  192.168.110.61 tcp/502
+19:42:12  HOST_DISCOVERED        eth1   192.168.110.200  00:0c:26:8e:1b:d6
+19:43:04  IP_CHANGED             eth1   192.168.110.60 -> 192.168.110.61  00:1b:1b:12:34:56
+19:43:18  SERVICE_OPENED         eth1   tcp/502  00:1b:1b:12:34:56
 ```
 
 ```bash
 $ lan-sentinel services list --port 502
-IP               MAC                PORT     STATE    LAST CHECK
-192.168.110.61   00:1b:1b:12:34:56  502/tcp  OPEN     13s ago
-192.168.110.200  00:0c:26:8e:1b:d6  502/tcp  REFUSED  2m ago
+IP              MAC                IFACE  PORT     STATE  LAST CHECK
+192.168.110.50  00:1b:1b:aa:bb:02  eth1   502/tcp  OPEN   1h ago
+```
+
+```bash
+$ lan-sentinel interfaces list
+NAME  STATE  MAC                PREFIXES          PASSIVE  ACTIVE  HOSTS
+eth0  up     00:c0:08:9a:41:02  -                 on       off     1
+eth1  up     00:c0:08:9a:41:03  192.168.110.0/24  on       on      3
 ```
 
 ```bash
@@ -235,15 +303,19 @@ $ lan-sentinel daemon status
 Version:    1.0.0 (linux/arm64)   PID 412   up 3d 4h
 Database:   /data/lan-sentinel/hosts.db  ok  41 MB
 Active:     enabled
+Last scan:  never
 Interfaces:
-  eth1  up  192.168.110.10/24
-        capture    running     afpacket
-        neighbor   running     netlink
-        arp        running
-        tcp        running
-  eth2  up  10.0.0.5/24
-        capture    failed      socket(AF_PACKET): operation not permitted
+  eth1   up      192.168.110.0/24
+         hosts      12 active, 3 recent, 1 stale
+         capture    running     afpacket
+         neighbor   running     netlink
+         interface  running     netlink
+  eth2   up      10.0.0.0/24
+         capture    failed      socket(AF_PACKET): operation not permitted
+         neighbor   running     netlink
+         interface  running     netlink
 State:      DEGRADED
+  - eth2 capture: socket(AF_PACKET): operation not permitted
 ```
 
 ```bash

@@ -163,6 +163,7 @@ type Event struct {
 	Interface     string // for the log entry
 	HostID        string
 	RelatedHostID string
+	RelatedMAC    string // for the live stream; the table derives it from the host
 	MAC           string // for the log entry
 	Old, New      string
 	Cause         string // observation source or internal cause (presence, expiry, iface_monitor, ...)
@@ -178,7 +179,11 @@ type Engine struct {
 
 	mu     sync.Mutex
 	counts map[Type]uint64
+	subs   map[*subscriber]struct{}
+	missed uint64 // events slow subscribers did not receive
 }
+
+type subscriber struct{ ch chan store.Event }
 
 // NewEngine returns an engine writing to st and log. clockSynced reports
 // whether the system clock is synchronised (NFR-REL-2).
@@ -186,7 +191,7 @@ func NewEngine(st *store.Store, log *slog.Logger, clockSynced func() bool) *Engi
 	if clockSynced == nil {
 		clockSynced = func() bool { return true }
 	}
-	return &Engine{store: st, log: log, clockSynced: clockSynced, counts: map[Type]uint64{}}
+	return &Engine{store: st, log: log, clockSynced: clockSynced, counts: map[Type]uint64{}, subs: map[*subscriber]struct{}{}}
 }
 
 // Emit queues the event for the next store batch and logs it.
@@ -217,9 +222,57 @@ func (e *Engine) Emit(ctx context.Context, ev Event) error {
 	}
 	e.mu.Lock()
 	e.counts[ev.Type]++
+	if len(e.subs) > 0 {
+		se := store.Event{
+			TS: ev.TS.UTC(), Type: string(ev.Type), Severity: string(spec.Severity), Interface: ev.Interface, HostID: ev.HostID,
+			MAC: ev.MAC, RelatedHostID: ev.RelatedHostID, RelatedMAC: ev.RelatedMAC, Old: ev.Old, New: ev.New, Cause: ev.Cause,
+			ObservationID: ev.ObservationID, Evidence: evidence, ClockSynced: synced,
+		}
+		for s := range e.subs {
+			select {
+			case s.ch <- se:
+			default:
+				e.missed++
+			}
+		}
+	}
 	e.mu.Unlock()
 	e.logEvent(ctx, spec, ev, synced)
 	return nil
+}
+
+// Subscribe returns a channel that receives every event emitted from now on
+// (the live stream behind `watch`), and a function that ends the
+// subscription and closes the channel. A subscriber more than buffer events
+// behind misses events instead of blocking the correlator.
+func (e *Engine) Subscribe(buffer int) (<-chan store.Event, func()) {
+	s := &subscriber{ch: make(chan store.Event, max(buffer, 1))}
+	e.mu.Lock()
+	e.subs[s] = struct{}{}
+	e.mu.Unlock()
+	var once sync.Once
+	return s.ch, func() {
+		once.Do(func() {
+			e.mu.Lock()
+			delete(e.subs, s)
+			e.mu.Unlock()
+			close(s.ch)
+		})
+	}
+}
+
+// Subscribers returns the number of live subscriptions.
+func (e *Engine) Subscribers() int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return len(e.subs)
+}
+
+// Missed returns how many events slow subscribers did not receive.
+func (e *Engine) Missed() uint64 {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.missed
 }
 
 // Counts returns how many events of each type have been emitted.

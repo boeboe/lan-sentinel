@@ -46,7 +46,7 @@ func TestCaptureScenario(t *testing.T) {
 	db := filepath.Join(dir, "hosts.db")
 	cfgPath := filepath.Join(dir, "config.yaml")
 	cfg := "version: 1\ninterfaces:\n  - name: eth1\n    prefixes: [192.168.110.0/24]\n    replay: { file: " + pcap +
-		" }\nreplay: { exit_when_done: true }\nstorage: { path: " + db + " }\napi: { socket: ./api.sock }\nlogging: { format: text, level: warn }\n"
+		" }\nreplay: { exit_when_done: true }\nstorage: { path: " + db + " }\napi: { socket: " + filepath.Join(dir, "api.sock") + " }\nlogging: { format: text, level: warn }\n"
 	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
 		t.Fatal(err)
 	}

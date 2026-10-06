@@ -7,6 +7,9 @@ package iface
 import (
 	"context"
 	"log/slog"
+	"net"
+	"net/netip"
+	"sync"
 	"time"
 
 	"lan-sentinel/internal/clock"
@@ -31,6 +34,37 @@ type Manager struct {
 	o       Options
 	ifaces  map[string]bool
 	byIndex map[int]string
+
+	mu    sync.Mutex
+	links map[string]Link // last state per configured interface
+}
+
+// Link is an interface's last known state, for `daemon status` and
+// `interfaces list`.
+type Link struct {
+	Name     string
+	Present  bool
+	Up       bool
+	MAC      net.HardwareAddr
+	Prefixes []netip.Prefix
+}
+
+// Links returns the last known state of every configured interface that
+// has been seen.
+func (m *Manager) Links() map[string]Link {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make(map[string]Link, len(m.links))
+	for k, v := range m.links {
+		out[k] = v
+	}
+	return out
+}
+
+func (m *Manager) remember(l Link) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.links[l.Name] = l
 }
 
 // New returns a manager.
@@ -41,7 +75,7 @@ func New(o Options) *Manager {
 	if o.Logger == nil {
 		o.Logger = slog.New(slog.DiscardHandler)
 	}
-	m := &Manager{o: o, ifaces: map[string]bool{}, byIndex: map[int]string{}}
+	m := &Manager{o: o, ifaces: map[string]bool{}, byIndex: map[int]string{}, links: map[string]Link{}}
 	for _, i := range o.Interfaces {
 		m.ifaces[i] = true
 	}
@@ -81,19 +115,27 @@ func (m *Manager) Run(ctx context.Context) error {
 			case ev.Removed:
 				if name, ok := m.byIndex[ev.Link.Index]; ok {
 					delete(m.byIndex, ev.Link.Index)
-					m.publish(ctx, observation.LinkState{Time: m.o.Clock.Now(), Interface: name, Present: false})
+					m.gone(ctx, name, m.o.Clock.Now())
 				}
 			case m.ifaces[ev.Link.Name]:
 				m.byIndex[ev.Link.Index] = ev.Link.Name
-				m.publish(ctx, state(ev.Link, m.o.Clock.Now()))
+				m.present(ctx, ev.Link, m.o.Clock.Now())
 			}
 		}
 	}
 	return nil
 }
 
-func state(l platform.Link, t time.Time) observation.LinkState {
-	return observation.LinkState{Time: t, Interface: l.Name, Present: true, Up: l.Up, Prefixes: l.Prefixes}
+// present publishes and remembers a link that exists.
+func (m *Manager) present(ctx context.Context, l platform.Link, t time.Time) {
+	m.remember(Link{Name: l.Name, Present: true, Up: l.Up, MAC: l.MAC, Prefixes: l.Prefixes})
+	m.publish(ctx, observation.LinkState{Time: t, Interface: l.Name, Present: true, Up: l.Up, Prefixes: l.Prefixes})
+}
+
+// gone publishes and remembers a configured interface that does not exist.
+func (m *Manager) gone(ctx context.Context, name string, t time.Time) {
+	m.remember(Link{Name: name})
+	m.publish(ctx, observation.LinkState{Time: t, Interface: name, Present: false})
 }
 
 // publishAll publishes every configured interface, absent ones as removed.
@@ -110,12 +152,12 @@ func (m *Manager) publishAll(ctx context.Context) error {
 		}
 		found[l.Name] = true
 		m.byIndex[l.Index] = l.Name
-		m.publish(ctx, state(l, now))
+		m.present(ctx, l, now)
 	}
 	for name := range m.ifaces {
 		if !found[name] {
 			m.o.Logger.Warn("configured interface not present", "interface", name)
-			m.publish(ctx, observation.LinkState{Time: now, Interface: name, Present: false})
+			m.gone(ctx, name, now)
 		}
 	}
 	return nil

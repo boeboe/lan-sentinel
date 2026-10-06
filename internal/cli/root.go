@@ -56,6 +56,24 @@ type Env struct {
 	// StderrIsTerminal selects text logging for `daemon run` when the log
 	// format is not configured.
 	StderrIsTerminal bool
+	// Now and Location default to the system clock and time zone; tests
+	// fix them.
+	Now      func() time.Time
+	Location *time.Location
+}
+
+func (e Env) now() time.Time {
+	if e.Now != nil {
+		return e.Now()
+	}
+	return time.Now()
+}
+
+func (e Env) loc() *time.Location {
+	if e.Location != nil {
+		return e.Location
+	}
+	return time.Local
 }
 
 // OSEnv returns the real process environment.
@@ -81,9 +99,10 @@ type globals struct {
 var outputFormats = []string{"table", "json", "jsonl", "csv"}
 
 type app struct {
-	env  Env
-	g    globals
-	root *cobra.Command
+	env    Env
+	g      globals
+	root   *cobra.Command
+	socket string // the socket the client connected to
 }
 
 // Execute runs the CLI and returns the process exit code.
@@ -136,7 +155,8 @@ func (a *app) newRoot() *cobra.Command {
 	f.BoolVar(&a.g.offline, "offline", false, "read the database directly, read-only")
 	f.BoolVar(&a.g.quiet, "quiet", false, "minimal output; rely on the exit code")
 
-	root.AddCommand(a.versionCmd(), a.configCmd(), a.daemonCmd())
+	root.AddCommand(a.versionCmd(), a.configCmd(), a.daemonCmd(), a.hostsCmd(), a.observationsCmd(), a.eventsCmd(),
+		a.servicesCmd(), a.interfacesCmd(), a.watchCmd(), a.dbCmd())
 	return root
 }
 

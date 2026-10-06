@@ -2,6 +2,7 @@ package iface
 
 import (
 	"context"
+	"net"
 	"net/netip"
 	"testing"
 	"time"
@@ -32,7 +33,7 @@ func TestManager(t *testing.T) {
 	mon := &fake.Interfaces{}
 	p24 := netip.MustParsePrefix("192.168.110.0/24")
 	mon.SetLinks([]platform.Link{
-		{Name: "eth1", Index: 2, Up: true, Prefixes: []netip.Prefix{p24}},
+		{Name: "eth1", Index: 2, Up: true, MAC: net.HardwareAddr{2, 0, 0, 0, 0, 1}, Prefixes: []netip.Prefix{p24}},
 		{Name: "lo", Index: 1, Up: true},
 	})
 	reg := platform.NewRegistry(sim.Now)
@@ -53,6 +54,13 @@ func TestManager(t *testing.T) {
 	if ls := states["eth2"]; ls.Present {
 		t.Errorf("absent eth2 reported present: %+v", ls)
 	}
+	links := m.Links()
+	if l := links["eth1"]; !l.Present || !l.Up || l.MAC.String() != "02:00:00:00:00:01" || len(l.Prefixes) != 1 {
+		t.Errorf("remembered eth1 = %+v", l)
+	}
+	if l, ok := links["eth2"]; !ok || l.Present {
+		t.Errorf("remembered eth2 = %+v", l)
+	}
 
 	// Changes: down, unmonitored link ignored, removal.
 	mon.Emit(platform.LinkEvent{Link: platform.Link{Name: "eth1", Index: 2, Up: false, Prefixes: []netip.Prefix{p24}}})
@@ -63,6 +71,9 @@ func TestManager(t *testing.T) {
 	mon.Emit(platform.LinkEvent{Link: platform.Link{Index: 2}, Removed: true})
 	if ls := next(t, bus); ls.Interface != "eth1" || ls.Present {
 		t.Errorf("removal = %+v", ls)
+	}
+	if l := m.Links()["eth1"]; l.Present {
+		t.Errorf("removed eth1 remembered as present: %+v", l)
 	}
 	for _, s := range reg.List() {
 		if s.State != platform.StateRunning {

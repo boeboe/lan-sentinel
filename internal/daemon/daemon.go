@@ -18,12 +18,15 @@ import (
 	"syscall"
 	"time"
 
+	"lan-sentinel/internal/api"
 	"lan-sentinel/internal/buildinfo"
 	"lan-sentinel/internal/clock"
 	"lan-sentinel/internal/collect/capture"
 	"lan-sentinel/internal/collect/replay"
 	"lan-sentinel/internal/config"
 	"lan-sentinel/internal/correlate"
+	"lan-sentinel/internal/events"
+	"lan-sentinel/internal/iface"
 	"lan-sentinel/internal/logging"
 	"lan-sentinel/internal/observation"
 	"lan-sentinel/internal/platform"
@@ -63,6 +66,11 @@ type Daemon struct {
 
 	player     *replay.Player     // replay mode only
 	capture    *capture.Collector // live mode with passive capture
+	ifaces     *iface.Manager     // live mode only
+	events     *events.Engine
+	reader     *store.Reader
+	api        *api.Server
+	started    time.Time
 	bus        *observation.Bus
 	correlator *correlate.Correlator
 	replayDone chan struct{}
@@ -159,6 +167,13 @@ func (d *Daemon) Run(ctx context.Context) error {
 
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	d.started = time.Now()
+	if err := d.startAPI(runCtx); err != nil {
+		cancel()
+		d.stop()
+		_ = d.store.Close()
+		return err
+	}
 	var wg sync.WaitGroup
 	// A replay does not compact: its database should depend only on the
 	// recorded data, not on when the simulated clock's ticks were handled.
@@ -190,6 +205,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 	d.notify("stopping", d.notifier.Stopping)
 	cancel()
 	wg.Wait()
+	d.stopAPI()
 	d.stop()
 	if err := d.store.Close(); err != nil {
 		d.log.Error("closing database", "err", err)
@@ -316,6 +332,9 @@ func (d *Daemon) reload() {
 	d.cfg.Store(next)
 	if d.correlator != nil {
 		d.correlator.SetConfig(next)
+	}
+	if d.reader != nil {
+		d.reader.SetNameExpiry(next.Identity.NameExpiry.D())
 	}
 	d.log.Info("configuration reloaded", "path", loaded.Path, "log_level", next.Logging.Level)
 }

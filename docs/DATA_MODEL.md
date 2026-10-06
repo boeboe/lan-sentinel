@@ -92,7 +92,7 @@ A binding in effect at T with `T > last_seen` was **unconfirmed** at T: it was t
 
 `hosts` has `first_seen` and `last_seen` (no `ended_at`: hosts are never closed, only their presence changes).
 
-## 4. Schema (`migrations/0001_init.sql`)
+## 4. Schema (`migrations/0001_init.sql`, read-side indexes in `0002_read_indexes.sql`)
 
 | Table | Columns | Purpose |
 | --- | --- | --- |
@@ -138,9 +138,10 @@ Every host row carries `context_id`. `names`, `services`, `identifications` and 
 - `addresses(context_id, ip, first_seen)` — point-in-time lookup
 - `addresses(host_id, first_seen)`
 - `hosts(mac)` — cross-context MAC lookup (`MAC_MOVED`, `hosts find <mac>`)
-- `names(name)`
-- `events(ts)`, `events(host_id, ts)`, `events(type, ts)`, `events(context_id, ts)`
-- `observations(ts)`, `observations(host_id, ts)`, `observation_rollups(hour)`, `observation_rollups(host_id, hour)`
+- `names(name COLLATE NOCASE)` — name queries are case-insensitive; `names(host_id, first_seen)` — every name of a host
+- `events(ts)`, `events(host_id, ts)`, `events(related_host_id, ts)`, `events(type, ts)`, `events(context_id, ts)`, `events(context_id, type, ts)`
+- `events(old_value)`, `events(new_value)`, `events(json_extract(evidence_json, '$.ip'))` — IP timelines
+- `observations(ts)`, `observations(host_id, ts)`, `observation_rollups(hour)`, `observation_rollups(host_id, hour)`. Observations have no MAC or IP index (they are the high-volume table); `observations list --mac/--ip` walks the time index back from the latest until its limit is filled, so `--host` or `--since` keeps it cheap.
 
 ### Point-in-time query
 

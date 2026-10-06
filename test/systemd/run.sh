@@ -51,6 +51,10 @@ check "database created in /data/lan-sentinel" x test -f /data/lan-sentinel/host
 check "events go to the journal" journal_has "lan-sentinel running"
 check "passive capture runs under the unit (AF_PACKET)" wait_for 10 journal_has "capture started"
 check "no capture failures" bash -c "! docker exec $NAME journalctl -u lan-sentinel --no-pager -o cat | grep -q 'capture unavailable'"
+check "API socket is 0660 lan-sentinel:lan-sentinel" bash -c "[ \"\$(docker exec $NAME stat -c '%a %U %G' /run/lan-sentinel/api.sock)\" = '660 lan-sentinel lan-sentinel' ]"
+check "daemon status over the API socket (healthy)" x lan-sentinel daemon status --quiet
+check "hosts list over the API" x lan-sentinel hosts list
+check "offline read beside the running daemon" x lan-sentinel --offline db check
 
 x systemctl reload lan-sentinel
 check "SIGHUP reload" wait_for 10 journal_has "configuration reloaded"
@@ -83,7 +87,7 @@ if [ "$fail" != 0 ] || [ -n "${KEEP_JOURNAL:-}" ]; then cat "$work/capcheck.txt"
 
 x systemctl stop lan-sentinel
 check "clean shutdown" wait_for 15 journal_has "lan-sentinel stopped"
-check "WAL removed on shutdown" x sh -c '! test -s /data/lan-sentinel/hosts.db-wal'
+check "WAL and -shm removed on shutdown (after API traffic)" x sh -c '! test -e /data/lan-sentinel/hosts.db-wal && ! test -e /data/lan-sentinel/hosts.db-shm'
 
 if [ "$fail" != 0 ]; then
 	echo "--- journal" >&2

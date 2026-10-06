@@ -14,6 +14,7 @@ Read these before changing anything. If code and docs disagree, stop and ask.
 - `docs/ARCHITECTURE.md` — components, data flow, key decisions
 - `docs/DATA_MODEL.md` — Observation type, SQLite schema, correlation rules, event catalogue
 - `docs/CLI.md` — the v1 command-line contract
+- `docs/API.md` — the local REST API and the metrics
 - `docs/IMPLEMENTATION_PLAN.md` — phases, tasks, exit criteria
 
 ## Names and paths (fixed)

@@ -90,7 +90,7 @@ Decoders (`capture/decoders`) are pure functions from an Ethernet frame to zero 
 On a switched port, capture sees traffic to/from the box, broadcast, multicast, ARP, mDNS, IPv6 multicast and some switch control traffic, but not unicast between other devices unless the port is mirrored. That is expected and sufficient for discovery.
 
 ### Replay collector (`internal/collect/replay`)
-Reads JSONL files of `Observation` values, or pcap/pcapng captures (Ethernet link type; `.pcap.gz` and `.pcapng.gz` are read compressed) decoded by the capture decoders with the same refresh suppression as live capture, skipping packets a pcapng file records as outbound (a classic pcap records no direction, so a capture taken on the box includes its own frames), merges every replay interface's file into one time-ordered stream, and emits them with their recorded source and timestamp. Paths are relative to the working directory. Replay and live interfaces cannot be mixed: a replay runs the whole daemon on recorded time. In `speed: 0` mode it advances a simulated clock (`internal/clock`) to each observation's timestamp before emitting it and blocks until the correlator has consumed it, so presence and expiry timers fire exactly as they would have at the site; `speed: N` replays in real time × N. When every replay source is exhausted the daemon keeps serving the API (or exits with `replay.exit_when_done: true`, used by tests).
+Reads JSONL files of `Observation` values, or pcap/pcapng captures (Ethernet link type; `.pcap.gz` and `.pcapng.gz` are read compressed) decoded by the capture decoders with the same refresh suppression as live capture, skipping packets a pcapng file records as outbound (a classic pcap records no direction, so a capture taken on the box includes its own frames), merges every replay interface's file into one time-ordered stream, and emits them with their recorded source and timestamp. Paths are relative to the working directory. Replay and live interfaces cannot be mixed: a replay runs the whole daemon on recorded time. In `speed: 0` mode it advances a simulated clock (`internal/clock`) to each observation's timestamp before emitting it and blocks until the correlator has consumed it, so presence and expiry timers fire exactly as they would have at the site; `speed: N` replays in real time × N. When every replay source is exhausted the daemon commits its last batch (the writer's flush ticker runs on the simulated clock, which stops), logs `replay data committed`, and keeps serving the API (or exits with `replay.exit_when_done: true`, used by tests).
 
 ### Clock (`internal/clock`)
 All components that read time (correlator, presence ticker, expiry, scheduler, compaction) take a `clock.Clock`. Production uses the wall clock; replay and tests use a simulated clock.
@@ -126,10 +126,10 @@ Owns the single SQLite writer goroutine, migrations, repositories, batched commi
 OUI lookup (longest prefix: MA-S, MA-M, MA-L) from an embedded table (`data/oui/oui.tsv.gz`, about 54,000 assignments, 0.5 MB) that `make oui` regenerates from the IEEE registries each release, plus an optional override file (`identity.oui_override`: lines `PREFIX[/bits] Name`, e.g. `00:1B:1B Siemens` or `02-42-AC-1F/24 Lab`). The locally-administered bit is recorded per host. Plugin interface (`Identify(evidence) []Identification`) reserved for phase 6+.
 
 ### API (`internal/api`) and CLI (`internal/cli`)
-REST over `/run/lan-sentinel/api.sock` (mode 0660, owner `lan-sentinel`), optional `127.0.0.1` listener that also serves `/metrics`. The CLI is an API client by default and a read-only DB reader with `--offline`. Endpoints are listed in `IMPLEMENTATION_PLAN.md` phase 3; commands in `CLI.md`.
+REST over `/run/lan-sentinel/api.sock` (mode 0660, owner `lan-sentinel`), optional `127.0.0.1` listener that also serves `/metrics`; specified in `API.md`. The API answers from `store.Reader` on a read-only connection pool, the same queries `--offline` runs on the database file, so online and offline answers are identical; it sees what the writer has committed (at most one 5 s batch behind), and `/v1/events/stream` is fed live by the event engine. The CLI (`CLI.md`) is an API client by default and a read-only DB reader with `--offline`; both behind one interface, so every read command works both ways.
 
 ### Metrics (`internal/metrics`)
-`lan_sentinel_hosts{interface,presence}`, `lan_sentinel_events_total{type}`, `lan_sentinel_probe_total{interface,protocol,port,result}`, `lan_sentinel_scan_duration_seconds`, `lan_sentinel_observations_total{source}`, `lan_sentinel_bus_dropped_total`, `lan_sentinel_capture_drops_total{interface}`, `lan_sentinel_db_size_bytes`, `lan_sentinel_observations_unbound_total{source}`, `lan_sentinel_active_disabled` (0/1), `lan_sentinel_probe_throttled_total{protocol,reason}`, `lan_sentinel_collector_up{interface,collector}`. No MAC, IP, hostname or host-ID labels.
+`lan_sentinel_hosts{interface,presence}`, `lan_sentinel_events_total{type}`, `lan_sentinel_probe_total{interface,protocol,port,result}`, `lan_sentinel_scan_duration_seconds`, `lan_sentinel_observations_total{source}`, `lan_sentinel_bus_dropped_total`, `lan_sentinel_capture_drops_total{interface}`, `lan_sentinel_db_size_bytes`, `lan_sentinel_observations_unbound_total{source}`, `lan_sentinel_active_disabled` (0/1), `lan_sentinel_probe_throttled_total{protocol,reason}`, `lan_sentinel_collector_up{interface,collector}` (`API.md` lists their meaning; the probe metrics arrive in phase 4). A small writer for the Prometheus text format, gathered at scrape time; it refuses any label outside a fixed low-cardinality list, so no MAC, IP, hostname or host-ID label can appear.
 
 ## 4. Repository layout
 
@@ -153,9 +153,10 @@ lan-sentinel/
 │   ├── correlate/               identity engine: match observation → host, conflicts
 │   ├── state/                   in-memory current state, presence state machine, name preference
 │   ├── events/                  event types, emitter, journald sink
-│   ├── store/                   SQLite: migrations, repositories, batching, retention/compaction
+│   ├── store/                   SQLite: migrations, writer, batching, retention/compaction, integrity; read model and
+│   │                            queries (Reader) for the API and --offline; storetest/ seeds test databases
 │   ├── identify/                OUI lookup; plugin interface for later identification
-│   ├── api/                     REST over Unix socket + optional 127.0.0.1 TCP
+│   ├── api/                     REST over Unix socket + optional 127.0.0.1 TCP (server and the CLI's client)
 │   ├── buildinfo/               version, commit, date stamped via -ldflags
 │   ├── daemon/                  lifecycle: config, store, collectors, SIGHUP reload, watchdog, shutdown
 │   ├── logging/                 slog handler selection (journald, text, json)

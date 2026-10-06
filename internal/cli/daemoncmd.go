@@ -14,7 +14,7 @@ func (a *app) daemonCmd() *cobra.Command {
 		Use:   "daemon",
 		Short: "Run the service",
 	}
-	c.AddCommand(a.daemonRunCmd())
+	c.AddCommand(a.daemonRunCmd(), a.daemonStatusCmd())
 	return c
 }
 

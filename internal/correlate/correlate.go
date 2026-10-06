@@ -79,6 +79,10 @@ type Correlator struct {
 
 	unbound atomic.Uint64
 	ignored atomic.Uint64
+	// Per source: observations processed and those left unbound
+	// (lan_sentinel_observations_total, lan_sentinel_observations_unbound_total).
+	bySource        map[observation.Source]*atomic.Uint64
+	unboundBySource map[observation.Source]*atomic.Uint64
 }
 
 // New loads the current state from the store and makes sure every
@@ -102,6 +106,10 @@ func New(ctx context.Context, o Options) (*Correlator, error) {
 	c := &Correlator{
 		store: o.Store, events: o.Events, vendors: o.Vendors, clock: o.Clock, log: o.Logger,
 		data: o.DataDriven, tick: o.Tick, newID: o.NewID, st: newState(),
+		bySource: map[observation.Source]*atomic.Uint64{}, unboundBySource: map[observation.Source]*atomic.Uint64{},
+	}
+	for _, src := range observation.Sources {
+		c.bySource[src], c.unboundBySource[src] = new(atomic.Uint64), new(atomic.Uint64)
 	}
 	c.cfg.Store(o.Config)
 	if err := o.Store.View(ctx, func(ctx context.Context, tx *sql.Tx) error { return c.st.load(ctx, tx) }); err != nil {
@@ -135,6 +143,23 @@ func (c *Correlator) Unbound() uint64 { return c.unbound.Load() }
 // Ignored is how many observations were dropped as unusable (unknown
 // interface, no usable MAC or IP).
 func (c *Correlator) Ignored() uint64 { return c.ignored.Load() }
+
+// SourceCounts returns, per source, how many observations were processed
+// and how many of them matched no host.
+func (c *Correlator) SourceCounts() (processed, unbound map[observation.Source]uint64) {
+	processed, unbound = map[observation.Source]uint64{}, map[observation.Source]uint64{}
+	for src, n := range c.bySource {
+		processed[src] = n.Load()
+		unbound[src] = c.unboundBySource[src].Load()
+	}
+	return processed, unbound
+}
+
+func (c *Correlator) count(src observation.Source, counters map[observation.Source]*atomic.Uint64) {
+	if n := counters[src]; n != nil {
+		n.Add(1)
+	}
+}
 
 // Run consumes the bus until ctx is cancelled.
 func (c *Correlator) Run(ctx context.Context, bus *observation.Bus) error {

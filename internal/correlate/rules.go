@@ -36,6 +36,7 @@ func (c *Correlator) observe(ctx context.Context, o observation.Observation) {
 	if o.Time.After(n.lastSeen) {
 		n.lastSeen, n.dirty = o.Time, true
 	}
+	c.count(o.Source, c.bySource)
 	c.st.nextObservationID++
 	obsID := c.st.nextObservationID
 	ev := events.EvidenceFrom(o)
@@ -58,6 +59,7 @@ func (c *Correlator) observe(ctx context.Context, o observation.Observation) {
 		hostID = h.id
 	} else {
 		c.unbound.Add(1)
+		c.count(o.Source, c.unboundBySource)
 	}
 	c.dbObservation(ctx, obsID, n.id, o, hostID)
 	if h == nil {
@@ -103,7 +105,7 @@ func (c *Correlator) bindMAC(ctx context.Context, n *netContext, mac net.Hardwar
 	}
 	if other != nil {
 		e := hostEvent(events.MACMoved, o.Time, h, string(o.Source), ev)
-		e.Old, e.New, e.RelatedHostID, e.ObservationID = other.ctx.iface, n.iface, other.id, obsID
+		e.Old, e.New, e.RelatedHostID, e.RelatedMAC, e.ObservationID = other.ctx.iface, n.iface, other.id, other.mac.String(), obsID
 		c.emit(ctx, e)
 	}
 	return h, true
@@ -213,7 +215,7 @@ func (c *Correlator) attribute(ctx context.Context, h *host, ip netip.Addr, o ob
 		}
 		c.close(g, o.Time)
 		e := hostEvent(events.IPRemoved, o.Time, g.host, cause, ev)
-		e.Old, e.RelatedHostID, e.ObservationID = ip.String(), h.id, obsID
+		e.Old, e.RelatedHostID, e.RelatedMAC, e.ObservationID = ip.String(), h.id, h.mac.String(), obsID
 		c.emit(ctx, e)
 	}
 
@@ -268,7 +270,7 @@ func (c *Correlator) attribute(ctx context.Context, h *host, ip netip.Addr, o ob
 			}
 		}
 		e := hostEvent(events.DuplicateIPDetected, o.Time, h, cause, ev)
-		e.New, e.RelatedHostID, e.ObservationID = ip.String(), rivals[0].id, obsID
+		e.New, e.RelatedHostID, e.RelatedMAC, e.ObservationID = ip.String(), rivals[0].id, rivals[0].mac.String(), obsID
 		c.emit(ctx, e)
 	}
 
@@ -301,7 +303,7 @@ func (c *Correlator) resolve(ctx context.Context, k ipKey, t time.Time, cause st
 	b.conflict = false
 	c.dbConflict(ctx, b)
 	e := hostEvent(events.DuplicateIPResolved, t, b.host, cause, ev)
-	e.New, e.RelatedHostID, e.ObservationID = k.ip.String(), leaving.id, obsID
+	e.New, e.RelatedHostID, e.RelatedMAC, e.ObservationID = k.ip.String(), leaving.id, leaving.mac.String(), obsID
 	c.emit(ctx, e)
 }
 

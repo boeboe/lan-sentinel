@@ -77,13 +77,13 @@ Deferred checks that need real hardware or data from real sites. Each closes a p
 
 ## Phase 3 — Read side: API, CLI, metrics (2–3 weeks)
 
-- [ ] REST API over `/run/lan-sentinel/api.sock` (0660, `lan-sentinel`), optional `127.0.0.1` listener; `/v1/status` includes per-collector state
-- [ ] Endpoints: `/v1/status`, `/v1/interfaces`, `/v1/hosts`, `/v1/hosts/{id}`, `/v1/hosts/{id}/history`, `/v1/hosts/{id}/evidence`, `/v1/hosts/find?q=&interface=&at=`, `/v1/history?q=&interface=&since=&until=` (IP/MAC/name timelines), `/v1/observations?host=&interface=&mac=&ip=&source=&unbound=&since=&until=&rollups=`, `/v1/events`, `/v1/events/stream` (JSON lines, backs `watch`), `/v1/services`, `/v1/config`, `/v1/db` (scan and kill-switch endpoints in phase 4)
-- [ ] CLI per `CLI.md`: subcommand tree, query auto-detection, `find --at` result cases (0 / 1 / ≥2 holders, unconfirmed, replaced-by), IP history, `hosts evidence`, `observations list`, `table`/`json`/`jsonl`/`csv` output, exit codes
-- [ ] `--offline` per the contract in `CLI.md` §1, tested for: live DB beside the writer, no `-wal` (immutable open), unreadable `-wal`, busy timeout
-- [ ] Prometheus `/metrics` on the local listener, low-cardinality metrics only
+- [x] REST API over `/run/lan-sentinel/api.sock` (0660, `lan-sentinel`), optional `127.0.0.1` listener; `/v1/status` includes per-collector state (`API.md`)
+- [x] Endpoints: `/v1/status`, `/v1/interfaces`, `/v1/hosts`, `/v1/hosts/{id}`, `/v1/hosts/{id}/history`, `/v1/hosts/{id}/evidence`, `/v1/hosts/find?q=&interface=&at=`, `/v1/history?q=&interface=&since=&until=` (IP/MAC/name timelines), `/v1/observations?host=&interface=&mac=&ip=&source=&unbound=&since=&until=&rollups=`, `/v1/events`, `/v1/events/stream` (JSON lines, backs `watch`), `/v1/services`, `/v1/config`, `/v1/db`, `/v1/db/check` (scan and kill-switch endpoints in phase 4)
+- [x] CLI per `CLI.md`: subcommand tree, query auto-detection, `find --at` result cases (0 / 1 / ≥2 holders, unconfirmed, replaced-by), IP history, `hosts evidence`, `observations list`, `table`/`json`/`jsonl`/`csv` output, exit codes; online and offline behind one interface over the same queries
+- [x] `--offline` per the contract in `CLI.md` §1, tested for: live DB beside the writer, no `-wal` (immutable open), unreadable `-wal`, `-shm` missing in a read-only directory, busy timeout
+- [x] Prometheus `/metrics` on the local listener, low-cardinality metrics only (enforced by the metrics writer)
 
-**Exit:** the golden scenario's queries pass end to end through the CLI, online and with `--offline`.
+**Exit:** the golden scenario's queries pass end to end through the CLI, online and with `--offline`. — *Met: `TestCLIReconstruction` (test/golden) replays the scenario through the daemon and runs every point-in-time query and IP history through the CLI online, offline beside the running daemon, and offline after it stopped; `make test-systemd` runs `daemon status`, `hosts list` and an offline read under the hardened unit.*
 
 ## Phase 4 — Active discovery with OT safety (3–4 weeks)
 

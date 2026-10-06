@@ -5,7 +5,10 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
+	"io"
 	"net"
+	"net/http"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -17,10 +20,12 @@ import (
 
 	"github.com/gopacket/gopacket/layers"
 
+	"lan-sentinel/internal/api"
 	"lan-sentinel/internal/clock"
 	"lan-sentinel/internal/config"
 	"lan-sentinel/internal/platform"
 	"lan-sentinel/internal/platform/fake"
+	"lan-sentinel/internal/store"
 	"lan-sentinel/test/frames"
 )
 
@@ -96,7 +101,7 @@ interfaces:
   - name: eth1
     active: { enabled: true, networks: [192.168.110.0/24] }
 storage: { path: ` + filepath.Join(dir, "data", "hosts.db") + ` }
-api: { socket: ./api.sock }
+api: { socket: ` + filepath.Join(dir, "api.sock") + ` }
 logging: { level: ` + level + `, format: text }
 ` + extra
 }
@@ -230,6 +235,15 @@ func TestStartupAndShutdown(t *testing.T) {
 		}
 	}
 
+	// API traffic opens the read-only pool; it must be closed before the
+	// store so the last connection removes the WAL.
+	client := api.NewClient(filepath.Join(h.dir, "api.sock"), 5*time.Second)
+	if _, err := client.Hosts(context.Background(), store.HostFilter{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Status(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 	h.stop()
 	if h.notifier.count("STOPPING") != 1 {
 		t.Errorf("STOPPING not sent: %v", h.notifier.calls)
@@ -238,8 +252,13 @@ func TestStartupAndShutdown(t *testing.T) {
 	if _, err := os.Stat(db); err != nil {
 		t.Fatalf("database not created: %v", err)
 	}
-	if fi, err := os.Stat(db + "-wal"); err == nil && fi.Size() > 0 {
-		t.Errorf("WAL left behind after clean shutdown (%d bytes)", fi.Size())
+	for _, suffix := range []string{"-wal", "-shm"} {
+		if _, err := os.Stat(db + suffix); !os.IsNotExist(err) {
+			t.Errorf("%s left behind after clean shutdown: %v", suffix, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(h.dir, "api.sock")); !os.IsNotExist(err) {
+		t.Errorf("API socket left behind: %v", err)
 	}
 	for _, msg := range []string{"lan-sentinel starting", "database ready", "lan-sentinel stopped"} {
 		if !strings.Contains(h.log.String(), msg) {
@@ -389,7 +408,7 @@ func TestReplayExitsWhenDone(t *testing.T) {
 	cfgPath := filepath.Join(dir, "config.yaml")
 	db := filepath.Join(dir, "hosts.db")
 	cfg := "version: 1\ninterfaces:\n  - name: eth1\n    prefixes: [192.168.110.0/24]\n    replay: { file: " + golden +
-		" }\nreplay: { exit_when_done: true }\nstorage: { path: " + db + " }\napi: { socket: ./api.sock }\nlogging: { format: text }\n"
+		" }\nreplay: { exit_when_done: true }\nstorage: { path: " + db + " }\napi: { socket: " + filepath.Join(dir, "api.sock") + " }\nlogging: { format: text }\n"
 	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -436,7 +455,7 @@ func TestCorruptDatabaseRecreated(t *testing.T) {
 	}
 	cfgPath := filepath.Join(dir, "config.yaml")
 	cfg := "version: 1\ninterfaces:\n  - name: eth1\n    prefixes: [192.168.110.0/24]\n    replay: { file: " + golden +
-		" }\nreplay: { exit_when_done: true }\nstorage: { path: " + db + " }\napi: { socket: ./api.sock }\nlogging: { format: text }\n"
+		" }\nreplay: { exit_when_done: true }\nstorage: { path: " + db + " }\napi: { socket: " + filepath.Join(dir, "api.sock") + " }\nlogging: { format: text }\n"
 	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -459,5 +478,131 @@ func TestCorruptDatabaseRecreated(t *testing.T) {
 	want := "DATABASE_RECREATED warning integrity_check " + matches[0] + " open database " + db
 	if len(got) != 1 || !strings.HasPrefix(got[0], want) {
 		t.Errorf("first event = %v, want prefix %q", got, want)
+	}
+}
+
+// TestStatusAndMetrics: the running daemon answers /v1/status over the
+// socket and serves low-cardinality metrics on the loopback listener.
+func TestStatusAndMetrics(t *testing.T) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	listen := l.Addr().String()
+	_ = l.Close()
+	mac, _ := net.ParseMAC("00:1b:1b:12:34:56")
+	cfg := `version: 1
+interfaces:
+  - name: eth1
+storage: { path: $DIR/hosts.db }
+api: { socket: $DIR/api.sock, listen: "` + listen + `" }
+logging: { format: text }
+`
+	h := startWith(t, cfg, 0, func(n *fake.Neighbors, i *fake.Interfaces) {
+		i.SetLinks([]platform.Link{{Name: "eth1", Index: 2, Up: true, MAC: net.HardwareAddr{2, 0, 0, 0, 0, 9},
+			Prefixes: []netip.Prefix{netip.MustParsePrefix("192.168.110.0/24")}}})
+		n.SetTable([]platform.Neighbor{{Interface: "eth1", IP: netip.MustParseAddr("192.168.110.50"), MAC: mac, State: "REACHABLE"}})
+	})
+	defer h.stop()
+	h.waitLog("HOST_DISCOVERED eth1")
+	h.waitState("eth1", platform.CollectorCapture, platform.StateRunning)
+	if err := h.d.store.Flush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	client := api.NewClient(filepath.Join(h.dir, "api.sock"), 5*time.Second)
+	st, err := client.Status(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.State != api.StateOK || !st.Database.OK || st.PID != os.Getpid() || len(st.Interfaces) != 1 ||
+		st.Interfaces[0].State != "up" || st.Interfaces[0].MAC != "02:00:00:00:00:09" || st.Hosts["eth1"]["ACTIVE"] != 1 ||
+		len(st.Interfaces[0].Collectors) == 0 || st.Active.Disabled {
+		t.Errorf("status = %+v", st)
+	}
+	ifs, err := client.Interfaces(context.Background())
+	if err != nil || len(ifs) != 1 || ifs[0].State != "up" || !ifs[0].Passive {
+		t.Errorf("interfaces: %v %+v", err, ifs)
+	}
+
+	resp, err := http.Get("http://" + listen + "/metrics")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	m := string(body)
+	for _, want := range []string{
+		`lan_sentinel_hosts{interface="eth1",presence="ACTIVE"} 1`,
+		`lan_sentinel_events_total{type="HOST_DISCOVERED"} 1`,
+		`lan_sentinel_observations_total{source="kernel_neighbor"} 1`,
+		`lan_sentinel_observations_unbound_total{source="tcp_connect"} 0`,
+		"lan_sentinel_bus_dropped_total 0",
+		`lan_sentinel_capture_drops_total{interface="eth1"} 0`,
+		"lan_sentinel_db_size_bytes ",
+		"lan_sentinel_active_disabled 0",
+		`lan_sentinel_collector_up{interface="eth1",collector="neighbor"} 1`,
+	} {
+		if !strings.Contains(m, want) {
+			t.Errorf("metrics lack %q", want)
+		}
+	}
+	if strings.Contains(m, "00:1b:1b") || strings.Contains(m, "192.168.110.50") {
+		t.Error("metrics leak a MAC or IP")
+	}
+}
+
+// The kill switch forced by the environment shows in status and metrics.
+func TestActiveDisabledByEnvironment(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	cfg := "version: 1\ninterfaces:\n  - name: eth1\nstorage: { path: " + filepath.Join(dir, "hosts.db") + " }\napi: { socket: " +
+		filepath.Join(dir, "api.sock") + " }\nlogging: { format: text }\n"
+	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	backends, _, _, _, _ := fake.Backends()
+	d, err := New(Options{Load: config.LoadOptions{Path: cfgPath, Environ: []string{config.EnvActiveDisabled + "=1"}},
+		Stderr: &syncBuffer{}, Backends: &backends, Notifier: &fakeNotifier{}, Signals: make(chan os.Signal)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	errc := make(chan error, 1)
+	go func() { errc <- d.Run(ctx) }()
+	<-d.Ready()
+	st, err := api.NewClient(filepath.Join(dir, "api.sock"), 5*time.Second).Status(context.Background())
+	if err != nil || !st.Active.Disabled || !st.Active.Forced {
+		t.Errorf("status: %v %+v", err, st.Active)
+	}
+	var sb strings.Builder
+	for _, f := range d.gather(context.Background()) {
+		if f.Name == "lan_sentinel_active_disabled" {
+			fmt.Fprint(&sb, f.Samples[0].Value)
+		}
+	}
+	if sb.String() != "1" {
+		t.Errorf("active_disabled metric = %q", sb.String())
+	}
+	cancel()
+	if err := <-errc; err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A second daemon on the same socket fails to start.
+func TestSocketInUse(t *testing.T) {
+	h := start(t, testConfig("$DIR", "info", ""), 0)
+	defer h.stop()
+	backends, _, _, _, _ := fake.Backends()
+	cfg := strings.Replace(testConfig(h.dir, "info", ""), filepath.Join(h.dir, "data", "hosts.db"), filepath.Join(h.dir, "other.db"), 1)
+	p := filepath.Join(h.dir, "second.yaml")
+	if err := os.WriteFile(p, []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err := Run(context.Background(), Options{Load: config.LoadOptions{Path: p}, Stderr: &syncBuffer{}, Backends: &backends,
+		Notifier: &fakeNotifier{}, Signals: make(chan os.Signal)})
+	if err == nil || !strings.Contains(err.Error(), "another daemon is listening") {
+		t.Errorf("second daemon: %v", err)
 	}
 }

@@ -90,3 +90,38 @@ func TestEmitWritesRowAndLogEntry(t *testing.T) {
 		t.Errorf("count = %d", c)
 	}
 }
+
+func TestSubscribe(t *testing.T) {
+	st, err := store.Open(context.Background(), store.Options{Path: filepath.Join(t.TempDir(), "hosts.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	e := NewEngine(st, slog.New(slog.DiscardHandler), func() bool { return false })
+	ch, cancel := e.Subscribe(1)
+	ctx := context.Background()
+	ts := time.Date(2026, 10, 1, 10, 0, 0, 0, time.UTC)
+	ev := Event{TS: ts, Type: InterfaceUp, Interface: "eth1", New: "up", Cause: "iface_monitor", Evidence: Evidence{TS: ts, Interface: "eth1"}}
+	if err := e.Emit(ctx, ev); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Emit(ctx, ev); err != nil { // the buffer of 1 is full: missed
+		t.Fatal(err)
+	}
+	got := <-ch
+	if got.Type != "INTERFACE_UP" || got.Severity != "notice" || got.Interface != "eth1" || got.ClockSynced ||
+		!strings.Contains(string(got.Evidence), `"interface":"eth1"`) {
+		t.Errorf("streamed event = %+v", got)
+	}
+	if e.Missed() != 1 {
+		t.Errorf("missed = %d, want 1", e.Missed())
+	}
+	cancel()
+	cancel() // idempotent
+	if _, ok := <-ch; ok {
+		t.Error("channel open after cancel")
+	}
+	if err := e.Emit(ctx, ev); err != nil {
+		t.Fatal(err)
+	}
+}

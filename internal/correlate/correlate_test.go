@@ -187,6 +187,17 @@ func hostEvents(all []string) []string {
 	return out
 }
 
+func TestSourceCounts(t *testing.T) {
+	h := newHarness(t)
+	h.obs(0, observation.PassiveARP, "eth0", macA, "10.0.0.5")
+	h.obs(time.Second, observation.TCPConnect, "eth0", "", "10.0.0.99")
+	processed, unbound := h.c.SourceCounts()
+	if processed[observation.PassiveARP] != 1 || processed[observation.TCPConnect] != 1 || unbound[observation.TCPConnect] != 1 ||
+		unbound[observation.PassiveARP] != 0 || len(processed) != len(observation.Sources) {
+		t.Errorf("processed %v unbound %v", processed, unbound)
+	}
+}
+
 const (
 	macA = "00:1b:1b:00:00:0a"
 	macB = "00:1b:1b:00:00:0b"

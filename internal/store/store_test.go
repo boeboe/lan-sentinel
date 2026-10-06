@@ -58,8 +58,8 @@ func insertContext(name string) Op {
 
 func TestOpenCreatesSchemaInWAL(t *testing.T) {
 	s := open(t, Options{})
-	if s.SchemaVersion() != 1 {
-		t.Fatalf("SchemaVersion = %d, want 1", s.SchemaVersion())
+	if s.SchemaVersion() != 2 {
+		t.Fatalf("SchemaVersion = %d, want 2", s.SchemaVersion())
 	}
 	db := inspect(t, s.Path())
 	var mode string
@@ -256,20 +256,20 @@ func TestCloseFlushesAndRemovesWAL(t *testing.T) {
 	if err := s.Submit(context.Background(), insertContext("eth1")); !errors.Is(err, ErrClosed) {
 		t.Errorf("Submit after Close = %v, want ErrClosed", err)
 	}
-	if fi, err := os.Stat(path + "-wal"); err == nil && fi.Size() > 0 {
-		t.Errorf("WAL still has %d bytes after Close", fi.Size())
+	if _, err := os.Stat(path + "-wal"); !os.IsNotExist(err) {
+		t.Errorf("WAL left after Close: %v", err)
 	}
 	// Reopening keeps the data and does not re-run migrations.
 	s2 := open(t, Options{Path: path})
-	if s2.SchemaVersion() != 1 {
+	if s2.SchemaVersion() != 2 {
 		t.Fatalf("SchemaVersion = %d", s2.SchemaVersion())
 	}
 	db := inspect(t, path)
 	if got := count(t, db, `SELECT count(*) FROM network_contexts`); got != 1 {
 		t.Fatalf("rows after reopen = %d, want 1", got)
 	}
-	if got := count(t, db, `SELECT count(*) FROM schema_migrations`); got != 1 {
-		t.Fatalf("schema_migrations rows = %d, want 1", got)
+	if got := count(t, db, `SELECT count(*) FROM schema_migrations`); got != 2 {
+		t.Fatalf("schema_migrations rows = %d, want 2", got)
 	}
 }
 

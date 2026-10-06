@@ -60,7 +60,7 @@ func TestCorruptDatabaseIsQuarantined(t *testing.T) {
 			if _, err := os.Stat(r.QuarantinedTo); err != nil {
 				t.Errorf("quarantined file: %v", err)
 			}
-			if s.SchemaVersion() != 1 {
+			if s.SchemaVersion() != 2 {
 				t.Errorf("new database schema version = %d", s.SchemaVersion())
 			}
 		})
