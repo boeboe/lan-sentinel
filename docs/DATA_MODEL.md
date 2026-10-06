@@ -95,7 +95,7 @@ A binding in effect at T with `T > last_seen` was **unconfirmed** at T: it was t
 
 `hosts` has `first_seen` and `last_seen` (no `ended_at`: hosts are never closed, only their presence changes).
 
-## 4. Schema (`migrations/0001_init.sql`, read-side indexes in `0002_read_indexes.sql`, probe details in `0003_probes.sql`)
+## 4. Schema (`migrations/0001_init.sql`, read-side indexes in `0002_read_indexes.sql`, probe details in `0003_probes.sql`, clock state of events in `0004_clock_sync.sql`)
 
 | Table | Columns | Purpose |
 | --- | --- | --- |
@@ -109,7 +109,7 @@ A binding in effect at T with `T > last_seen` was **unconfirmed** at T: it was t
 | `identifications` | id, host_id, field, value, confidence, source, evidence_json, first_seen, last_seen | Device identification evidence |
 | `observations` | id, ts, context_id, source, mac, ip, hostname, name_type, service_json, meta_json, host_id | Raw evidence, compacted; `host_id` NULL if unbound |
 | `observation_rollups` | id, hour, context_id, host_id, source, mac, ip, count, first_ts, last_ts | Hourly roll-ups of observations |
-| `events` | id, ts, type, severity, context_id, host_id, related_host_id, old_value, new_value, cause, observation_id, evidence_json, clock_synced | Permanent history |
+| `events` | id, ts, type, severity, context_id, host_id, related_host_id, old_value, new_value, cause, observation_id, evidence_json, clock_sync | Permanent history |
 | `scans` | id, context_id, kind, trigger, started_at, finished_at, targets, results_json | Operator scans, one row per interface: `kind` the probes (`arp,tcp/502`), `trigger` `operator` (periodic passes are not recorded), `targets` the larger of the sweep and known-host counts, `results_json` `{counts: {probe: {result: n}}, responders, seconds, aborted?}`. A scan left unfinished by a crash is closed at the next start (`finished_at` = `started_at`, aborted, with `SCAN_COMPLETED`) |
 | `runtime_state` | key, value, updated_at | Persisted operator state (kill switch, §8) |
 | `schema_migrations` | version, applied_at | Migration tracking |
@@ -299,7 +299,7 @@ Every event is self-contained, so pruning observations never weakens history:
 | `cause` | The observation's `Source`, or an internal cause (`presence`, `expiry`, `iface_monitor`, `scheduler`, `operator`) |
 | `observation_id` | ID of the causing observation if any. May point at a pruned row; informational only. |
 | `evidence_json` | Snapshot copied at write time: `{ts, source, interface, mac, ip, hostname, name_type, service: {proto, port, state}, neighbor_state}` of the causing observation. For timer-driven events: the snapshot of the last supporting observation plus `reason` (e.g. `"no observation for 24h"`). For operator events: `{actor, reason}`. |
-| `clock_synced` | false if written before NTP sync |
+| `clock_sync` | The kernel clock's state when the event was written (NFR-REL-2): `synced`, `unsynced` (before NTP synchronisation, so `ts` may be off) or `unknown` (the state could not be read, or a replay, whose times come from the recording). Read with a read-only `adjtimex` (`STA_UNSYNC`), whatever the NTP client. Events written before migration 0004 are `unknown`: they assumed a synchronised clock without checking it |
 
 ## 8. Runtime state
 

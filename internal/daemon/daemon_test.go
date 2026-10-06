@@ -114,6 +114,11 @@ func start(t *testing.T, cfg string, watchdog time.Duration) *harness {
 
 // startWith runs setup on the fake backends before the daemon starts.
 func startWith(t *testing.T, cfg string, watchdog time.Duration, setup func(*fake.Neighbors, *fake.Interfaces)) *harness {
+	return startWithClock(t, cfg, watchdog, setup, "")
+}
+
+// startWithClock also sets the fake clock's state ("" keeps it synced).
+func startWithClock(t *testing.T, cfg string, watchdog time.Duration, setup func(*fake.Neighbors, *fake.Interfaces), clockState platform.ClockState) *harness {
 	t.Helper()
 	dir := t.TempDir()
 	h := &harness{
@@ -124,6 +129,9 @@ func startWith(t *testing.T, cfg string, watchdog time.Duration, setup func(*fak
 	h.writeConfig(strings.ReplaceAll(cfg, "$DIR", dir))
 	backends, capt, neigh, ifaces, tx := fake.Backends()
 	h.capt, h.neigh, h.ifaces, h.tx = capt, neigh, ifaces, tx
+	if clockState != "" {
+		backends.Clock.(*fake.Clock).Set(clockState)
+	}
 	if setup != nil {
 		setup(neigh, ifaces)
 	}

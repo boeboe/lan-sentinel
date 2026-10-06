@@ -627,7 +627,7 @@ func neighbours(ctx context.Context, tx *sql.Tx, res *FindResult, c contextRow, 
 
 const eventColumns = `e.id, e.ts, e.type, e.severity, coalesce(c.interface, ''), coalesce(e.host_id, ''), coalesce(h.mac, ''),
 	coalesce(e.related_host_id, ''), coalesce(rh.mac, ''), coalesce(e.old_value, ''), coalesce(e.new_value, ''), e.cause,
-	coalesce(e.observation_id, 0), e.evidence_json, e.clock_synced`
+	coalesce(e.observation_id, 0), e.evidence_json, e.clock_sync`
 
 const eventJoins = ` FROM events e LEFT JOIN network_contexts c ON c.id = e.context_id
 	LEFT JOIN hosts h ON h.host_id = e.host_id LEFT JOIN hosts rh ON rh.host_id = e.related_host_id`
@@ -645,12 +645,11 @@ func queryEvents(ctx context.Context, tx *sql.Tx, tail string, args ...any) ([]E
 		var e Event
 		var ts int64
 		var ev string
-		var synced int
 		if err := rows.Scan(&e.ID, &ts, &e.Type, &e.Severity, &e.Interface, &e.HostID, &e.MAC, &e.RelatedHostID, &e.RelatedMAC,
-			&e.Old, &e.New, &e.Cause, &e.ObservationID, &ev, &synced); err != nil {
+			&e.Old, &e.New, &e.Cause, &e.ObservationID, &ev, &e.ClockSync); err != nil {
 			return nil, err
 		}
-		e.TS, e.Evidence, e.ClockSynced = timeOf(ts), []byte(ev), synced == 1
+		e.TS, e.Evidence = timeOf(ts), []byte(ev)
 		out = append(out, e)
 	}
 	return out, rows.Err()

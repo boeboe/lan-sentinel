@@ -58,8 +58,8 @@ func insertContext(name string) Op {
 
 func TestOpenCreatesSchemaInWAL(t *testing.T) {
 	s := open(t, Options{})
-	if s.SchemaVersion() != 3 {
-		t.Fatalf("SchemaVersion = %d, want 3", s.SchemaVersion())
+	if s.SchemaVersion() != LatestSchemaVersion() {
+		t.Fatalf("SchemaVersion = %d, want %d", s.SchemaVersion(), LatestSchemaVersion())
 	}
 	db := inspect(t, s.Path())
 	var mode string
@@ -128,7 +128,7 @@ func TestSchemaConstraints(t *testing.T) {
 			[]string{`INSERT INTO addresses (context_id, host_id, ip, family, first_seen, last_seen) VALUES (1, 'nope', '10.0.0.5', 4, 0, 0)`},
 			"FOREIGN KEY"},
 		{"unknown event type rejected",
-			[]string{`INSERT INTO events (ts, type, severity, cause, clock_synced) VALUES (0, 'MAC_ADDED', 'notice', 'test', 1)`},
+			[]string{`INSERT INTO events (ts, type, severity, cause, clock_sync) VALUES (0, 'MAC_ADDED', 'notice', 'test', 'synced')`},
 			"CHECK"},
 		{"strict typing",
 			[]string{`INSERT INTO network_contexts (interface, first_seen, last_seen) VALUES ('eth9', 'yesterday', 0)`},
@@ -261,15 +261,15 @@ func TestCloseFlushesAndRemovesWAL(t *testing.T) {
 	}
 	// Reopening keeps the data and does not re-run migrations.
 	s2 := open(t, Options{Path: path})
-	if s2.SchemaVersion() != 3 {
+	if s2.SchemaVersion() != LatestSchemaVersion() {
 		t.Fatalf("SchemaVersion = %d", s2.SchemaVersion())
 	}
 	db := inspect(t, path)
 	if got := count(t, db, `SELECT count(*) FROM network_contexts`); got != 1 {
 		t.Fatalf("rows after reopen = %d, want 1", got)
 	}
-	if got := count(t, db, `SELECT count(*) FROM schema_migrations`); got != 3 {
-		t.Fatalf("schema_migrations rows = %d, want 3", got)
+	if got := count(t, db, `SELECT count(*) FROM schema_migrations`); got != LatestSchemaVersion() {
+		t.Fatalf("schema_migrations rows = %d, want %d", got, LatestSchemaVersion())
 	}
 }
 

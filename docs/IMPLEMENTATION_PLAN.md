@@ -21,6 +21,8 @@ Deferred checks that need real hardware or data from real sites. Each closes a p
 | [ ] | `tools/capcheck` under the reference unit on each target board (RevPi Connect, amd64 edge box): every row passes with only `CAP_NET_RAW` | Phase 0 exit | `make test-net` (capcheck with and without `CAP_NET_RAW`), `make test-systemd` (capcheck under the unit's sandbox) | `ARCHITECTURE.md` §8 table |
 | [ ] | Daemon on a target board on a real test LAN: hosts appear from the kernel neighbour table alone, with vendor and per-interface scoping (config with `passive: { enabled: false }`) | Phase 1 exit | `TestDaemonFindsHosts` in `make test-net`: two networks, real-OUI vendor, same MAC on both networks as two hosts with `MAC_MOVED` | Phase 1 exit note below |
 | [ ] | pcap captures from the pilot sites (ARP, DHCP, mDNS, LLDP, NDP from real OT devices) added to `test/fixtures` with decoder table tests | Phase 2 task | Synthetic `test/fixtures/site-a-eth1.pcapng` (`make fixtures`) replayed by `TestCaptureScenario`; decoder tests on gopacket-built frames; fuzz targets | `test/fixtures`, decoder tests |
+| [ ] | `systemd-analyze security lan-sentinel` and `capcheck` (every row, including the `adjtimex` read) under the reference unit on each target board, on its Debian release | Phase 5 task | `make test-systemd` on Debian 11, 12 and 13 in containers: exposure 2.0, capcheck passes under the unit's sandbox | `ARCHITECTURE.md` §8 table |
+| [ ] | 7-day soak against real OT devices (PLC, inverter, HMI) with active discovery enabled: no device faults | Phase 4 exit | `TestActiveDiscovery` in `make test-net` (budgets per one-second window, excludes, spacing, kill switch) | Phase 4 status note |
 | [ ] | Passive-only build for 7 days on 3 pilot sites: < 5% CPU and < 50 MB RSS on a RevPi; an injected IP change and duplicate IP reconstructed | Phase 2 exit | `TestCaptureScenario` (IP change, takeover, duplicate IP and its resolution reconstructed from frames through the daemon); capture tests in `make test-net` | Phase 2 exit note below |
 
 ## Phase 0 — Foundations, platform layer, test infrastructure (2–3 weeks)
@@ -105,10 +107,10 @@ Deferred checks that need real hardware or data from real sites. Each closes a p
 
 ## Phase 5 — Release builds, hardening, pilot rollout (2 weeks)
 
-- [ ] Release artifacts: static binaries for `linux/amd64` and `linux/arm64` with SHA-256 checksums; no `.deb` or other packages
-- [ ] Capability audit on the boards; `systemd-analyze security` exposure ≤ 2.5 on the target systemd versions (1.6 in the container test)
-- [ ] Clock-jump handling: mark events written before NTP sync. Note: the hardened unit's `ProtectClock=true` blocks `adjtimex` (the `@clock` syscall group), so sync detection needs another source (e.g. systemd-timesyncd's `/run/systemd/timesync/synchronized`) or an explicit `SystemCallFilter` exception
-- [ ] Staged fleet rollout (below)
+- [x] Release artifacts: static binaries for `linux/amd64` and `linux/arm64` with SHA-256 checksums; no `.deb` or other packages — *`make release` (reproducible: the commit's date is stamped, not the build's), and `.github/workflows/release.yml` publishes a GitHub Release for each `v*` tag after the CI gates, with `capcheck` for the board audit*
+- [ ] Capability audit on the boards; `systemd-analyze security` exposure ≤ 2.5 on the target systemd versions — *containers: `make test-systemd` on Debian 11, 12 and 13 (systemd 247, 252, 257) passes with exposure 2.0, capcheck (now with the clock read) under the unit's sandbox; boards tracked under Open hardware and field checks*
+- [x] Clock-jump handling: mark events written before NTP sync — *a read-only `adjtimex` of the kernel's `STA_UNSYNC` (works with chrony, needs no capability); each event records `synced`, `unsynced` or `unknown` (migration 0004); `daemon status` shows the clock; the unit allows `adjtimex` alone of the `@clock` calls (`ProtectClock=` off)*
+- [ ] Staged fleet rollout (below) — *runbook with checks, upgrade, rollback and what to watch per stage in `deploy/README.md`; the rollout itself is a field task*
 
 **Exit:** v1.0 on the full fleet with active discovery enabled per site.
 

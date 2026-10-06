@@ -44,7 +44,7 @@ The daemon runs with `UMask=0027` and the data directory is `0750 lan-sentinel:l
 | Command | Purpose | Key options | Phase |
 | --- | --- | --- | --- |
 | `daemon run` | Run the service in the foreground | `--config`, `--log-level` | 0 |
-| `daemon status` | Version, platform, PID, uptime, DB health, interfaces, host counts, kill-switch state, last scan, and per-interface collector state (`running`/`disabled`/`unsupported`/`failed` + error) | `-o json`; `--quiet` exit codes | 3 |
+| `daemon status` | Version, platform, PID, uptime, DB health, interfaces, host counts, kill-switch state, clock synchronisation, last scan, and per-interface collector state (`running`/`disabled`/`unsupported`/`failed` + error) | `-o json`; `--quiet` exit codes | 3 |
 | `hosts list` | Inventory: MAC, IP, hostname, vendor, interface, presence, last seen. `--active`: live hosts (ACTIVE or RECENT); `--stale`: the others (STALE or MISSING); `--port`: an OPEN service on that port; `--vendor`: substring of vendor or manufacturer | `--interface`, `--active`, `--stale`, `--vendor`, `--port`, `--seen-within` | 3 |
 | `hosts show <host-id>` | Full record of one host | | 3 |
 | `hosts find <query>` | Current or point-in-time holder(s) with addresses, names and services and their sources; exit 1 when nothing matches | `--interface`, `--at <time>`, `--ip`/`--mac`/`--hostname`/`--id` | 3 |
@@ -63,7 +63,7 @@ The daemon runs with `UMask=0027` and the data directory is `0750 lan-sentinel:l
 | `config validate` | Validate a config before rollout | `--config` | 0 |
 | `db info` | Path, schema version, journal mode, size, WAL size, row counts | | 3 |
 | `db check` | SQLite integrity check | | 3 |
-| `version` | Version, commit, build date, Go version, architecture | | 0 |
+| `version` | Version, commit, commit date (release builds are reproducible), Go version, architecture; `--quiet` prints the version alone | | 0 |
 
 There are no merge or split commands: within an interface a host is its MAC (`DATA_MODEL.md` §1).
 
@@ -128,7 +128,7 @@ Computes the same plan, prints it, and refuses (exit 2) if `scan plan` would. Ot
 
 ### Output formats
 
-Lists (`hosts list`, `hosts history`, `observations list`, `events list`, `services list`, `interfaces list`) support all four formats; `json` is the API's objects (`API.md`), `csv` uses RFC 3339 UTC times and empty cells for missing values. Hostnames and other text come from the network, so a CSV cell starting with `=`, `+`, `-`, `@`, tab or carriage return is prefixed with `'` to keep spreadsheets from running it as a formula. Records (`hosts show`, `hosts find`, `daemon status`, `db info`, `db check`) support `table` and `json`; `hosts evidence` also `jsonl`; `watch` prints a line per event or, with `-o jsonl`/`json`, the event objects. `--quiet` prints nothing and leaves the answer to the exit code.
+Lists (`hosts list`, `hosts history`, `observations list`, `events list`, `services list`, `interfaces list`) support all four formats; `json` is the API's objects (`API.md`), `csv` uses RFC 3339 UTC times and empty cells for missing values. Event tables flag the time of an event written before the system clock was synchronised with `*` and one written while that was unknown with `?`, with a legend below; event CSV has a `CLOCK_SYNC` column and JSON the `clock_sync` field. Hostnames and other text come from the network, so a CSV cell starting with `=`, `+`, `-`, `@`, tab or carriage return is prefixed with `'` to keep spreadsheets from running it as a formula. Records (`hosts show`, `hosts find`, `daemon status`, `db info`, `db check`) support `table` and `json`; `hosts evidence` also `jsonl`; `watch` prints a line per event or, with `-o jsonl`/`json`, the event objects. `--quiet` prints nothing and leaves the answer to the exit code.
 
 ### Online reads
 
@@ -318,6 +318,7 @@ $ lan-sentinel daemon status
 Version:    1.0.0 (linux/arm64)   PID 412   up 3d 4h
 Database:   /data/lan-sentinel/hosts.db  ok  41 MB
 Active:     enabled
+Clock:      synced
 Last scan:  never
 Interfaces:
   eth1   up      192.168.110.0/24

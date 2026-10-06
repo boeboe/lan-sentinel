@@ -497,10 +497,36 @@ func (t *Transmitter) Echoes() []netip.Addr {
 	return append([]netip.Addr(nil), t.echoes...)
 }
 
-// Backends returns a full set of fakes.
+// Clock is a clock source whose state tests set; it starts synchronised.
+type Clock struct {
+	mu    sync.Mutex
+	state platform.ClockState
+}
+
+// Backend implements platform.ClockSource.
+func (c *Clock) Backend() string { return "fake" }
+
+// State implements platform.ClockSource.
+func (c *Clock) State() platform.ClockState {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.state == "" {
+		return platform.ClockSynced
+	}
+	return c.state
+}
+
+// Set changes the state.
+func (c *Clock) Set(s platform.ClockState) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.state = s
+}
+
+// Backends returns a full set of fakes; Clock is a *Clock.
 func Backends() (platform.Backends, *Capturer, *Neighbors, *Interfaces, *Transmitter) {
 	c, n, i, t := NewCapturer(), &Neighbors{}, &Interfaces{}, &Transmitter{}
-	return platform.Backends{Capturer: c, Neighbors: n, Interfaces: i, Transmitter: t}, c, n, i, t
+	return platform.Backends{Capturer: c, Neighbors: n, Interfaces: i, Transmitter: t, Clock: &Clock{}}, c, n, i, t
 }
 
 var (
@@ -508,4 +534,5 @@ var (
 	_ platform.NeighborSource   = (*Neighbors)(nil)
 	_ platform.InterfaceMonitor = (*Interfaces)(nil)
 	_ platform.Transmitter      = (*Transmitter)(nil)
+	_ platform.ClockSource      = (*Clock)(nil)
 )

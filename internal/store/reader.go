@@ -96,16 +96,21 @@ func OpenReadOnly(path string, o ReadOptions) (*Reader, error) {
 // older or newer binary: only the daemon migrates.
 var ErrSchemaVersion = errors.New("database schema does not match this binary")
 
-func checkSchema(db *sql.DB) error {
+// LatestSchemaVersion is the schema version this binary migrates to.
+func LatestSchemaVersion() int {
 	ms, err := loadMigrations(migrations.FS)
-	if err != nil {
-		return err
+	if err != nil || len(ms) == 0 {
+		return 0
 	}
+	return ms[len(ms)-1].version
+}
+
+func checkSchema(db *sql.DB) error {
 	v, err := schemaVersion(context.Background(), db)
 	if err != nil {
 		return err
 	}
-	latest := ms[len(ms)-1].version
+	latest := LatestSchemaVersion()
 	switch {
 	case v < latest:
 		return fmt.Errorf("%w: version %d, this binary uses %d; start the daemon once to migrate it", ErrSchemaVersion, v, latest)

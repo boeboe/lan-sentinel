@@ -1,16 +1,18 @@
 #!/usr/bin/env bash
 # Runs the daemon under systemd in a privileged container with the reference
 # unit, sysusers.d and tmpfiles.d files from deploy/: `make test-systemd`,
-# which first builds the binaries into BIN_DIR in the dev container.
+# which first builds the binaries into BIN_DIR in the dev container. It runs
+# once per target Debian release (RELEASES, default: the targets bullseye,
+# bookworm and trixie, systemd 247, 252 and 257).
 # Checks Type=notify start-up, the service identity and capabilities, the
-# database, SIGHUP reload, clean shutdown and the systemd-analyze score, and
-# runs tools/capcheck as a transient unit with exactly the reference unit's
-# [Service] sandboxing and capabilities.
+# clock sync state, the database, SIGHUP reload, clean shutdown and the
+# systemd-analyze score, and runs tools/capcheck as a transient unit with
+# exactly the reference unit's [Service] sandboxing and capabilities.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
-IMAGE=lan-sentinel-systemd-test
 NAME=lan-sentinel-systemd
 BIN_DIR=${BIN_DIR:-.build/test}
+RELEASES=${RELEASES:-bullseye bookworm trixie}
 work=$(mktemp -d)
 cleanup() { docker rm -f "$NAME" >/dev/null 2>&1 || true; rm -rf "$work"; }
 trap cleanup EXIT
@@ -21,13 +23,21 @@ for b in lan-sentinel capcheck; do
 	cp "$BIN_DIR/$b" "$work/"
 done
 cp deploy/lan-sentinel.service deploy/lan-sentinel.sysusers deploy/lan-sentinel.tmpfiles test/systemd/config.yaml "$work/"
-docker build -q -t "$IMAGE" -f test/systemd/Dockerfile "$work" >/dev/null
-docker rm -f "$NAME" >/dev/null 2>&1 || true
-docker run -d --name "$NAME" --privileged --cgroupns=host -v /sys/fs/cgroup:/sys/fs/cgroup:rw \
-	--tmpfs /run --tmpfs /run/lock "$IMAGE" >/dev/null
 
 x() { docker exec "$NAME" "$@"; }
+total=0
+summary=()
+
+# run_on RELEASE runs every check under that Debian release's systemd.
+run_on() {
+local release=$1 image=lan-sentinel-systemd-test:$1
+echo "== Debian $release"
+docker build -q --build-arg "BASE=debian:$release-slim" -t "$image" -f test/systemd/Dockerfile "$work" >/dev/null
+docker rm -f "$NAME" >/dev/null 2>&1 || true
+docker run -d --name "$NAME" --privileged --cgroupns=host -v /sys/fs/cgroup:/sys/fs/cgroup:rw \
+	--tmpfs /run --tmpfs /run/lock "$image" >/dev/null
 fail=0
+echo "info: $(x systemctl --version | head -1)"
 check() { # check DESCRIPTION COMMAND...
 	local d=$1
 	shift
@@ -53,6 +63,8 @@ check "passive capture runs under the unit (AF_PACKET)" wait_for 10 journal_has 
 check "no capture failures" bash -c "! docker exec $NAME journalctl -u lan-sentinel --no-pager -o cat | grep -q 'capture unavailable'"
 check "API socket is 0660 lan-sentinel:lan-sentinel" bash -c "[ \"\$(docker exec $NAME stat -c '%a %U %G' /run/lan-sentinel/api.sock)\" = '660 lan-sentinel lan-sentinel' ]"
 check "daemon status over the API socket (healthy)" x lan-sentinel daemon status --quiet
+clock=$(x lan-sentinel daemon status -o json | grep -oE '"clock": *"[a-z]+"' | grep -oE '[a-z]+"$' | tr -d '"')
+check "clock sync state readable under the unit (${clock:-none}, not unknown)" bash -c "[ '$clock' = synced ] || [ '$clock' = unsynced ]"
 check "hosts list over the API" x lan-sentinel hosts list
 check "offline read beside the running daemon" x lan-sentinel --offline db check
 
@@ -75,8 +87,26 @@ done < <(x systemctl cat lan-sentinel.service | awk '
 gw_hex=$(x awk '$2 == "00000000" { print $3; exit }' /proc/net/route)
 gw=$(printf '%d.%d.%d.%d' "0x${gw_hex:6:2}" "0x${gw_hex:4:2}" "0x${gw_hex:2:2}" "0x${gw_hex:0:2}")
 echo "info: capcheck under the unit sandbox ($((${#props[@]} / 2)) settings), ARP/ICMP target $gw"
-if x systemd-run --quiet --wait --pipe --collect "${props[@]}" \
-	/usr/local/bin/capcheck --interface eth0 --capture 2s --arp-target "$gw" --icmp-target "$gw" >"$work/capcheck.txt" 2>&1; then
+# A unit file only warns about a setting its systemd does not know (e.g.
+# PrivateIPC= before systemd 248) and runs without it; a transient unit
+# refuses it, so leave such settings out the same way.
+passed=0
+for _ in 1 2 3 4 5; do
+	if x systemd-run --quiet --wait --pipe --collect "${props[@]}" \
+		/usr/local/bin/capcheck --interface eth0 --capture 2s --arp-target "$gw" --icmp-target "$gw" >"$work/capcheck.txt" 2>&1; then
+		passed=1
+		break
+	fi
+	unknown=$(sed -nE 's/.*Unknown assignment: ([A-Za-z]+)=.*/\1/p' "$work/capcheck.txt" | head -1)
+	[ -n "$unknown" ] || break
+	echo "info: this systemd does not know $unknown= (the unit runs without it too); capcheck runs without it"
+	kept=()
+	for ((i = 0; i < ${#props[@]}; i += 2)); do
+		[[ ${props[$((i + 1))]} == "$unknown="* ]] || kept+=("${props[$i]}" "${props[$((i + 1))]}")
+	done
+	props=("${kept[@]}")
+done
+if [ "$passed" = 1 ]; then
 	echo "ok:   capcheck passes under the reference unit's sandbox"
 else
 	echo "FAIL: capcheck under the reference unit's sandbox" >&2
@@ -89,9 +119,20 @@ x systemctl stop lan-sentinel
 check "clean shutdown" wait_for 15 journal_has "lan-sentinel stopped"
 check "WAL and -shm removed on shutdown (after API traffic)" x sh -c '! test -e /data/lan-sentinel/hosts.db-wal && ! test -e /data/lan-sentinel/hosts.db-shm'
 
+summary+=("Debian $release: $(x systemctl --version | head -1 | cut -d' ' -f1-2), exposure ${score:-unknown}, clock ${clock:-unknown}: $([ "$fail" = 0 ] && echo PASS || echo FAIL)")
 if [ "$fail" != 0 ]; then
 	echo "--- journal" >&2
 	x journalctl -u lan-sentinel --no-pager >&2 || true
+	total=1
+fi
+docker rm -f "$NAME" >/dev/null 2>&1 || true
+}
+
+for r in $RELEASES; do
+	run_on "$r"
+done
+printf '%s\n' "${summary[@]}"
+if [ "$total" != 0 ]; then
 	echo "== test-systemd: FAIL" >&2
 	exit 1
 fi

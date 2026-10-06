@@ -44,7 +44,16 @@ func (d *Daemon) startPipeline(ctx context.Context) error {
 	}
 	d.log.Info("vendor table loaded", "assignments", vendors.Len())
 	d.bus = observation.NewBus(observation.DefaultBusSize)
-	d.events = events.NewEngine(d.store, d.log, nil)
+	// Events record the kernel clock's sync state; a replay's events carry
+	// recorded times, so their state is unknown.
+	var clockState func() platform.ClockState
+	if !cfg.ReplayMode() && d.backends.Clock != nil {
+		clockState = d.backends.Clock.State
+		if st := clockState(); st != platform.ClockSynced {
+			d.log.Warn("system clock is not known to be synchronised; events are marked until it is", "clock", st)
+		}
+	}
+	d.events = events.NewEngine(d.store, d.log, clockState)
 	d.correlator, err = correlate.New(ctx, correlate.Options{
 		Store: d.store, Events: d.events, Vendors: vendors, Clock: d.clock, Logger: d.log, Config: cfg,
 		DataDriven: cfg.ReplayMode(), Recovery: d.store.Recovery(),

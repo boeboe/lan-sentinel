@@ -182,7 +182,7 @@ lan-sentinel/
 └── CLAUDE.md
 ```
 
-Tooling: a `Makefile` (`make` lists every target) whose Go commands all run in the Linux dev container (`build/dev.Dockerfile`: Go toolchain, pinned golangci-lint; caches on a named volume; runs as the calling user). Targets: `release` (static `linux/amd64` and `linux/arm64` binaries, version, commit and build date via `-ldflags`, static-linking check, `SHA256SUMS`); hygiene targets `fmt`/`fmt-check`, `tidy`/`tidy-check`, `mod-verify`, `vet`, `lint` (golangci-lint) and `vuln` (`govulncheck`, pinned as a Go tool in `go.mod`); `test`, `coverage`/`cover` (coverage of `internal/` from every test package, failing below 90%), `fuzz` (every `Fuzz*` target, `FUZZTIME` each); the Docker suites `test-net` and `test-systemd` (§9); the gates `check` and `check-all`; `shell` and `run-dev`. CI runs the same targets: `make mod-verify check`, `make fuzz`, the Docker suites and `make release tools`.
+Tooling: a `Makefile` (`make` lists every target) whose Go commands all run in the Linux dev container (`build/dev.Dockerfile`: Go toolchain, pinned golangci-lint; caches on a named volume; runs as the calling user). Targets: `release` (static `linux/amd64` and `linux/arm64` binaries, version, commit and commit date via `-ldflags`, so a commit always builds the same bytes, static-linking check, `SHA256SUMS`); hygiene targets `fmt`/`fmt-check`, `tidy`/`tidy-check`, `mod-verify`, `vet`, `lint` (golangci-lint) and `vuln` (`govulncheck`, pinned as a Go tool in `go.mod`); `test`, `coverage`/`cover` (coverage of `internal/` from every test package, failing below 90%), `fuzz` (every `Fuzz*` target, `FUZZTIME` each); the Docker suites `test-net` and `test-systemd` (§9); the gates `check` and `check-all`; `shell` and `run-dev`. CI runs the same targets: `make mod-verify check`, `make fuzz`, the Docker suites and `make release tools`. A pushed `v*` tag runs them again (`.github/workflows/release.yml`) and, if all pass, the build is stamped with the tag and a second build gives the same checksums, publishes a GitHub Release with the two binaries, `SHA256SUMS`, and `capcheck` with its checksums.
 
 ## 5. OT safety controls
 
@@ -346,11 +346,17 @@ NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
+PrivateMounts=true
 PrivateDevices=true
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true
-ProtectClock=true
+# The daemon reads the kernel clock's sync state with a read-only adjtimex
+# (NFR-REL-2), which ProtectClock=true would block. The clock still cannot
+# be changed: no CAP_SYS_TIME (the kernel refuses any change without it),
+# the call filter below allows no other @clock call, and PrivateDevices
+# hides /dev/rtc.
+ProtectClock=false
 ProtectHostname=true
 ProtectKernelLogs=true
 ProtectProc=invisible
@@ -367,6 +373,9 @@ MemoryDenyWriteExecute=true
 SystemCallArchitectures=native
 SystemCallFilter=@system-service
 SystemCallFilter=~@privileged @resources
+# Read-only clock sync state (see ProtectClock= above); listed after the
+# deny line because @privileged contains @clock.
+SystemCallFilter=adjtimex
 SystemCallErrorNumber=EPERM
 MemoryMax=128M
 CPUQuota=20%
@@ -387,6 +396,9 @@ WantedBy=multi-user.target
 | rtnetlink dump and `RTNLGRP_NEIGH`/`LINK`/`IPV4_IFADDR`/`IPV6_IFADDR` subscribe | none |
 | TCP `connect()` | none |
 | `SO_BINDTODEVICE` on probe sockets | `CAP_NET_RAW` (kernels < 5.7), none on newer |
+| `adjtimex` read (modes 0: clock sync state, NFR-REL-2) | none; allowed by the unit's call filter, which is why `ProtectClock=` is off |
+
+The clock check is a read-only `adjtimex` of the kernel's NTP status (`STA_UNSYNC`, `STA_CLOCKERR`, `TIME_ERROR`), so it works whichever NTP client keeps the clock (chrony on the deployed devices; ntpd or systemd-timesyncd elsewhere) and depends on none of them. Every event records the state at write time: `synced`, `unsynced` or `unknown` (the state could not be read, or a replay). `systemd-analyze security` charges the exception three times, 0.2 each (it counts `adjtimex` as an allowed `@privileged` and `@clock` call, and `ProtectClock=` as off), partly offset by `PrivateMounts=true`: the unit scores 2.0 on systemd 247, 252 and 257 (`make test-systemd`, Debian 11, 12 and 13; 1.6 before the exception), below the 2.5 limit of NFR-SEC-1. It costs no capability: changing the clock needs `CAP_SYS_TIME`, which the bounding set does not hold. On systemd 247 (Debian 11) `PrivateIPC=` does not exist yet; the unit runs without it there, with a warning in the journal.
 
 Run `tools/capcheck` under the reference unit's identity on each target board (`tools/capcheck/README.md`) and record kernel version, board and results below. `make test-net` runs the same check in Docker on every change. If any row needs `CAP_NET_ADMIN` or root, stop and decide before continuing.
 
@@ -394,10 +406,11 @@ Run `tools/capcheck` under the reference unit's identity on each target board (`
 | --- | --- | --- | --- |
 | Docker test network (`make test-net`), uid 65534, ambient `CAP_NET_RAW` only | 7.0.14-linuxkit arm64 | 2026-10-05 | PASS, every row above, including ARP/NDP transmit, ping and raw ICMP, bound TCP connect; AF_PACKET refused without `CAP_NET_RAW` |
 | systemd in a container (`make test-systemd`), transient unit with this unit's `[Service]` settings | 7.0.14-linuxkit arm64, systemd 252 | 2026-10-05 | PASS, every row above; daemon runs as `lan-sentinel` with `CapEff`/`CapBnd` = `CAP_NET_RAW`; `systemd-analyze security` exposure 1.6 |
+| systemd in containers (`make test-systemd`) on Debian 11, 12 and 13, with the read-only `adjtimex` exception | 7.0.14-linuxkit arm64, systemd 247, 252, 257 | 2026-10-06 | PASS, every row above including the `adjtimex` read under the sandbox; clock state readable (`unsynced` in the Docker VM); exposure 2.0 on each |
 | RevPi Connect | (pending) | | |
 | amd64 edge box | (pending) | | |
 
-The process stays in the foreground; systemd owns its lifecycle (no double-fork). `make test-systemd` runs this unit unchanged in a systemd container on every change and fails if the exposure rises above 2.5 or capcheck fails under its sandbox.
+The process stays in the foreground; systemd owns its lifecycle (no double-fork). `make test-systemd` runs this unit unchanged in a systemd container for each target release (Debian 11 bullseye, 12 bookworm, 13 trixie) on every change and fails if the exposure rises above 2.5, the clock state cannot be read, or capcheck fails under its sandbox.
 
 ## 9. Development and testing
 

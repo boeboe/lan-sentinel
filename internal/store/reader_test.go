@@ -313,7 +313,7 @@ func TestInterfacesDBInfoCheckEvidence(t *testing.T) {
 		t.Errorf("interfaces: %v %+v", err, ifs)
 	}
 	info, err := r.DBInfo(ctx)
-	if err != nil || info.Path != path || info.SchemaVersion != 3 || info.JournalMode != "wal" || info.Rows["hosts"] != 4 || info.UsedSize == 0 {
+	if err != nil || info.Path != path || info.SchemaVersion != store.LatestSchemaVersion() || info.JournalMode != "wal" || info.Rows["hosts"] != 4 || info.UsedSize == 0 {
 		t.Errorf("db info: %v %+v", err, info)
 	}
 	if res, err := r.Check(ctx); err != nil || !res.OK {

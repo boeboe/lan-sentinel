@@ -46,6 +46,7 @@ type Status struct {
 	Problems   []string                  `json:"problems,omitempty"`
 	Database   DatabaseStatus            `json:"database"`
 	Active     store.ActiveState         `json:"active"`
+	Clock      platform.ClockState       `json:"clock"` // kernel clock: synced, unsynced or unknown
 	Interfaces []InterfaceStatus         `json:"interfaces"`
 	Hosts      map[string]map[string]int `json:"hosts"` // interface → presence → count
 	LastScan   *store.Scan               `json:"last_scan"`

@@ -104,6 +104,10 @@ func (d *Daemon) status(ctx context.Context) api.Status {
 		s.Database.Size, s.Database.UsedSize, s.Database.WALSize, s.Database.SchemaVersion = info.Size, info.UsedSize, info.WALSize, info.SchemaVersion
 	}
 	s.Active = d.sw.State()
+	s.Clock = platform.ClockUnknown
+	if d.backends.Clock != nil && !cfg.ReplayMode() {
+		s.Clock = d.backends.Clock.State()
+	}
 	if last, err := d.reader.LastScan(ctx); err == nil {
 		s.LastScan = last
 	}

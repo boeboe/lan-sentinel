@@ -106,7 +106,9 @@ type Event struct {
 	Cause         string          `json:"cause"`
 	ObservationID int64           `json:"observation_id,omitempty"`
 	Evidence      json.RawMessage `json:"evidence"`
-	ClockSynced   bool            `json:"clock_synced"`
+	// ClockSync is the kernel clock's state when the event was written:
+	// synced, unsynced (before NTP synchronisation) or unknown.
+	ClockSync string `json:"clock_sync"`
 }
 
 // EvidenceIP returns the IP of the event's evidence snapshot.

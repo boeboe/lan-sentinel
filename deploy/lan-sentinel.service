@@ -24,11 +24,17 @@ NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
+PrivateMounts=true
 PrivateDevices=true
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true
-ProtectClock=true
+# The daemon reads the kernel clock's sync state with a read-only adjtimex
+# (NFR-REL-2), which ProtectClock=true would block. The clock still cannot
+# be changed: no CAP_SYS_TIME (the kernel refuses any change without it),
+# the call filter below allows no other @clock call, and PrivateDevices
+# hides /dev/rtc.
+ProtectClock=false
 ProtectHostname=true
 ProtectKernelLogs=true
 ProtectProc=invisible
@@ -45,6 +51,9 @@ MemoryDenyWriteExecute=true
 SystemCallArchitectures=native
 SystemCallFilter=@system-service
 SystemCallFilter=~@privileged @resources
+# Read-only clock sync state (see ProtectClock= above); listed after the
+# deny line because @privileged contains @clock.
+SystemCallFilter=adjtimex
 SystemCallErrorNumber=EPERM
 MemoryMax=128M
 CPUQuota=20%

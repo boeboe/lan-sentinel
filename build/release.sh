@@ -20,6 +20,7 @@ release)
 	(cd dist && sha256sum lan-sentinel-* >SHA256SUMS && cat SHA256SUMS)
 	;;
 tools)
+	rm -rf dist/tools
 	mkdir -p dist/tools
 	for t in $targets; do
 		os=${t%/*} arch=${t#*/}
@@ -27,6 +28,7 @@ tools)
 		echo "Building $out"
 		GOOS=$os GOARCH=$arch go build -trimpath -ldflags "-s -w" -o "$out" ./tools/capcheck
 	done
+	(cd dist/tools && sha256sum capcheck-* >SHA256SUMS && cat SHA256SUMS)
 	;;
 *)
 	echo "usage: $0 release|tools" >&2

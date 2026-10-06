@@ -13,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"lan-sentinel/internal/api"
+	"lan-sentinel/internal/platform"
 	"lan-sentinel/internal/store"
 )
 
@@ -74,6 +75,14 @@ func (a *app) statusText(w io.Writer, st api.Status) {
 		}
 	}
 	fmt.Fprintf(w, "Active:     %s\n", active)
+	clock := string(st.Clock)
+	switch st.Clock {
+	case platform.ClockUnsynced:
+		clock += " (events are marked until the clock is synchronised)"
+	case "":
+		clock = string(platform.ClockUnknown)
+	}
+	fmt.Fprintf(w, "Clock:      %s\n", clock)
 	last := "never"
 	if ls := st.LastScan; ls != nil {
 		last = fmt.Sprintf("%s  %s  %s (%s)", a.stamp(ls.Started), ls.Interface, ls.Kind, ls.Trigger)

@@ -62,8 +62,8 @@ func addObservations(n int, at func(i int) time.Time, host, ip string, meta stri
 func addEvents(n int, at func(i int) time.Time) func(ctx context.Context, tx *sql.Tx) error {
 	return func(ctx context.Context, tx *sql.Tx) error {
 		for i := range n {
-			if _, err := tx.ExecContext(ctx, `INSERT INTO events (ts, type, severity, context_id, host_id, cause, clock_synced)
-				VALUES (?, 'IP_ADDED', 'notice', 1, 'h1', 'passive_arp', 1)`, at(i).UnixMilli()); err != nil {
+			if _, err := tx.ExecContext(ctx, `INSERT INTO events (ts, type, severity, context_id, host_id, cause, clock_sync)
+				VALUES (?, 'IP_ADDED', 'notice', 1, 'h1', 'passive_arp', 'synced')`, at(i).UnixMilli()); err != nil {
 				return err
 			}
 		}

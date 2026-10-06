@@ -219,13 +219,24 @@ func TestNeighborMACChange(t *testing.T) {
 	macA, macB := env(t, "LS_TEST_SWAP_MAC_A"), env(t, "LS_TEST_SWAP_MAC_B")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	ch, err := platform.New().Neighbors.Watch(ctx)
+	nbs := platform.New().Neighbors
+	ch, err := nbs.Watch(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	awaitNeighbor(t, ch, target, 20*time.Second, func(ev platform.NeighborEvent) bool {
-		return ev.Neighbor.MAC.String() == macA
-	})
+	// An entry that is already REACHABLE (earlier tests probed the host)
+	// gets no notification from a ping: the table shows MAC A then.
+	known := false
+	if list, err := nbs.Snapshot(ctx); err == nil {
+		for _, n := range list {
+			known = known || n.IP == target && n.MAC.String() == macA
+		}
+	}
+	if !known {
+		awaitNeighbor(t, ch, target, 20*time.Second, func(ev platform.NeighborEvent) bool {
+			return ev.Neighbor.MAC.String() == macA
+		})
+	}
 	request(t, "swap")
 	awaitNeighbor(t, ch, target, 60*time.Second, func(ev platform.NeighborEvent) bool {
 		return ev.Neighbor.MAC.String() == macB

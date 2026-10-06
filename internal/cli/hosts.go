@@ -388,18 +388,37 @@ func (a *app) eventsTable(evs []store.Event) error {
 	}
 	header := []string{"TIME", "TYPE", "IFACE", "MAC", "VALUE", "RELATED", "CAUSE"}
 	rows := make([][]string, 0, len(evs))
+	marked := map[string]bool{}
 	for _, e := range evs {
-		ts := a.stamp(e.TS)
+		row := []string{"", e.Type, dash(e.Interface), dash(e.MAC), eventValue(e), dash(e.RelatedMAC), e.Cause}
 		if a.g.output == "csv" {
-			ts = e.TS.UTC().Format(time.RFC3339Nano)
+			row[0] = e.TS.UTC().Format(time.RFC3339Nano)
+			row = append(row, e.ClockSync)
+		} else {
+			mark := clockMarks[e.ClockSync]
+			row[0] = a.stamp(e.TS) + mark
+			marked[mark] = marked[mark] || mark != ""
 		}
-		rows = append(rows, []string{ts, e.Type, dash(e.Interface), dash(e.MAC), eventValue(e), dash(e.RelatedMAC), e.Cause})
+		rows = append(rows, row)
 	}
 	if a.g.output == "csv" {
-		return writeCSV(w, header, rows)
+		return writeCSV(w, append(header, "CLOCK_SYNC"), rows)
 	}
-	return writeTable(w, header, rows)
+	if err := writeTable(w, header, rows); err != nil {
+		return err
+	}
+	// Events written before the clock was synchronised (NFR-REL-2).
+	if marked["*"] {
+		fmt.Fprintln(w, "* written before the system clock was synchronised: the time may be off")
+	}
+	if marked["?"] {
+		fmt.Fprintln(w, "? written while the clock's synchronisation was unknown")
+	}
+	return nil
 }
+
+// clockMarks flag event times by the clock's state when they were written.
+var clockMarks = map[string]string{"unsynced": "*", "unknown": "?"}
 
 func (a *app) hostsEvidenceCmd() *cobra.Command {
 	var q queryFlags

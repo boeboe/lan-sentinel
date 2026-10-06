@@ -7,7 +7,8 @@ PKG      := lan-sentinel
 PKGS     ?= ./...
 VERSION  ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 COMMIT   ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
-DATE     ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+# The commit's time, not the build's: the same commit builds the same bytes.
+DATE     ?= $(shell TZ=UTC git log -1 --date=format-local:%Y-%m-%dT%H:%M:%SZ --format=%cd 2>/dev/null || echo unknown)
 LDFLAGS  := -s -w \
 	-X $(PKG)/internal/buildinfo.Version=$(VERSION) \
 	-X $(PKG)/internal/buildinfo.Commit=$(COMMIT) \

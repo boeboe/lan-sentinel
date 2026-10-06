@@ -3,6 +3,7 @@ package events
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"log/slog"
 	"path/filepath"
@@ -12,17 +13,18 @@ import (
 	"testing"
 	"time"
 
+	"lan-sentinel/internal/platform"
 	"lan-sentinel/internal/store"
 	"lan-sentinel/migrations"
 )
 
 // The catalogue must match the CHECK constraint on events.type.
 func TestCatalogueMatchesSchema(t *testing.T) {
-	sql, err := migrations.FS.ReadFile("0001_init.sql")
+	schema0, err := migrations.FS.ReadFile("0001_init.sql")
 	if err != nil {
 		t.Fatal(err)
 	}
-	block := regexp.MustCompile(`(?s)type\s+TEXT\s+NOT NULL CHECK \(type IN \((.*?)\)\)`).FindSubmatch(sql)
+	block := regexp.MustCompile(`(?s)type\s+TEXT\s+NOT NULL CHECK \(type IN \((.*?)\)\)`).FindSubmatch(schema0)
 	if block == nil {
 		t.Fatal("events.type CHECK constraint not found")
 	}
@@ -51,7 +53,7 @@ func TestEmitWritesRowAndLogEntry(t *testing.T) {
 	defer st.Close()
 	var buf bytes.Buffer
 	log := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	e := NewEngine(st, log, func() bool { return false })
+	e := NewEngine(st, log, func() platform.ClockState { return platform.ClockUnsynced })
 
 	ts := time.Date(2026, 10, 1, 11, 0, 0, 0, time.UTC)
 	err = e.Emit(context.Background(), Event{
@@ -76,7 +78,7 @@ func TestEmitWritesRowAndLogEntry(t *testing.T) {
 	for k, want := range map[string]any{
 		"msg":   "IP_CHANGED eth1 00:1b:1b:aa:bb:01 192.168.110.50 -> 192.168.110.51",
 		"event": "ip_changed", "iface": "eth1", "old_value": "192.168.110.50", "new_value": "192.168.110.51",
-		"source": "passive_dhcp", "clock_synced": false,
+		"source": "passive_dhcp", "clock_sync": "unsynced",
 	} {
 		if rec[k] != want {
 			t.Errorf("log %s = %v, want %v", k, rec[k], want)
@@ -89,6 +91,49 @@ func TestEmitWritesRowAndLogEntry(t *testing.T) {
 	if c := e.Counts()[IPChanged]; c != 1 {
 		t.Errorf("count = %d", c)
 	}
+	var clock string
+	if err := st.View(context.Background(), func(ctx context.Context, tx *sql.Tx) error {
+		return tx.QueryRowContext(ctx, `SELECT clock_sync FROM events`).Scan(&clock)
+	}); err != nil || clock != "unsynced" {
+		t.Errorf("clock_sync = %q, %v", clock, err)
+	}
+}
+
+// The clock state is recorded with every event, and logged unless synced;
+// without a clock source it is unknown, never assumed synchronised.
+func TestClockStateOfEvents(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		clock  func() platform.ClockState
+		want   string
+		logged bool
+	}{
+		{"synced", func() platform.ClockState { return platform.ClockSynced }, "synced", false},
+		{"unsynced", func() platform.ClockState { return platform.ClockUnsynced }, "unsynced", true},
+		{"no clock source", nil, "unknown", true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			st, err := store.Open(context.Background(), store.Options{Path: filepath.Join(t.TempDir(), "hosts.db")})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer st.Close()
+			var buf bytes.Buffer
+			e := NewEngine(st, slog.New(slog.NewJSONHandler(&buf, nil)), tt.clock)
+			ch, cancel := e.Subscribe(1)
+			defer cancel()
+			ts := time.Date(2026, 10, 1, 10, 0, 0, 0, time.UTC)
+			if err := e.Emit(context.Background(), Event{TS: ts, Type: InterfaceUp, Interface: "eth1", New: "up", Cause: "iface_monitor"}); err != nil {
+				t.Fatal(err)
+			}
+			if got := (<-ch).ClockSync; got != tt.want {
+				t.Errorf("streamed clock_sync = %q", got)
+			}
+			if logged := strings.Contains(buf.String(), `"clock_sync":"`+tt.want+`"`); logged != tt.logged {
+				t.Errorf("log %s, want clock_sync logged %v", buf.String(), tt.logged)
+			}
+		})
+	}
 }
 
 func TestSubscribe(t *testing.T) {
@@ -97,7 +142,7 @@ func TestSubscribe(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	e := NewEngine(st, slog.New(slog.DiscardHandler), func() bool { return false })
+	e := NewEngine(st, slog.New(slog.DiscardHandler), func() platform.ClockState { return platform.ClockUnsynced })
 	ch, cancel := e.Subscribe(1)
 	ctx := context.Background()
 	ts := time.Date(2026, 10, 1, 10, 0, 0, 0, time.UTC)
@@ -109,7 +154,7 @@ func TestSubscribe(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := <-ch
-	if got.Type != "INTERFACE_UP" || got.Severity != "notice" || got.Interface != "eth1" || got.ClockSynced ||
+	if got.Type != "INTERFACE_UP" || got.Severity != "notice" || got.Interface != "eth1" || got.ClockSync != "unsynced" ||
 		!strings.Contains(string(got.Evidence), `"interface":"eth1"`) {
 		t.Errorf("streamed event = %+v", got)
 	}

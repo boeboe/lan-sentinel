@@ -143,3 +143,58 @@ func TestOfflineRefusesOtherSchemaVersions(t *testing.T) {
 		})
 	}
 }
+
+// Events written before migration 0004 recorded a synchronised clock
+// without checking it: they become unknown, and the old column is gone.
+func TestClockSyncMigration(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "hosts.db")
+	all, err := fs.Glob(migrations.FS, "*.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := fstest.MapFS{}
+	for _, n := range all {
+		if n >= "0004" {
+			continue
+		}
+		b, _ := fs.ReadFile(migrations.FS, n)
+		old[n] = &fstest.MapFile{Data: b}
+	}
+	st, err := store.Open(context.Background(), store.Options{Path: path, Migrations: old})
+	if err != nil {
+		t.Fatal(err)
+	}
+	exec(t, st, `INSERT INTO events (ts, type, severity, cause, clock_synced) VALUES (0, 'INTERFACE_UP', 'notice', 'test', 1)`)
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	st, err = store.Open(context.Background(), store.Options{Path: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	var clock string
+	var oldCols int
+	if err := st.View(context.Background(), func(ctx context.Context, tx *sql.Tx) error {
+		if err := tx.QueryRowContext(ctx, `SELECT clock_sync FROM events`).Scan(&clock); err != nil {
+			return err
+		}
+		return tx.QueryRowContext(ctx, `SELECT count(*) FROM pragma_table_info('events') WHERE name = 'clock_synced'`).Scan(&oldCols)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if clock != "unknown" || oldCols != 0 {
+		t.Errorf("after migration: clock_sync %q, clock_synced columns %d", clock, oldCols)
+	}
+	ctx := context.Background()
+	if err := st.Submit(ctx, func(ctx context.Context, tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `INSERT INTO events (ts, type, severity, cause, clock_sync) VALUES (0, 'INTERFACE_UP', 'notice', 'test', 'maybe')`)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_ = st.Flush(ctx)
+	if st.OpErrors() != 1 {
+		t.Error("a clock_sync outside synced/unsynced/unknown was accepted")
+	}
+}

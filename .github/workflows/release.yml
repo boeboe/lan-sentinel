@@ -1,0 +1,66 @@
+name: release
+# A pushed v* tag publishes a GitHub Release: the static linux/amd64 and
+# linux/arm64 binaries with SHA256SUMS, and capcheck for the board audit
+# with its own checksums (NFR-PORT-1; no packages). It runs the same make
+# targets as CI and a developer machine, and refuses to publish unless every
+# gate passes, the build is stamped with the tag, and a second build gives
+# the same checksums.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: mod-verify, fmt-check, tidy-check, vet, lint, vuln, tests with race and coverage
+        run: make mod-verify check
+
+  fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: make fuzz FUZZTIME=30s
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Network integration tests (Docker, CAP_NET_RAW only)
+        run: make test-net
+      - name: systemd unit test (Debian 11, 12 and 13)
+        run: make test-systemd
+
+  publish:
+    needs: [check, fuzz, docker]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: The build is stamped with the tag
+        run: |
+          v=$(git describe --tags --always --dirty)
+          [ "$v" = "$GITHUB_REF_NAME" ] || { echo "git describe says $v, the tag is $GITHUB_REF_NAME" >&2; exit 1; }
+      - name: Static binaries and capcheck, built twice (reproducible)
+        run: |
+          make release tools
+          cp dist/SHA256SUMS first.sums && cp dist/tools/SHA256SUMS first-tools.sums
+          make release tools
+          diff first.sums dist/SHA256SUMS && diff first-tools.sums dist/tools/SHA256SUMS
+      - name: GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp dist/tools/SHA256SUMS dist/capcheck-SHA256SUMS
+          flags=()
+          case "$GITHUB_REF_NAME" in *-*) flags+=(--prerelease) ;; esac
+          gh release create "$GITHUB_REF_NAME" --verify-tag --title "LAN Sentinel $GITHUB_REF_NAME" --generate-notes "${flags[@]}" \
+            dist/lan-sentinel-linux-amd64 dist/lan-sentinel-linux-arm64 dist/SHA256SUMS \
+            dist/tools/capcheck-linux-amd64 dist/tools/capcheck-linux-arm64 dist/capcheck-SHA256SUMS

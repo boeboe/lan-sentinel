@@ -285,3 +285,38 @@ func TestKillSwitchAfterShutdown(t *testing.T) {
 		t.Error("disable after shutdown reported success")
 	}
 }
+
+// Events record the kernel clock's state: a box that boots before NTP sync
+// marks its events, and daemon status says so.
+func TestEventsRecordClockState(t *testing.T) {
+	h := startWith(t, testConfig("$DIR", "info", activeConfig), 0, activeLinks)
+	clock := h.d.backends.Clock.(*fake.Clock)
+	client := api.NewClient(filepath.Join(h.dir, "api.sock"), 5*time.Second)
+	h.waitLog("SUBNET_CHANGED")
+	st, err := client.Status(context.Background())
+	if err != nil || st.Clock != platform.ClockSynced {
+		t.Errorf("status clock = %q, %v", st.Clock, err)
+	}
+	clock.Set(platform.ClockUnsynced)
+	if _, err := client.DisableActive(context.Background(), "clock test"); err != nil {
+		t.Fatal(err)
+	}
+	if st, _ := client.Status(context.Background()); st.Clock != platform.ClockUnsynced {
+		t.Errorf("status clock = %q", st.Clock)
+	}
+	h.stop()
+	got := queryDB(t, filepath.Join(h.dir, "data", "hosts.db"), `SELECT type || ' ' || clock_sync FROM events ORDER BY id`)
+	if len(got) < 2 || got[0] != "SUBNET_CHANGED synced" || got[len(got)-1] != "ACTIVE_DISABLED unsynced" {
+		t.Errorf("events = %v", got)
+	}
+}
+
+func TestUnsyncedClockAtStartIsLogged(t *testing.T) {
+	h := startWithClock(t, testConfig("$DIR", "info", activeConfig), 0, activeLinks, platform.ClockUnsynced)
+	defer h.stop()
+	h.waitLog("system clock is not known to be synchronised")
+	st, err := api.NewClient(filepath.Join(h.dir, "api.sock"), 5*time.Second).Status(context.Background())
+	if err != nil || st.Clock != platform.ClockUnsynced {
+		t.Errorf("status clock = %q, %v", st.Clock, err)
+	}
+}

@@ -28,7 +28,9 @@ sudo systemd-run --pty --wait --collect \
   -p ProtectControlGroups=true -p RestrictNamespaces=true -p LockPersonality=true \
   -p MemoryDenyWriteExecute=true -p SystemCallArchitectures=native \
   -p "RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_PACKET AF_NETLINK" \
+  -p "SystemCallFilter=@system-service" -p "SystemCallFilter=~@privileged @resources" \
+  -p "SystemCallFilter=adjtimex" -p SystemCallErrorNumber=EPERM \
   /usr/local/bin/capcheck --interface eth1 --arp-target 192.168.110.1
 ```
 
-The `privilege` line must show `CAP_NET_RAW` only. Record the kernel version, board and results in `docs/ARCHITECTURE.md` §8.
+The `privilege` line must show `CAP_NET_RAW` only, and the `adjtimex read` row must pass: the daemon reads the clock's sync state that way (NFR-REL-2), so the unit's call filter has to allow it. `make test-systemd` passes every `[Service]` setting of the reference unit instead of this list. Record the kernel version, board, Debian release, `systemd-analyze security lan-sentinel` exposure and results in `docs/ARCHITECTURE.md` §8.

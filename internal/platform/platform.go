@@ -176,4 +176,5 @@ type Backends struct {
 	Neighbors   NeighborSource
 	Interfaces  InterfaceMonitor
 	Transmitter Transmitter
+	Clock       ClockSource
 }

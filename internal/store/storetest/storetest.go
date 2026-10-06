@@ -19,6 +19,7 @@ import (
 	"lan-sentinel/internal/events"
 	"lan-sentinel/internal/identify"
 	"lan-sentinel/internal/observation"
+	"lan-sentinel/internal/platform"
 	"lan-sentinel/internal/store"
 )
 
@@ -107,7 +108,7 @@ func Seed(t testing.TB, dir string) (*store.Store, string, Expected) {
 		t.Fatal(err)
 	}
 	log := slog.New(slog.DiscardHandler)
-	c, err := correlate.New(ctx, correlate.Options{Store: st, Events: events.NewEngine(st, log, nil), Vendors: vendors,
+	c, err := correlate.New(ctx, correlate.Options{Store: st, Events: events.NewEngine(st, log, func() platform.ClockState { return platform.ClockSynced }), Vendors: vendors,
 		Clock: sim, Logger: log, Config: cfg, DataDriven: true})
 	if err != nil {
 		t.Fatal(err)

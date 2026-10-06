@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -146,8 +147,8 @@ func TestReadCommands(t *testing.T) {
 		{"services", []string{"services", "list", "--port", "502"}, 0, []string{"502/tcp", "OPEN", "192.168.110.50"}},
 		{"services csv", []string{"-o", "csv", "services", "list", "--state", "open"}, 0, []string{"IP,MAC,IFACE,PORT,STATE,LAST CHECK"}},
 		{"interfaces", []string{"interfaces", "list"}, 0, []string{"eth1", "192.168.110.0/24", "on", "unknown"}},
-		{"db info", []string{"db", "info"}, 0, []string{"Schema:    3", "Journal:   wal", "hosts", "4"}},
-		{"db info json", []string{"-o", "json", "db", "info"}, 0, []string{`"schema_version": 3`}},
+		{"db info", []string{"db", "info"}, 0, []string{fmt.Sprintf("Schema:    %d", store.LatestSchemaVersion()), "Journal:   wal", "hosts", "4"}},
+		{"db info json", []string{"-o", "json", "db", "info"}, 0, []string{fmt.Sprintf(`"schema_version": %d`, store.LatestSchemaVersion())}},
 		{"db check", []string{"db", "check"}, 0, []string{"ok"}},
 		{"db check json", []string{"-o", "json", "db", "check"}, 0, []string{`"ok": true`}},
 		{"show json", []string{"-o", "json", "hosts", "show", "00000000-0000-0000-0000-000000000000"}, 2, nil},

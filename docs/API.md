@@ -13,7 +13,7 @@ A stale socket from a crashed daemon is replaced at start-up; a socket another d
 
 All responses are JSON (`application/json`, times RFC 3339 UTC); the stream is JSON lines (`application/x-ndjson`). Errors are `{"error": "message"}` with status 400 (bad parameter, query or request body), 403 (TCP `Host` not loopback), 404 (unknown host or endpoint), 405 (method other than `GET`/`HEAD` on a read endpoint, other than `POST` on an operator endpoint, or anything but a read on the TCP listener), 409 (operator request in conflict, below), 503 (database busy) or 500. `mac` and `ip` parameters accept any written form (`00-1B-1B-…`, `001b.1b…`, IPv4-mapped IPv6) and are normalised; a value that is not a MAC or IP is a 400.
 
-The response types are the read model in `internal/store/model.go` (and `api.Status` in `internal/api`); their JSON field names are this contract.
+The response types are the read model in `internal/store/model.go` (and `api.Status` in `internal/api`); their JSON field names are this contract. Every `Event` carries `clock_sync`: `synced`, `unsynced` (written before NTP synchronisation, so its `ts` may be off) or `unknown` (`DATA_MODEL.md` §7).
 
 ## Endpoints
 
@@ -21,7 +21,7 @@ The read endpoints are `GET`. Time parameters are RFC 3339; the CLI turns its lo
 
 | Path | Parameters | Returns |
 | --- | --- | --- |
-| `/v1/status` | | `Status`: version, commit, platform, PID, start time, replay flag, `state` (`ok`, `degraded`: a configured collector is not running, `unhealthy`: the database does not answer), problems, database (path, ok, sizes, schema version), kill switch (`active`), interfaces with live state, MAC, prefixes and per-collector state (FR-STAT-1), host counts per interface and presence, `last_scan` (the latest `scans` row: id, interface, kind, trigger, started, finished, targets, results; `null` before the first scan) |
+| `/v1/status` | | `Status`: version, commit, platform, PID, start time, replay flag, `state` (`ok`, `degraded`: a configured collector is not running, `unhealthy`: the database does not answer), problems, database (path, ok, sizes, schema version), kill switch (`active`), `clock` (the kernel clock: `synced`, `unsynced` or `unknown`), interfaces with live state, MAC, prefixes and per-collector state (FR-STAT-1), host counts per interface and presence, `last_scan` (the latest `scans` row: id, interface, kind, trigger, started, finished, targets, results; `null` before the first scan) |
 | `/v1/interfaces` | | `[]InterfaceInfo`: name, state (`up`, `down`, `absent`, `unknown`), MAC, open prefixes, passive/active/replay, host count |
 | `/v1/hosts` | `interface`, `q` + optional `kind` (hosts that ever matched), `presence` (`live` = ACTIVE/RECENT, `notlive` = STALE/MISSING), `vendor` (substring of vendor or manufacturer), `port` (an OPEN service), `seen_since` | `[]HostSummary` with open IPs |
 | `/v1/hosts/find` | `q` (required), `kind`, `interface`, `at` | `FindResult` (below) |

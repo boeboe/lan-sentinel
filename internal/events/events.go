@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"lan-sentinel/internal/observation"
+	"lan-sentinel/internal/platform"
 	"lan-sentinel/internal/service"
 	"lan-sentinel/internal/store"
 )
@@ -173,9 +174,9 @@ type Event struct {
 
 // Engine writes events.
 type Engine struct {
-	store       *store.Store
-	log         *slog.Logger
-	clockSynced func() bool
+	store *store.Store
+	log   *slog.Logger
+	clock func() platform.ClockState
 
 	mu     sync.Mutex
 	counts map[Type]uint64
@@ -185,13 +186,15 @@ type Engine struct {
 
 type subscriber struct{ ch chan store.Event }
 
-// NewEngine returns an engine writing to st and log. clockSynced reports
-// whether the system clock is synchronised (NFR-REL-2).
-func NewEngine(st *store.Store, log *slog.Logger, clockSynced func() bool) *Engine {
-	if clockSynced == nil {
-		clockSynced = func() bool { return true }
+// NewEngine returns an engine writing to st and log. clock reports the
+// kernel clock's synchronisation state, recorded with every event
+// (NFR-REL-2); nil records unknown (replay, where events carry recorded
+// times).
+func NewEngine(st *store.Store, log *slog.Logger, clock func() platform.ClockState) *Engine {
+	if clock == nil {
+		clock = func() platform.ClockState { return platform.ClockUnknown }
 	}
-	return &Engine{store: st, log: log, clockSynced: clockSynced, counts: map[Type]uint64{}, subs: map[*subscriber]struct{}{}}
+	return &Engine{store: st, log: log, clock: clock, counts: map[Type]uint64{}, subs: map[*subscriber]struct{}{}}
 }
 
 // Emit queues the event for the next store batch and logs it.
@@ -204,14 +207,14 @@ func (e *Engine) Emit(ctx context.Context, ev Event) error {
 	if err != nil {
 		return fmt.Errorf("event evidence: %w", err)
 	}
-	synced := e.clockSynced()
+	clock := e.clock()
 	err = e.store.Submit(ctx, func(ctx context.Context, tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, `INSERT INTO events
-			(ts, type, severity, context_id, host_id, related_host_id, old_value, new_value, cause, observation_id, evidence_json, clock_synced)
+			(ts, type, severity, context_id, host_id, related_host_id, old_value, new_value, cause, observation_id, evidence_json, clock_sync)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			ev.TS.UnixMilli(), string(ev.Type), string(spec.Severity), nullInt(ev.ContextID), nullString(ev.HostID),
 			nullString(ev.RelatedHostID), nullString(ev.Old), nullString(ev.New), ev.Cause, nullInt(ev.ObservationID),
-			string(evidence), boolInt(synced))
+			string(evidence), string(clock))
 		if err != nil {
 			return fmt.Errorf("insert event %s: %w", ev.Type, err)
 		}
@@ -226,7 +229,7 @@ func (e *Engine) Emit(ctx context.Context, ev Event) error {
 		se := store.Event{
 			TS: ev.TS.UTC(), Type: string(ev.Type), Severity: string(spec.Severity), Interface: ev.Interface, HostID: ev.HostID,
 			MAC: ev.MAC, RelatedHostID: ev.RelatedHostID, RelatedMAC: ev.RelatedMAC, Old: ev.Old, New: ev.New, Cause: ev.Cause,
-			ObservationID: ev.ObservationID, Evidence: evidence, ClockSynced: synced,
+			ObservationID: ev.ObservationID, Evidence: evidence, ClockSync: string(clock),
 		}
 		for s := range e.subs {
 			select {
@@ -237,7 +240,7 @@ func (e *Engine) Emit(ctx context.Context, ev Event) error {
 		}
 	}
 	e.mu.Unlock()
-	e.logEvent(ctx, spec, ev, synced)
+	e.logEvent(ctx, spec, ev, clock)
 	return nil
 }
 
@@ -288,7 +291,7 @@ func (e *Engine) Counts() map[Type]uint64 {
 
 // logEvent writes one structured entry; the journald handler turns the
 // attributes into fields such as EVENT=ip_changed and IFACE=eth1.
-func (e *Engine) logEvent(ctx context.Context, spec Spec, ev Event, synced bool) {
+func (e *Engine) logEvent(ctx context.Context, spec Spec, ev Event, clock platform.ClockState) {
 	level := slog.LevelInfo
 	switch spec.Severity {
 	case Notice:
@@ -313,8 +316,8 @@ func (e *Engine) logEvent(ctx context.Context, spec Spec, ev Event, synced bool)
 	add("new_value", ev.New)
 	add("related_host_id", ev.RelatedHostID)
 	add("source", ev.Cause)
-	if !synced {
-		attrs = append(attrs, slog.Bool("clock_synced", false))
+	if clock != platform.ClockSynced {
+		attrs = append(attrs, slog.String("clock_sync", string(clock)))
 	}
 	e.log.LogAttrs(ctx, level, message(ev), attrs...)
 }
@@ -356,11 +359,4 @@ func nullInt(v int64) any {
 		return nil
 	}
 	return v
-}
-
-func boolInt(b bool) int {
-	if b {
-		return 1
-	}
-	return 0
 }

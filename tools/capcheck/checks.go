@@ -258,7 +258,24 @@ func runChecks(ctx context.Context, o options, ifi ifaceInfo) []result {
 	rs = append(rs, check("TCP connect() bound to interface", "none", func() (string, error) {
 		return tcpConnect(ctx, o.tcpTarget, bind)
 	}))
+	rs = append(rs, check("adjtimex read (clock sync state, NFR-REL-2)", "none", clockState))
 	return rs
+}
+
+// clockState reads the kernel's NTP status the way the daemon does: a
+// read-only adjtimex (modes 0), which needs no capability but must be
+// allowed by the unit's system call filter.
+func clockState() (string, error) {
+	var tx unix.Timex
+	state, err := unix.Adjtimex(&tx)
+	if err != nil {
+		return "", fmt.Errorf("adjtimex: %w", err)
+	}
+	const timeError, staUnsync, staClockErr = 5, 0x0040, 0x1000
+	if state == timeError || tx.Status&(staUnsync|staClockErr) != 0 {
+		return "readable: clock not synchronised", nil
+	}
+	return "readable: clock synchronised", nil
 }
 
 func sendFrame(ifi ifaceInfo, frame []byte, what string) (string, error) {
