@@ -14,6 +14,7 @@ import (
 
 	"lan-sentinel/internal/api"
 	"lan-sentinel/internal/platform"
+	"lan-sentinel/internal/probe/scheduler"
 	"lan-sentinel/internal/store"
 )
 
@@ -107,8 +108,10 @@ func (a *app) statusText(w io.Writer, st api.Status) {
 			detail := c.Backend
 			if c.Error != "" {
 				detail = c.Error
+			} else if p := c.LastPass; p != nil {
+				detail = fmt.Sprintf("%-11s %s", detail, a.lastPass(c.Collector, *p))
 			}
-			fmt.Fprintf(w, "         %-10s %-11s %s\n", c.Collector, c.State, detail)
+			fmt.Fprintf(w, "         %-10s %-11s %s\n", c.Collector, c.State, strings.TrimRight(detail, " "))
 		}
 	}
 	fmt.Fprintf(w, "State:      %s\n", strings.ToUpper(st.State))
@@ -233,4 +236,26 @@ func (a *app) dbCmd() *cobra.Command {
 		},
 	})
 	return c
+}
+
+// lastPass describes a probe's last periodic pass: "last pass 2m ago: 253
+// swept, 14 replied (26 s)".
+func (a *app) lastPass(collector string, p scheduler.PassSummary) string {
+	verb := "probed"
+	if collector == platform.CollectorARP {
+		verb = "swept"
+	}
+	s := fmt.Sprintf("last pass %s: %d %s, %d replied", a.ago(p.At), p.Probed, verb, p.Replied)
+	if p.Blocked > 0 {
+		s += fmt.Sprintf(", %d blocked", p.Blocked)
+	}
+	took := fmt.Sprintf("%.0f s", p.Seconds)
+	if p.Seconds >= 120 {
+		took = fmt.Sprintf("%.0f min", p.Seconds/60)
+	}
+	s += " (" + took
+	if !p.Complete {
+		s += ", cut short"
+	}
+	return s + ")"
 }

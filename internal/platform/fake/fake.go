@@ -301,7 +301,7 @@ type UDPDatagram struct {
 }
 
 // Backend implements platform.Transmitter.
-func (t *Transmitter) Backend() string { return "fake" }
+func (t *Transmitter) Backend(string) string { return "fake" }
 
 // Frames implements platform.Transmitter.
 func (t *Transmitter) Frames(_ context.Context, iface string, _ uint16) (platform.FrameConn, error) {

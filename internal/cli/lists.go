@@ -192,6 +192,55 @@ func (a *app) servicesCmd() *cobra.Command {
 	return c
 }
 
+func (a *app) dhcpCmd() *cobra.Command {
+	c := &cobra.Command{Use: "dhcp", Short: "DHCP servers seen on the interfaces"}
+	var f store.DHCPServerFilter
+	servers := &cobra.Command{
+		Use:   "servers",
+		Short: "DHCP servers: identity, relay, sender, allowlist verdict and what they advertise",
+		Long: "Lists every DHCP server identity (option 54) seen in a reply, per interface, relay\n" +
+			"and sender MAC (the server's, or the relay's). STATUS is the allowlist verdict at the\n" +
+			"last reply: allowed, unexpected, or unchecked when the interface has no allowlist\n" +
+			"(interfaces[].dhcp.servers). The allowlist matches the advertised identifier and\n" +
+			"does not authenticate a server. On a switched port many replies are unicast to\n" +
+			"the client and never seen, so an empty list does not prove there is no server.",
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			switch strings.ToLower(f.Status) {
+			case "", "allowed", "unexpected", "unchecked":
+			default:
+				return failf(ExitUsage, "--status: want allowed, unexpected or unchecked, got %q", f.Status)
+			}
+			return a.run(cmd, false, func(ctx context.Context, b backend) error {
+				servers, err := b.DHCPServers(ctx, f)
+				if err != nil {
+					return err
+				}
+				header := []string{"SERVER ID", "RELAY", "MAC", "IP", "IFACE", "STATUS", "ROUTER", "DNS", "MASK", "LAST SEEN"}
+				rows := make([][]string, 0, len(servers))
+				for _, s := range servers {
+					id := s.ServerID
+					if id == "" {
+						id = "unknown"
+					}
+					last := a.ago(s.LastSeen)
+					if a.g.output == "csv" {
+						last = s.LastSeen.UTC().Format(time.RFC3339)
+					}
+					rows = append(rows, []string{id, dash(s.Relay), s.MAC, dash(s.IP), s.Interface, s.Status,
+						dash(s.Config["router"]), dash(s.Config["dns"]), dash(s.Config["subnet_mask"]), last})
+				}
+				return a.listOut(header, rows, servers, func() error { return writeJSONL(a.output(), servers) })
+			})
+		},
+	}
+	fl := servers.Flags()
+	fl.StringVar(&f.Interface, "interface", "", "only this interface")
+	fl.StringVar(&f.Status, "status", "", "only this verdict (allowed, unexpected, unchecked)")
+	c.AddCommand(servers)
+	return c
+}
+
 func (a *app) interfacesCmd() *cobra.Command {
 	c := &cobra.Command{Use: "interfaces", Short: "Monitored interfaces"}
 	c.AddCommand(&cobra.Command{

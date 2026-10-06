@@ -1,10 +1,13 @@
 // Command gen downloads the IEEE MA-L, MA-M and MA-S registries and writes
-// data/oui/oui.tsv.gz: one "PREFIX<TAB>Organisation" line per assignment
-// (6, 7 or 9 hex digits), sorted, gzipped without a timestamp. Run it with
-// `make oui`.
+// data/oui/oui.tsv.gz, one "PREFIX<TAB>Organisation" line per assignment
+// (6, 7 or 9 hex digits), sorted, gzipped without a timestamp, and from it
+// data/oui/oui.bin, the precomputed table the binary embeds and searches in
+// place (internal/ouitable, internal/identify). Run it with `make oui`; -from-tsv rebuilds the
+// table from the committed registry without downloading.
 package main
 
 import (
+	"bufio"
 	"compress/gzip"
 	"encoding/csv"
 	"errors"
@@ -17,6 +20,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"lan-sentinel/internal/ouitable"
 )
 
 var registries = []struct {
@@ -30,16 +35,61 @@ var registries = []struct {
 }
 
 func main() {
-	out := flag.String("out", "data/oui/oui.tsv.gz", "output file")
+	out := flag.String("out", "data/oui/oui.tsv.gz", "registry output (gzipped TSV)")
+	bin := flag.String("bin", "data/oui/oui.bin", "table output (embedded in the binary)")
 	dir := flag.String("in", "", "read <MA-L|MA-M|MA-S>.csv from this directory instead of downloading")
+	fromTSV := flag.String("from-tsv", "", "only rebuild -bin from this registry TSV (gzipped), without downloading")
 	flag.Parse()
-	if err := run(*out, *dir); err != nil {
+	var err error
+	if *fromTSV != "" {
+		err = rebuild(*fromTSV, *bin)
+	} else {
+		err = run(*out, *bin, *dir)
+	}
+	if err != nil {
 		fmt.Fprintln(os.Stderr, "oui gen:", err)
 		os.Exit(1)
 	}
 }
 
-func run(out, dir string) error {
+// rebuild writes the table from an existing registry TSV.
+func rebuild(tsv, bin string) error {
+	f, err := os.Open(tsv)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	zr, err := gzip.NewReader(f)
+	if err != nil {
+		return err
+	}
+	entries := map[string]string{}
+	sc := bufio.NewScanner(zr)
+	for sc.Scan() {
+		if prefix, name, ok := strings.Cut(sc.Text(), "\t"); ok && !strings.HasPrefix(prefix, "#") {
+			entries[prefix] = name
+		}
+	}
+	if err := sc.Err(); err != nil {
+		return err
+	}
+	return writeTable(bin, entries)
+}
+
+// writeTable encodes the entries and replaces bin.
+func writeTable(bin string, entries map[string]string) error {
+	b, err := ouitable.Encode(entries)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(bin+".tmp", b, 0o644); err != nil { //nolint:gosec // a source file of the repository
+		return err
+	}
+	fmt.Printf("wrote %s (%d assignments, %d bytes)\n", bin, len(entries), len(b))
+	return os.Rename(bin+".tmp", bin)
+}
+
+func run(out, bin, dir string) error {
 	entries := map[string]string{}
 	for _, r := range registries {
 		rc, err := open(r.name, r.url, dir)
@@ -76,7 +126,10 @@ func run(out, dir string) error {
 		return err
 	}
 	fmt.Printf("wrote %s (%d assignments)\n", out, len(keys))
-	return os.Rename(tmp, out)
+	if err := os.Rename(tmp, out); err != nil {
+		return err
+	}
+	return writeTable(bin, entries)
 }
 
 func open(name, url, dir string) (io.ReadCloser, error) {

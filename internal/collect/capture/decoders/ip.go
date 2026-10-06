@@ -69,7 +69,7 @@ func (f *frame) udp(src netip.Addr, b []byte) {
 	payload := b[8:]
 	switch {
 	case f.p.DHCP && src.Is4() && (sport == PortDHCPClient && dport == PortDHCPServer || sport == PortDHCPServer && dport == PortDHCPClient):
-		f.dhcp(payload)
+		f.dhcp(src, payload)
 	case f.p.MDNS && sport == PortMDNS:
 		f.mdns(src, payload)
 	case f.p.DNS && sport == PortDNS:

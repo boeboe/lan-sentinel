@@ -2,6 +2,7 @@ package decoders
 
 import (
 	"fmt"
+	"net/netip"
 	"slices"
 	"strings"
 	"testing"
@@ -81,9 +82,48 @@ func TestDHCPOptions(t *testing.T) {
 	b = slices.Clone(b)
 	b[0] = 1 // BOOTREQUEST carrying an ACK
 	f := &frame{p: All, time: t0, iface: "eth1"}
-	f.dhcp(b)
+	f.dhcp(netip.MustParseAddr("10.0.0.2"), b)
 	if len(f.out) != 0 {
 		t.Errorf("mismatched op accepted: %v", summaries(f.out))
+	}
+	b[0] = 3 // neither request nor reply
+	f.dhcp(netip.MustParseAddr("10.0.0.2"), b)
+	d := frames.DHCP{Type: layers.DHCPMsgTypeDiscover, Client: hmi}.Frame()[14+20+8:]
+	d = slices.Clone(d)
+	d[0] = 3
+	f.dhcp(netip.Addr{}, d)
+	if len(f.out) != 0 {
+		t.Errorf("unknown op accepted: %v", summaries(f.out))
+	}
+	// A reply in a frame without a unicast source reports only the client.
+	f = &frame{p: All, time: t0, iface: "eth1"}
+	f.dhcp(netip.MustParseAddr("10.0.0.2"), frames.DHCP{Type: layers.DHCPMsgTypeOffer, Client: hmi, Server: server, ServerIP: "10.0.0.2"}.Frame()[14+20+8:])
+	if got := summaries(f.out); len(got) != 1 || !strings.HasPrefix(got[0], "passive_dhcp mac=") {
+		t.Errorf("reply without a sender MAC = %v", got)
+	}
+}
+
+func TestDHCPOptionValues(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		got  string
+		want string
+	}{
+		{"address list", dhcpAddrList([]byte{10, 0, 0, 1, 10, 0, 0, 2}), "10.0.0.1,10.0.0.2"},
+		{"address list not a multiple of 4", dhcpAddrList([]byte{10, 0, 0, 1, 10}), ""},
+		{"empty address list", dhcpAddrList(nil), ""},
+		{"long address list is capped", dhcpAddrList(make([]byte, 4*(maxAddrList+3))), strings.TrimSuffix(strings.Repeat("0.0.0.0,", maxAddrList), ",")},
+		{"lease", dhcpLease([]byte{0, 0, 0x0e, 0x10}), "3600"},
+		{"infinite lease", dhcpLease([]byte{0xff, 0xff, 0xff, 0xff}), "infinite"},
+		{"malformed lease", dhcpLease([]byte{0, 1}), ""},
+		{"server identifier", dhcpAddr([]byte{10, 0, 0, 1}).String(), "10.0.0.1"},
+		{"short server identifier", fmt.Sprint(dhcpAddr([]byte{10, 0, 1}).IsValid()), "false"},
+		{"unspecified server identifier", fmt.Sprint(dhcpAddr([]byte{0, 0, 0, 0}).IsValid()), "false"},
+		{"multicast server identifier", fmt.Sprint(dhcpAddr([]byte{224, 0, 0, 1}).IsValid()), "false"},
+	} {
+		if tt.got != tt.want {
+			t.Errorf("%s = %q, want %q", tt.name, tt.got, tt.want)
+		}
 	}
 }
 

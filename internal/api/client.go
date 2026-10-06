@@ -311,6 +311,12 @@ func (c *Client) Services(ctx context.Context, f store.ServiceFilter) ([]store.S
 	return out, c.get(ctx, "/v1/services", url.Values(values{}.int("port", f.Port).str("state", f.State).str("interface", f.Interface)), &out)
 }
 
+// DHCPServers lists the DHCP servers seen.
+func (c *Client) DHCPServers(ctx context.Context, f store.DHCPServerFilter) ([]store.DHCPServer, error) {
+	var out []store.DHCPServer
+	return out, c.get(ctx, "/v1/dhcp/servers", url.Values(values{}.str("interface", f.Interface).str("status", f.Status)), &out)
+}
+
 // DBInfo describes the database.
 func (c *Client) DBInfo(ctx context.Context) (store.DBInfo, error) {
 	var info store.DBInfo

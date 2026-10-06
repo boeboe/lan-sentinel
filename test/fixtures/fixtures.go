@@ -34,6 +34,7 @@ var (
 	HMI    = frames.MAC("00:0e:8c:11:22:33")
 	Server = frames.MAC("00:15:5d:00:00:02")
 	Switch = frames.MAC("00:1e:c9:00:00:01")
+	Rogue  = frames.MAC("02:00:00:00:00:66") // a laptop running a DHCP server
 )
 
 // SiteAPackets is a site on 192.168.110.0/24 seen from a switch port over
@@ -42,11 +43,14 @@ var (
 // over the old address, and a duplicate IP raised by gratuitous ARP and
 // resolved by the next DHCP lease; plus names from mDNS, DHCP, DNS PTR and
 // LLDP, a repeated frame within the refresh interval and IPv6 traffic that
-// the default configuration ignores.
+// the default configuration ignores. The DHCP server (192.168.110.2) adds a
+// DNS server to what it advertises in its last lease, and a rogue server
+// (192.168.110.66) answers the HMI once.
 func SiteAPackets() []Packet {
 	at := func(d time.Duration, f []byte) Packet { return Packet{SiteA.Add(d), f} }
-	ack := func(client []byte, ip string) []byte {
-		return frames.DHCP{Type: layers.DHCPMsgTypeAck, Client: client, YourIP: ip, Server: Server, ServerIP: "192.168.110.2"}.Frame()
+	ack := func(client []byte, ip string, dns ...string) []byte {
+		return frames.DHCP{Type: layers.DHCPMsgTypeAck, Client: client, YourIP: ip, Server: Server, ServerIP: "192.168.110.2",
+			ServerID: "192.168.110.2", Router: []string{"192.168.110.1"}, DNS: dns, SubnetMask: "255.255.255.0", LeaseSeconds: 3600}.Frame()
 	}
 	const s, m, h = time.Second, time.Minute, time.Hour
 	return []Packet{
@@ -62,14 +66,16 @@ func SiteAPackets() []Packet {
 		at(10*m+1*s, frames.DHCP{Type: layers.DHCPMsgTypeDiscover, Client: HMI, Hostname: "HMI-LINE3",
 			ClientID: append([]byte{1}, HMI...), ParamRequest: []byte{1, 3, 6, 15, 31, 33, 43, 44, 46, 47, 119, 121, 249, 252},
 			VendorClass: "MSFT 5.0"}.Frame()),
-		at(10*m+2*s, ack(HMI, "192.168.110.20")),
+		at(10*m+2*s, ack(HMI, "192.168.110.20", "192.168.110.2")),
 		at(10*m+3*s, frames.UDP4(Server, HMI, "192.168.110.2", "192.168.110.20", 53, 49152, frames.DNSResponse(
 			[]layers.DNSResourceRecord{frames.PTR("20.110.168.192.in-addr.arpa", "hmi-line3.plant.example.")}, nil))),
-		at(1*h, ack(PLCA, "192.168.110.51")),
+		at(1*h, ack(PLCA, "192.168.110.51", "192.168.110.2")),
 		at(2*h, frames.ARP(layers.ARPReply, PLCB, "192.168.110.50", Server, "192.168.110.2")),
+		at(2*h+30*m, frames.DHCP{Type: layers.DHCPMsgTypeOffer, Client: HMI, YourIP: "192.168.110.200", Server: Rogue,
+			ServerIP: "192.168.110.66", ServerID: "192.168.110.66", Router: []string{"192.168.110.66"}, SubnetMask: "255.255.255.0"}.Frame()),
 		at(2*h+50*m, frames.ARP(layers.ARPRequest, PLCA, "192.168.110.51", frames.MAC("00:00:00:00:00:00"), "192.168.110.2")),
 		at(3*h, frames.ARP(layers.ARPRequest, PLCC, "192.168.110.51", frames.Broadcast, "192.168.110.51")),
-		at(3*h+30*m, ack(PLCA, "192.168.110.52")),
+		at(3*h+30*m, ack(PLCA, "192.168.110.52", "192.168.110.2", "192.168.110.4")),
 		at(3*h+30*m+1*s, frames.NeighborAdvertisement(PLCA, "fe80::21b:1bff:feaa:bb01", "fe80::21b:1bff:feaa:bb01", 0x20)),
 		at(4*h, frames.ICMPv4Echo(HMI, Server, "192.168.110.20", "192.168.110.2")),
 		at(4*h+30*s, frames.ICMPv4Echo(HMI, Server, "192.168.110.20", "192.168.110.2")), // within the refresh interval

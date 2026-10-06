@@ -156,7 +156,7 @@ func (a *app) newRoot() *cobra.Command {
 	f.BoolVar(&a.g.quiet, "quiet", false, "minimal output; rely on the exit code")
 
 	root.AddCommand(a.versionCmd(), a.configCmd(), a.daemonCmd(), a.hostsCmd(), a.observationsCmd(), a.eventsCmd(),
-		a.servicesCmd(), a.interfacesCmd(), a.watchCmd(), a.dbCmd(), a.activeCmd(), a.scanCmd())
+		a.servicesCmd(), a.dhcpCmd(), a.interfacesCmd(), a.watchCmd(), a.dbCmd(), a.activeCmd(), a.scanCmd())
 	return root
 }
 

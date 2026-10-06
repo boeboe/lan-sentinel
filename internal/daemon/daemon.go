@@ -215,6 +215,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 
 	d.notify("ready", d.notifier.Ready)
 	d.notify("status", func() error { return d.notifier.Status("running") })
+	d.log.Info("active discovery: " + d.activeText(d.cfg.Load()))
 	d.log.Info("lan-sentinel running")
 	close(d.ready)
 
@@ -311,26 +312,26 @@ var restartOnly = []struct {
 }
 
 // interfaceShape is the restart-only part of the interfaces: all but each
-// interface's active settings, which a reload applies.
+// interface's active and dhcp settings, which a reload applies.
 func interfaceShape(ics []config.InterfaceConfig) []config.InterfaceConfig {
 	out := slices.Clone(ics)
 	for i := range out {
-		out[i].Active = config.InterfaceActive{}
+		out[i].Active, out[i].DHCP = config.InterfaceActive{}, config.InterfaceDHCP{}
 	}
 	return out
 }
 
-// keepInterfaces keeps the running interfaces, each with its active
-// settings from the new file if the file still has it.
+// keepInterfaces keeps the running interfaces, each with its active and
+// dhcp settings from the new file if the file still has it.
 func keepInterfaces(old, next *config.Config) {
-	active := make(map[string]config.InterfaceActive, len(next.Interfaces))
+	byName := make(map[string]config.InterfaceConfig, len(next.Interfaces))
 	for _, ic := range next.Interfaces {
-		active[ic.Name] = ic.Active
+		byName[ic.Name] = ic
 	}
 	kept := slices.Clone(old.Interfaces)
 	for i := range kept {
-		if a, ok := active[kept[i].Name]; ok {
-			kept[i].Active = a
+		if ic, ok := byName[kept[i].Name]; ok {
+			kept[i].Active, kept[i].DHCP = ic.Active, ic.DHCP
 		}
 	}
 	next.Interfaces = kept
@@ -343,7 +344,8 @@ func (d *Daemon) ReloadConfig(_ context.Context, actor string) (api.ReloadResult
 }
 
 // reload re-reads the configuration file. Probes (each interface's active
-// settings included), intervals, thresholds and the log level take effect;
+// settings included), DHCP allowlists, intervals, thresholds and the log
+// level take effect;
 // restart-only sections keep their running values and are reported as not
 // applied. A file that does not load or validate, or whose kept running
 // values would not validate with the rest of it, is rejected as a whole and
@@ -402,7 +404,8 @@ func (d *Daemon) reload(actor string) (api.ReloadResult, error) {
 	for i, c := range res.Applied {
 		applied[i] = c.Key
 	}
-	d.log.Info("configuration reloaded", "path", loaded.Path, "actor", actor, "applied", applied, "log_level", next.Logging.Level)
+	d.log.Info("configuration reloaded; active discovery: "+d.activeText(next), "path", loaded.Path, "actor", actor, "applied", applied,
+		"log_level", next.Logging.Level)
 	return res, nil
 }
 
@@ -420,6 +423,19 @@ func (d *Daemon) rejected(actor string, err error) error {
 		d.log.Error("configuration reload failed; keeping the running configuration", "actor", actor, "err", err)
 	}
 	return fmt.Errorf("%w: %w", api.ErrConfigRejected, err)
+}
+
+// activeText says what active discovery runs under cfg, for the log line
+// at start-up and on reload (never per pass).
+func (d *Daemon) activeText(cfg *config.Config) string {
+	if cfg.ReplayMode() {
+		return "off (replay)"
+	}
+	s := config.Summarize(cfg).ActiveText()
+	if s != "off" && d.sw != nil && d.sw.Disabled() {
+		s = "stopped by the kill switch (" + s + ")"
+	}
+	return s
 }
 
 // Config returns the configuration currently in effect.

@@ -1,6 +1,7 @@
 package decoders
 
 import (
+	"net/netip"
 	"testing"
 
 	"github.com/gopacket/gopacket/layers"
@@ -91,9 +92,12 @@ func FuzzDHCP(f *testing.F) {
 	f.Add(frames.DHCP{Type: layers.DHCPMsgTypeDiscover, Client: hmi, Hostname: "HMI-Line3",
 		ClientID: []byte{1, 2, 3}, ParamRequest: []byte{1, 3, 6}, VendorClass: "MSFT 5.0"}.Frame()[14+20+8:])
 	f.Add(ackFrame()[14+20+8:])
+	f.Add(frames.DHCP{Type: layers.DHCPMsgTypeOffer, Client: hmi, YourIP: "192.168.110.21", Server: router, ServerIP: "192.168.110.1",
+		ServerID: "10.1.0.5", Relay: "192.168.110.1", RelayAgent: []byte{1, 2, 'p', '7'}, Router: []string{"192.168.110.1"},
+		DNS: []string{"10.1.0.5"}, SubnetMask: "255.255.255.0", LeaseSeconds: 3600}.Frame()[14+20+8:])
 	f.Fuzz(func(t *testing.T, b []byte) {
 		fr := newFrame()
-		fr.dhcp(b)
+		fr.dhcp(netip.MustParseAddr("192.168.110.2"), b)
 		checkFrame(t, fr)
 	})
 }

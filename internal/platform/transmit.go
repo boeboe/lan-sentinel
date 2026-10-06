@@ -24,7 +24,31 @@ const pollPeriod = 200 * time.Millisecond
 // sockets for ICMP. All of it needs CAP_NET_RAW at most.
 type socketTransmitter struct{}
 
-func (socketTransmitter) Backend() string { return "socket" }
+// Backend implements Transmitter: afpacket for frames, a ping socket or a
+// raw socket for ICMP (whichever ICMPConn gets), socket for TCP and UDP.
+func (socketTransmitter) Backend(transport string) string {
+	switch transport {
+	case TransportFrames:
+		return "afpacket"
+	case TransportICMP:
+		if pingSockets() {
+			return "ping socket"
+		}
+		return "raw socket"
+	}
+	return "socket"
+}
+
+// pingSockets reports whether this process may open ICMP ping sockets
+// (net.ipv4.ping_group_range), as ICMPConn finds out; it is checked once.
+var pingSockets = sync.OnceValue(func() bool {
+	fd, err := unix.Socket(unix.AF_INET, unix.SOCK_DGRAM|unix.SOCK_CLOEXEC, unix.IPPROTO_ICMP)
+	if err != nil {
+		return false
+	}
+	_ = unix.Close(fd)
+	return true
+})
 
 func htons(v uint16) uint16 { return v<<8 | v>>8 }
 

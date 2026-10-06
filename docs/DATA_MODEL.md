@@ -66,16 +66,18 @@ The capture decoders put protocol detail that is not identity evidence into `met
 | --- | --- |
 | `passive_arp` | `arp`: `request`, `reply`, `gratuitous` (sender IP = target IP) or `probe` (sender IP 0.0.0.0, with `target`, the address probed) |
 | `passive_ndp` | `ndp`: `router_solicitation`, `router_advertisement`, `neighbor_solicitation`, `neighbor_advertisement` (with `flags`: `router`, `solicited`, `override`) or `dad` (from `::`, with `target`) |
-| `passive_dhcp` | `dhcp` (message type), `client_id` (option 61, hex), `parameter_request_list` (option 55), `vendor_class` (option 60) |
+| `passive_dhcp` | `dhcp` (message type), `client_id` (option 61, hex), `parameter_request_list` (option 55), `vendor_class` (option 60); on a server's reply also `server_id` (option 54) |
+| `passive_dhcp_lease` | as `passive_dhcp` (`dhcp` is `ack`), with `server_id` and `lease_seconds` (option 51, `infinite` for 0xffffffff) |
+| `passive_dhcp_server` | `dhcp` (`offer`, `ack` or `nak`), `server_id` (option 54; absent when missing or not a unicast IPv4 address: the identity is unknown), `relay` (`giaddr`, when relayed), `relay_agent` (`true` when option 82 is present), `router` and `dns` (options 3 and 6, comma-separated), `subnet_mask` (option 1), `config_only` (`true` on an ACK with `yiaddr` 0, the answer to an INFORM); a NAK advertises nothing |
 | `passive_mdns` | `services` (service types such as `_http._tcp`), `service_ports` (`_http._tcp=80`), `txt` |
 | `passive_lldp` | `chassis_id`, `port_id`, `port_description`, `system_description`, `capabilities`, `management_ip` |
 | `udp_probe` | `probe` (`ntp`, `enip`); service details: NTP `version`, `stratum`, `leap`, `reference_id`, `root_delay_ms`, `root_dispersion_ms` (and `kiss_code` for a kiss-o'-death reply); EtherNet/IP `vendor_id`, `device_type`, `product_code`, `revision`, `status`, `serial_number`, `product_name`, `state`; identity claims under `id.` (`id.product`, `id.device_type`), §5.5 |
 
 The probes emit `arp_scan` (MAC and IP of an ARP reply to a sweep request), `icmp_scan` (IP of an echo reply), `tcp_connect` (IP and `service` with the connect result: OPEN, REFUSED, TIMEOUT, UNREACHABLE or UNKNOWN) and `udp_probe` (IP, `service` `udp/<port>` OPEN and `meta`, only when a protocol-specific probe got an answer; no answer emits nothing).
 
-Which address an observation carries: the ARP sender address (none for a probe); the source address of an NDP message, or the target of an advertisement; `yiaddr` of a DHCP ACK or `ciaddr` of a renewing REQUEST or an INFORM (none for DISCOVER, OFFER, DECLINE, RELEASE, NAK); each A/AAAA address of an mDNS response; the address of a DNS PTR answer; the IPv4/IPv6 header source for `passive_ipv4`/`passive_ipv6`. LLDP observations carry no address.
+Which address an observation carries: the ARP sender address (none for a probe); the source address of an NDP message, or the target of an advertisement; for DHCP, with distinct provenance: `yiaddr` of an ACK as `passive_dhcp_lease` (the server allocated or renewed a lease), `ciaddr` of a REQUEST or an INFORM as `passive_dhcp` (the client claims to use the address, which after an INFORM may be static; neither confirms a lease), none for DISCOVER, OFFER, DECLINE, RELEASE, NAK or the ACK that answers an INFORM, and for a server's reply (`passive_dhcp_server`) the IPv4 source of the frame, the server or the relay that forwarded it; each A/AAAA address of an mDNS response; the address of a DNS PTR answer; the IPv4/IPv6 header source for `passive_ipv4`/`passive_ipv6`. LLDP observations carry no address.
 
-Sources: `passive_arp`, `passive_ipv4`, `passive_ipv6`, `passive_ndp`, `passive_dhcp`, `passive_mdns`, `passive_dns`, `passive_lldp`, `kernel_neighbor`, `arp_scan`, `icmp_scan`, `ndp_probe`, `tcp_connect`, `udp_probe`.
+Sources: `passive_arp`, `passive_ipv4`, `passive_ipv6`, `passive_ndp`, `passive_dhcp`, `passive_dhcp_lease`, `passive_dhcp_server`, `passive_mdns`, `passive_dns`, `passive_lldp`, `kernel_neighbor`, `arp_scan`, `icmp_scan`, `ndp_probe`, `tcp_connect`, `udp_probe`.
 
 Events that are not caused by an observation use one of these internal causes instead of a source: `presence` (presence ticker), `expiry` (binding expiry), `iface_monitor` (interface manager), `operator` (kill switch and operator scans), `integrity_check` (start-up database check).
 
@@ -95,7 +97,7 @@ A binding in effect at T with `T > last_seen` was **unconfirmed** at T: it was t
 
 `hosts` has `first_seen` and `last_seen` (no `ended_at`: hosts are never closed, only their presence changes).
 
-## 4. Schema (`migrations/0001_init.sql`, read-side indexes in `0002_read_indexes.sql`, probe details in `0003_probes.sql`, clock state of events in `0004_clock_sync.sql`)
+## 4. Schema (`migrations/0001_init.sql`, read-side indexes in `0002_read_indexes.sql`, probe details in `0003_probes.sql`, clock state of events in `0004_clock_sync.sql`, DHCP servers and their event types in `0005_dhcp_servers.sql`)
 
 | Table | Columns | Purpose |
 | --- | --- | --- |
@@ -111,6 +113,7 @@ A binding in effect at T with `T > last_seen` was **unconfirmed** at T: it was t
 | `observation_rollups` | id, hour, context_id, host_id, source, mac, ip, count, first_ts, last_ts | Hourly roll-ups of observations |
 | `events` | id, ts, type, severity, context_id, host_id, related_host_id, old_value, new_value, cause, observation_id, evidence_json, clock_sync | Permanent history |
 | `scans` | id, context_id, kind, trigger, started_at, finished_at, targets, results_json | Operator scans, one row per interface: `kind` the probes (`arp,tcp/502`), `trigger` `operator` (periodic passes are not recorded), `targets` the larger of the sweep and known-host counts, `results_json` `{counts: {probe: {result: n}}, responders, seconds, aborted?}`. A scan left unfinished by a crash is closed at the next start (`finished_at` = `started_at`, aborted, with `SCAN_COMPLETED`) |
+| `dhcp_servers` | id, context_id, server_id, relay, mac, ip, host_id, status, config_json, first_seen, last_seen | DHCP servers seen (§5.6): one row per server identifier (option 54, `''` when unknown), relay (`giaddr`, `''` when not relayed) and sender MAC; `ip` the sender's last address, `host_id` the sender's host; `status` `allowed`, `unexpected` or `unchecked` at the last reply; `config_json` the router, DNS servers and subnet mask last advertised |
 | `runtime_state` | key, value, updated_at | Persisted operator state (kill switch, §8) |
 | `schema_migrations` | version, applied_at | Migration tracking |
 
@@ -133,6 +136,7 @@ Every host row carries `context_id`. `names`, `services`, `identifications` and 
 | `context_prefixes` (open) | `UNIQUE(context_id, prefix) WHERE ended_at IS NULL` |
 | `services` | `UNIQUE(host_id, proto, port)` |
 | `address_sources` | `PRIMARY KEY(address_id, source)` |
+| `dhcp_servers` | `UNIQUE(context_id, server_id, relay, mac)` |
 
 `observations.host_id` and `events.observation_id` are soft references without foreign keys, because observations are pruned.
 
@@ -188,7 +192,7 @@ Before the rules: an observation for an interface that is not configured is drop
 
 An IP from an observation is bound to the host only if it is on-link for the context:
 
-- IPv4: inside one of the context's open `context_prefixes`, or the source is `passive_arp`, `arp_scan`, `passive_dhcp` or `kernel_neighbor` (L2 evidence; out-of-subnet ARP from misconfigured devices is still recorded).
+- IPv4: inside one of the context's open `context_prefixes`, or the source is `passive_arp`, `arp_scan`, `passive_dhcp`, `passive_dhcp_lease` or `kernel_neighbor` (L2 evidence; out-of-subnet ARP from misconfigured devices is still recorded). `passive_dhcp_server` binds like an IP source.
 - IPv6: link-local, or inside an open prefix, or the source is `passive_ndp`, `ndp_probe` or `kernel_neighbor`.
 - `passive_ipv4` / `passive_ipv6` source addresses outside these rules are ignored for binding, because the frame's source MAC is the router's.
 
@@ -228,6 +232,20 @@ A probe result attached to a host upserts `services`. A transition into OPEN emi
 
 A `udp_probe` result also records what the probe learnt, in the generic service and identification model (no protocol-specific host state): the `meta` keys without the `id.` prefix (including `probe`) replace `services.detail_json` of that service; each `id.<field>` key is an identification (`field`, value, source = the probe name, confidence 0.9: the device's own statement) with the details as evidence. A field a probe reports for the first time, or with a new value, emits `VENDOR_IDENTIFIED` (old `field=old value`, new `field=value`); the same value again only refreshes `last_seen`. A `device_type` claim also sets `hosts.device_type`. A probe that gets no answer emits no observation, so it changes nothing: it is never evidence that a host or service is gone.
 
+### 5.6 DHCP servers
+
+DHCP evidence about clients and about servers is kept apart. For a client, a server's ACK with a `yiaddr` is a lease the server allocated or renewed (`passive_dhcp_lease`, with lease time and server identifier); a REQUEST's or INFORM's `ciaddr` is only the client's claim (`passive_dhcp`). Both bind the address like any L2 evidence (§5.2), and `address_sources` records which one confirmed it, so a server-confirmed lease is never confused with a claim. Lease state is not presence: a valid lease does not keep a host present and an expired one does not make it missing. Routine lease ACKs produce no events; `IP_ADDED` and `IP_CHANGED` announce assignments.
+
+Every server reply (OFFER, ACK, NAK) is also a `passive_dhcp_server` observation of its sender: the frame's source MAC and IP, which belong to the relay when the reply was relayed. It binds that host like any IP source, and updates `dhcp_servers`, keyed by (context, server identifier, relay, sender MAC):
+
+- A server identifier (option 54) seen for the first time on the context emits `DHCP_SERVER_DISCOVERED`. A reply without a valid identifier has an unknown identity; such replies are told apart by sender MAC, and each new one is discovered.
+- A known identifier replying through the same relay (or none) from another sender MAC opens a row for that sender, keeps the earlier one, and emits `DHCP_SERVER_MAC_CHANGED` (a replaced server, or another device using its address). Through another relay it is the same server reached another way: a row, no event.
+- `status` is the allowlist verdict, recomputed at every reply. With `interfaces[].dhcp.servers` set, an identifier on the list is `allowed`; any other, and every unknown identity, is `unexpected`; an empty list expects no server at all. Without the key, servers are `unchecked`: reported, never declared authorised. A row becoming `unexpected` (a new one included) emits `DHCP_SERVER_UNEXPECTED`; leaving it emits nothing. A reload changes the allowlist at each server's next reply. The allowlist matches advertised identifiers and authenticates nothing: another device can claim an allowed address, which `DHCP_SERVER_MAC_CHANGED` exposes when it sends from another MAC.
+- Offers and lease ACKs (not NAKs, not the ACK to an INFORM) carry the configuration the server advertises. For each of `router`, `dns` and `subnet_mask` the reply carries, a value other than the last one recorded for the row emits one `DHCP_CONFIG_CHANGED` with every changed setting. A setting a reply leaves out is no change: servers send only the options a client asked for (option 55).
+- An observation older than the row's `last_seen` changes nothing.
+
+Visibility limits what this can prove. On a switched port the box sees broadcast replies and its own exchanges, but replies unicast to other clients (common for renewals) only on a mirror port; promiscuous mode cannot make a switch forward them. Not seeing a server is never evidence that there is none. Only DHCPv4 is decoded; LAN Sentinel never sends DHCP messages.
+
 ## 6. Presence
 
 | State | Default threshold (time since `hosts.last_seen`) |
@@ -266,6 +284,10 @@ Thresholds are configurable (`presence:`). Transitions into MISSING emit `HOST_D
 | `INTERFACE_DOWN` | `interface-down` | warning | Monitored interface went down |
 | `SUBNET_CHANGED` | `subnet-changed` | notice | A `context_prefixes` binding opened or closed |
 | `DATABASE_RECREATED` | `db-recreated` | warning | The database failed the start-up integrity check; it was quarantined and this new one created (FR-ST-4) |
+| `DHCP_SERVER_DISCOVERED` | `dhcp-server-discovered` | notice | A DHCP server identity replied on the interface for the first time (§5.6) |
+| `DHCP_SERVER_UNEXPECTED` | `dhcp-server-unexpected` | warning | A DHCP server outside the interface's allowlist, or of unknown identity while an allowlist is set, replied |
+| `DHCP_SERVER_MAC_CHANGED` | `dhcp-server-mac-changed` | warning | A known DHCP server identity replied from another sender MAC |
+| `DHCP_CONFIG_CHANGED` | `dhcp-config-changed` | notice | A DHCP server advertised another router, DNS servers or subnet mask |
 
 ### Values
 
@@ -288,6 +310,10 @@ Thresholds are configurable (`presence:`). Transitions into MISSING emit `HOST_D
 | `INTERFACE_*` | — | `up` / `down` | no host |
 | `SUBNET_CHANGED` | prefix closed | prefix opened | no host |
 | `DATABASE_RECREATED` | — | quarantined file (`<path>.corrupt-<UTC time>`) | no host or context; evidence `reason` = the integrity-check failure; always the new database's first event |
+| `DHCP_SERVER_DISCOVERED` | — | server identity: identifier or `unknown`, plus ` via <relay>` when relayed | `host_id` = the sender (server or relay) |
+| `DHCP_SERVER_UNEXPECTED` | previous status (`allowed`, `unchecked`; — for a new server) | server identity | `host_id` = the sender |
+| `DHCP_SERVER_MAC_CHANGED` | previous sender MAC | new sender MAC | `host_id` = the new sender, `related_host_id` = the previous one |
+| `DHCP_CONFIG_CHANGED` | changed settings before (`dns=… router=…`) | the same settings now | `host_id` = the sender |
 
 ### Provenance
 

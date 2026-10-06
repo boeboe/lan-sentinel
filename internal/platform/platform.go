@@ -157,7 +157,9 @@ type EchoConn interface {
 // Transmitter sends probes. Every probe leaves through the interface it was
 // scheduled for, and only CAP_NET_RAW is needed.
 type Transmitter interface {
-	Backend() string
+	// Backend names the kernel facility behind a transport (TransportFrames,
+	// ...), for the collector registry: e.g. afpacket, ping socket.
+	Backend(transport string) string
 	// Frames opens a frame connection on iface for one EtherType.
 	Frames(ctx context.Context, iface string, etherType uint16) (FrameConn, error)
 	// DialTCP makes a plain connect() bound to iface (SO_BINDTODEVICE).
@@ -169,6 +171,14 @@ type Transmitter interface {
 	// ICMPConn opens an IPv4 ICMP echo socket bound to iface.
 	ICMPConn(ctx context.Context, iface string) (EchoConn, error)
 }
+
+// Transports of a Transmitter, for Backend.
+const (
+	TransportFrames = "frames" // Frames
+	TransportICMP   = "icmp"   // ICMPConn
+	TransportTCP    = "tcp"    // DialTCP
+	TransportUDP    = "udp"    // DialUDP
+)
 
 // Backends is the set of platform implementations.
 type Backends struct {

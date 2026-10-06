@@ -4,7 +4,10 @@
 // validation. See docs/ARCHITECTURE.md §6.
 package config
 
-import "net/netip"
+import (
+	"net/netip"
+	"slices"
+)
 
 // Config is the complete configuration.
 type Config struct {
@@ -28,6 +31,7 @@ type InterfaceConfig struct {
 	Name    string           `yaml:"name" json:"name"`
 	Passive InterfacePassive `yaml:"passive" json:"passive"`
 	Active  InterfaceActive  `yaml:"active" json:"active"`
+	DHCP    InterfaceDHCP    `yaml:"dhcp" json:"dhcp"`
 	// Prefixes and Replay are only used for replay interfaces, whose subnets
 	// cannot come from the interface manager.
 	Prefixes []netip.Prefix   `yaml:"prefixes,omitempty" json:"prefixes,omitempty"`
@@ -63,6 +67,25 @@ type InterfaceActive struct {
 	Enabled  bool           `yaml:"enabled" json:"enabled"`
 	Networks []netip.Prefix `yaml:"networks,omitempty" json:"networks,omitempty"`
 	Exclude  []AddrOrPrefix `yaml:"exclude,omitempty" json:"exclude,omitempty"`
+}
+
+// InterfaceDHCP configures DHCP server monitoring on one interface
+// (docs/DATA_MODEL.md §5.6).
+type InterfaceDHCP struct {
+	// Servers lists the DHCP server identifiers (option 54) allowed on the
+	// interface; a reply from any other, or without a valid identifier, is
+	// unexpected. Unset: no allowlist, servers are reported without a
+	// verdict. Empty: no DHCP server is expected.
+	Servers *[]netip.Addr `yaml:"servers,omitempty" json:"servers,omitempty"`
+}
+
+// Checked reports whether the interface has an allowlist.
+func (d InterfaceDHCP) Checked() bool { return d.Servers != nil }
+
+// Allowed reports whether a server identifier is on the allowlist; an
+// invalid (unknown) identifier never is.
+func (d InterfaceDHCP) Allowed(serverID netip.Addr) bool {
+	return d.Servers != nil && serverID.IsValid() && slices.Contains(*d.Servers, serverID)
 }
 
 // InterfaceReplay feeds an interface from a recorded file.

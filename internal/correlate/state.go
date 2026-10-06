@@ -120,7 +120,11 @@ type state struct {
 	holders      map[ipKey][]*binding       // open bindings per IP
 	ipLastChange map[ipKey]time.Time
 
+	dhcpServers map[dhcpKey]*dhcpServer // §5.6
+
 	nextContextID, nextPrefixID, nextAddressID, nextObservationID, nextServiceID, nextNameID, nextScanID int64
+
+	nextDHCPServerID int64 // dhcp_servers
 
 	openScans []openScan // left unfinished by the previous run
 }
@@ -134,7 +138,7 @@ func newState() *state {
 	return &state{
 		contexts: map[string]*netContext{}, contextsByID: map[int64]*netContext{},
 		hosts: map[int64]map[string]*host{}, hostsByMAC: map[string][]*host{},
-		holders: map[ipKey][]*binding{}, ipLastChange: map[ipKey]time.Time{},
+		holders: map[ipKey][]*binding{}, ipLastChange: map[ipKey]time.Time{}, dhcpServers: map[dhcpKey]*dhcpServer{},
 	}
 }
 
@@ -354,6 +358,11 @@ func (s *state) load(ctx context.Context, tx *sql.Tx) error {
 		}
 		return nil
 	})
+	if err == nil {
+		if err = s.loadDHCPServers(ctx, tx); err != nil {
+			err = fmt.Errorf("load state: %w", err)
+		}
+	}
 	for _, c := range []struct {
 		table string
 		dst   *int64

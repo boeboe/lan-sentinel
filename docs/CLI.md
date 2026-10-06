@@ -44,7 +44,7 @@ The daemon runs as root with `UMask=0027` and the data directory is `0750 root:r
 | Command | Purpose | Key options | Phase |
 | --- | --- | --- | --- |
 | `daemon run` | Run the service in the foreground | `--config`, `--log-level` | 0 |
-| `daemon status` | Version, platform, PID, uptime, DB health, interfaces, host counts, kill-switch state, clock synchronisation, last scan, and per-interface collector state (`running`/`disabled`/`unsupported`/`failed` + error) | `-o json`; `--quiet` exit codes | 3 |
+| `daemon status` | Version, platform, PID, uptime, DB health, interfaces, host counts, kill-switch state, clock synchronisation, last scan, and per-interface collector state (`running`/`disabled`/`unsupported`/`failed`, backend or error); for each probe its last periodic pass, e.g. `arp running afpacket last pass 2m ago: 253 swept, 14 replied (26 s)` (blocked probes and `cut short` when they apply). Passes are shown here only, never logged | `-o json`; `--quiet` exit codes | 3 |
 | `hosts list` | Inventory: MAC, IP, hostname, vendor, interface, presence, last seen. `--active`: live hosts (ACTIVE or RECENT); `--stale`: the others (STALE or MISSING); `--port`: an OPEN service on that port; `--vendor`: substring of vendor or manufacturer | `--interface`, `--active`, `--stale`, `--vendor`, `--port`, `--seen-within` | 3 |
 | `hosts show <host-id>` | Full record of one host | | 3 |
 | `hosts find <query>` | Current or point-in-time holder(s) with addresses, names and services and their sources; exit 1 when nothing matches | `--interface`, `--at <time>`, `--ip`/`--mac`/`--hostname`/`--id` | 3 |
@@ -53,6 +53,7 @@ The daemon runs as root with `UMask=0027` and the data directory is `0750 root:r
 | `observations list` | Raw observations within retention; hourly roll-ups with `--rollups` | `--host`, `--interface`, `--mac`, `--ip`, `--source`, `--unbound`, `--since`, `--until`, `--limit`, `--rollups` | 3 |
 | `events list` | Events on this box, the latest `--limit` (default 1000) in time order | `--since`, `--until`, `--type`, `--interface`, `--mac`, `--ip`, `--limit` | 3 |
 | `services list` | Probe results per host and port | `--port`, `--state`, `--interface` | 3 (data from 4) |
+| `dhcp servers` | DHCP servers seen: identity (option 54), relay, sender MAC and IP, allowlist verdict, advertised router, DNS servers and mask, last seen | `--interface`, `--status` | 5 |
 | `interfaces list` | State, MAC, current prefixes, passive/active per interface | | 3 |
 | `watch` | Live event stream | `--interface`, `--type`, `--port` | 3 |
 | `active disable` | Kill switch: stop all active probing now; persists across restarts | `--reason TEXT` (required) | 4 |
@@ -135,9 +136,13 @@ Lists (`hosts list`, `hosts history`, `observations list`, `events list`, `servi
 
 Online, the daemon answers from what its single writer has committed, at most one 5-second batch behind; `watch` is live. Offline and online answers come from the same queries, and each command is one snapshot (`hosts evidence` included). `--mac` and `--ip` filters accept any written form. A socket the caller may not open is exit 2 with a hint to run with `sudo` (the daemon may be running); no daemon on the socket is exit 3.
 
+### `dhcp servers`
+
+One row per DHCP server identity, relay and sender seen in a reply on an interface (`DATA_MODEL.md` §5.6): `SERVER ID` is option 54 (`unknown` when a reply had none or an invalid one), `RELAY` the `giaddr` of relayed replies, `MAC` and `IP` the sender (the server, or the relay), `STATUS` the allowlist verdict at the last reply (`allowed`, `unexpected`, or `unchecked` when the interface has no `dhcp.servers`), then what the server last advertised. Known identities come first, the latest sender of each first. The allowlist matches the advertised identifier and does not authenticate a server; two senders for one identity show as two rows (`DHCP_SERVER_MAC_CHANGED`). On a switched port many replies are unicast to the client and never seen, so an empty list does not prove there is no DHCP server. Works offline; all four output formats.
+
 ### Event type names
 
-`--type` takes the kebab-case CLI names from `DATA_MODEL.md` §7, e.g. `ip-changed`, `duplicate-ip`, `mac-moved`. Repeatable.
+`--type` takes the kebab-case CLI names from `DATA_MODEL.md` §7, e.g. `ip-changed`, `duplicate-ip`, `mac-moved`, `dhcp-server-unexpected`. Repeatable.
 
 ### Exit codes
 
@@ -151,11 +156,11 @@ Online, the daemon answers from what its single writer has committed, at most on
 
 ### `config validate` output
 
-Prints interfaces with passive/active mode, active scan networks with the number of addresses a sweep covers and how long one takes at the ARP rate, enabled probes and ports, per-protocol budgets, the expert override `active.max_sweep_targets` when it is above 65,536, and the estimated maximum probe rate. Exit 0 if valid, 2 with per-key errors otherwise.
+Prints interfaces with passive/active mode, the DHCP server allowlist (`no allowlist`, `none expected`, or the identifiers), active scan networks with the number of addresses a sweep covers and how long one takes at the ARP rate, enabled probes and ports, per-protocol budgets, the expert override `active.max_sweep_targets` when it is above 65,536, and the estimated maximum probe rate. Exit 0 if valid, 2 with per-key errors otherwise.
 
 ### `config reload`
 
-Makes the daemon re-read the configuration file it was started with, exactly as `systemctl reload lan-sentinel` (SIGHUP) does, through `POST /v1/config/reload` (`API.md`); `--config` does not change which file. The reload is all or nothing: a file that does not load or validate changes nothing, and the command prints the per-key errors and exits 2. Otherwise it prints the keys whose new values took effect (key, old, new) and the changed keys that need a restart (key, running value, value in the file), which keep their running values; with neither, `No changes.` Exit 0 in both cases. What a reload applies and what needs a restart is FR-CFG-3: each interface's `active` settings (enabling or disabling active discovery, networks, excludes), the probes and their intervals, budgets, presence thresholds, identity settings and the log level apply at once; adding, removing or renaming interfaces, their passive settings, `passive`, `storage`, `api`, `metrics`, `logging.format` and `replay` need a restart. Keys are named as in `config show --sources`. The daemon logs the reload with the calling Unix user and the applied keys. Check the file first with `config validate`, and preview a newly enabled interface's sweep with `scan plan`. Needs the daemon; `-o json` prints `ReloadResult`.
+Makes the daemon re-read the configuration file it was started with, exactly as `systemctl reload lan-sentinel` (SIGHUP) does, through `POST /v1/config/reload` (`API.md`); `--config` does not change which file. The reload is all or nothing: a file that does not load or validate changes nothing, and the command prints the per-key errors and exits 2. Otherwise it prints the keys whose new values took effect (key, old, new) and the changed keys that need a restart (key, running value, value in the file), which keep their running values; with neither, `No changes.` Exit 0 in both cases. What a reload applies and what needs a restart is FR-CFG-3: each interface's `active` settings (enabling or disabling active discovery, networks, excludes) and `dhcp` allowlist, the probes and their intervals, budgets, presence thresholds, identity settings and the log level apply at once; adding, removing or renaming interfaces, their passive settings, `passive`, `storage`, `api`, `metrics`, `logging.format` and `replay` need a restart. Keys are named as in `config show --sources`. The daemon logs the reload with the calling Unix user and the applied keys; its message says what active discovery now runs (`configuration reloaded; active discovery: arp every 5m on eth0 (192.168.0.0/24)`). Check the file first with `config validate`, and preview a newly enabled interface's sweep with `scan plan`. Needs the daemon; `-o json` prints `ReloadResult`.
 
 ### `config show --sources`
 

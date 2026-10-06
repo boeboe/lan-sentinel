@@ -58,7 +58,7 @@ Deferred checks that need real hardware or data from real sites. Each closes a p
 - [x] Schema constraints and partial unique indexes from `DATA_MODEL.md` §4 (in the phase 0 migration)
 - [x] Presence state machine with configurable thresholds; `HOST_DISAPPEARED`, `HOST_REAPPEARED`
 - [x] Event engine writing to `events` (with `cause` and `evidence_json` snapshot) and journald
-- [x] OUI vendor lookup (IEEE MA-L/MA-M/MA-S, longest prefix) with a generator (`make oui`) that builds a compact embedded table; optional override file; locally administered flag
+- [x] OUI vendor lookup (IEEE MA-L/MA-M/MA-S, longest prefix) with a generator (`make oui`) that builds a compact embedded table; optional override file; locally administered flag — *since 6 Oct 2026 a precomputed table searched in place (`internal/ouitable`): no parsing at start-up, which took 6 s on a CM4 under `CPUQuota=20%`*
 
 **Exit:** `make run-dev` replays the golden stream and the resulting database matches the expected bindings; in the Docker test network and on a test LAN, hosts appear from the kernel neighbour table alone, with vendor and correct per-interface scoping; the golden scenario passes at correlator level except the conflict steps (phase 2). — *Status: replay, golden scenario (including the conflict steps, implemented early) and Docker test network met; real test LAN deferred, tracked under Open hardware and field checks.*
 
@@ -111,6 +111,7 @@ Deferred checks that need real hardware or data from real sites. Each closes a p
 - [ ] Capability audit on the boards; `systemd-analyze security` exposure ≤ 2.5 on the target systemd versions — *containers: `make test-systemd` on Debian 11, 12 and 13 (systemd 247, 252, 257) passes with exposure 2.3 (root, from 6 Oct 2026), capcheck (now with the clock read) under the unit's sandbox; on a Raspberry Pi CM4 with Debian 11 the same (6 Oct 2026); the other boards tracked under Open hardware and field checks*
 - [x] Clock-jump handling: mark events written before NTP sync — *a read-only `adjtimex` of the kernel's `STA_UNSYNC` (works with chrony, needs no capability); each event records `synced`, `unsynced` or `unknown` (migration 0004); `daemon status` shows the clock; the unit allows `adjtimex` alone of the `@clock` calls (`ProtectClock=` off)*
 - [x] `lan-sentinel config reload` (requested 6 Oct 2026): the daemon re-reads its file on request and answers what took effect and what needs a restart; each interface's `active` settings are reloadable, so active discovery is enabled per site without a restart (`CLI.md`, `API.md`, FR-CFG-3)
+- [x] Passive DHCP server monitoring (requested 6 Oct 2026, FR-PA-3, FR-PA-7): server identities (option 54) per interface with sender, relay and advertised configuration in `dhcp_servers`, an optional per-interface allowlist, `DHCP_SERVER_DISCOVERED`/`UNEXPECTED`/`MAC_CHANGED` and `DHCP_CONFIG_CHANGED`, server-confirmed leases (`passive_dhcp_lease`) kept apart from client claims, `dhcp servers` (CLI, API), `lan_sentinel_dhcp_servers`; covered by the capture scenario (a rogue server, a configuration change) and `make test-net`
 - [ ] Staged fleet rollout (below) — *runbook with checks, upgrade, rollback and what to watch per stage in `deploy/README.md`; the rollout itself is a field task*
 
 **Exit:** v1.0 on the full fleet with active discovery enabled per site.

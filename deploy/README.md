@@ -24,18 +24,21 @@ tar -xzf lan-sentinel-vX.Y.Z-linux-arm64.tar.gz && cd lan-sentinel-vX.Y.Z-linux-
 
 ### 2. Install
 
-From the unpacked directory, as a user with `sudo`. The daemon runs as root, limited by the unit to `CAP_NET_RAW` and a read-only view of the system; it needs no user, group or extra directories beyond these. `make test-systemd` runs exactly this block on Debian 11, 12 and 13.
+From the unpacked directory, as a user with `sudo`. The daemon runs as root, limited by the unit to `CAP_NET_RAW` and a read-only view of the system; it needs no user, group or extra directories beyond these. The same commands upgrade an installed release (see Upgrade and rollback): they replace the binary and the unit, keep an existing `/etc/lan-sentinel/config.yaml`, and restart the daemon, which `enable --now` would not do. `make test-systemd` runs exactly this block on Debian 11, 12 and 13, then again over the running daemon.
 
 ```bash
 sha256sum --check SHA256SUMS
 sudo install -D -m 0755 lan-sentinel /usr/local/bin/lan-sentinel
-sudo install -D -m 0640 config.yaml /etc/lan-sentinel/config.yaml
+sudo test -e /etc/lan-sentinel/config.yaml || sudo install -D -m 0640 config.yaml /etc/lan-sentinel/config.yaml
 sudo install -d -m 0750 /data/lan-sentinel
 sudo lan-sentinel config validate --config /etc/lan-sentinel/config.yaml
 sudo install -D -m 0644 lan-sentinel.service /etc/systemd/system/lan-sentinel.service
 sudo systemctl daemon-reload
-sudo systemctl enable --now lan-sentinel
+sudo systemctl enable lan-sentinel
+sudo systemctl restart lan-sentinel
 ```
+
+On Debian 11 `daemon-reload` logs `Unknown key name 'PrivateIPC'`: systemd 247 predates the setting, and the unit runs without it.
 
 Edit `/etc/lan-sentinel/config.yaml` for the site (interfaces, and active discovery only after review, see below), check it with `sudo lan-sentinel config validate`, then apply it with `sudo lan-sentinel config reload`, which prints what took effect and what needs `sudo systemctl restart lan-sentinel` (new interfaces, passive capture, storage, API, metrics, log format). The API socket and the database are root's (mode 0660 and 0640): run `lan-sentinel` commands with `sudo`.
 
@@ -46,22 +49,21 @@ Then check:
 | Healthy | `sudo lan-sentinel daemon status` | `State: ok` (exit 0); every collector of a configured interface `running` |
 | Clock | same | `Clock: synced` once chrony has synchronised; events written before that are marked `unsynced` (`clock_sync` in `events list -o json`) |
 | Hosts appear | `sudo lan-sentinel hosts list` | the devices of the site within a few minutes |
+| DHCP servers | `sudo lan-sentinel dhcp servers` | the site's DHCP server(s), once a client has asked; then list their identifiers in `interfaces[].dhcp.servers` (or `[]` where none should exist) and `sudo lan-sentinel config reload`, so any other raises `DHCP_SERVER_UNEXPECTED`. On a switched port replies unicast to other clients are not seen: an empty list proves nothing |
 | Privileges | `grep Cap /proc/$(systemctl show -p MainPID --value lan-sentinel)/status` | `CapEff` and `CapBnd` `0000000000002000`: root, but with `CAP_NET_RAW` only |
 | Sandbox | `systemd-analyze security lan-sentinel` | exposure ≤ 2.5 (2.3 in the container tests) |
 | Board audit (once per board type) | `capcheck` under the unit's sandbox, as in `tools/capcheck/README.md` | every row `PASS` or `SKIP`, including the `adjtimex` read; record it in `docs/ARCHITECTURE.md` §8 |
 
 ## Upgrade and rollback
 
-Migrations run at start-up and only forward; an older binary refuses a newer database (`database schema version N is newer than this binary supports`). Keep a copy for rollback. From the extracted directory of the new release:
+Migrations run at start-up and only forward; an older binary refuses a newer database (`database schema version N is newer than this binary supports`). Keep a copy for rollback. From the extracted directory of the new release, stop the daemon and copy the database:
 
 ```bash
 sudo systemctl stop lan-sentinel        # a clean stop removes the WAL
 sudo cp -a /data/lan-sentinel/hosts.db /data/lan-sentinel/hosts.db.pre-$(lan-sentinel version --quiet)
-sudo install -m 0755 lan-sentinel /usr/local/bin/lan-sentinel
-sudo systemctl start lan-sentinel && sudo lan-sentinel daemon status
 ```
 
-Compare the release's `lan-sentinel.service` with `/etc/systemd/system/lan-sentinel.service`; if the unit changed, install it and run `sudo systemctl daemon-reload` before the start.
+Then run the commands of step 2: they install the new binary and unit, keep the site's config and start the daemon, which migrates the database. `sudo lan-sentinel daemon status` shows the running version. New settings appear in the release's `config.yaml`; compare it with the site's (`sudo diff config.yaml /etc/lan-sentinel/config.yaml`).
 
 To roll back, stop the service, put the previous binary and the copied database back, and start it. `lan-sentinel --offline` refuses a database whose schema differs from the binary's until the daemon has migrated it.
 
@@ -86,13 +88,14 @@ Runs are serialised, so two releases never pick the same version. If a run fails
    | `lan_sentinel_collector_up` | 0: a collector failed (`daemon status` names it) |
    | `lan_sentinel_capture_drops_total`, `lan_sentinel_bus_dropped_total` | growth: a busy mirror port; raise `passive.ring_size` |
    | `lan_sentinel_db_size_bytes` | approaching `storage.retention.max_db_size` (budget: < 200 MB after 90 days on a 50-host LAN) |
+   | `lan_sentinel_dhcp_servers{status="unexpected"}` | above 0: a DHCP server outside the allowlist answered (`dhcp servers`, `events list --type dhcp-server-unexpected`) |
    | process CPU and RSS (`systemctl show -p CPUUsageNSec,MemoryCurrent lan-sentinel`) | above 5% CPU or 50 MB on a RevPi Connect |
 
    A misbehaving decoder is switched off fleet-wide through `passive.protocols` and `systemctl restart lan-sentinel`, without a new build (the protocols are compiled into the capture filter, so a reload does not change them).
 4. Active discovery on the pilot sites, then site by site after reviewing the site's device mix:
    - set `active.enabled: true` with the site's `networks` and `exclude` (fragile devices, gateways) on the interface, and the periodic probes under `active:`; `lan-sentinel config validate` shows the sweep size and duration;
    - preview with `lan-sentinel scan plan --profile <profile>`, then `lan-sentinel scan run --profile <profile>` while someone watches the devices;
-   - `sudo lan-sentinel config reload` to start the periodic probes (it lists `interfaces[N].active.enabled` as applied);
+   - `sudo lan-sentinel config reload` to start the periodic probes (it lists `interfaces[N].active.enabled` as applied, and the journal says `configuration reloaded; active discovery: arp every 5m on eth0 (…)`); periodic passes are not logged, so check them with `sudo lan-sentinel observations list --source arp_scan`;
    - watch `lan_sentinel_probe_total` and `lan_sentinel_probe_throttled_total`.
 
    If anything misbehaves: `lan-sentinel active disable --reason "..."` stops every probe at once and stays set across restarts (`active enable` clears it). `LAN_SENTINEL_ACTIVE_DISABLED=1` in the unit's environment forces it off fleet-wide.

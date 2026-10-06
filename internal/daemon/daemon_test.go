@@ -551,6 +551,7 @@ logging: { format: text }
 		"lan_sentinel_db_size_bytes ",
 		"lan_sentinel_active_disabled 0",
 		`lan_sentinel_collector_up{interface="eth1",collector="neighbor"} 1`,
+		`lan_sentinel_dhcp_servers{interface="eth1",status="unchecked"} 0`,
 	} {
 		if !strings.Contains(m, want) {
 			t.Errorf("metrics lack %q", want)

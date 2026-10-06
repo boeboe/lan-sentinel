@@ -5,8 +5,6 @@ package identify
 
 import (
 	"bufio"
-	"bytes"
-	"compress/gzip"
 	"encoding/hex"
 	"fmt"
 	"io"
@@ -17,13 +15,17 @@ import (
 	"sync"
 
 	"lan-sentinel/data/oui"
+	"lan-sentinel/internal/ouitable"
 )
 
 // prefix lengths in bits, longest first: MA-S, MA-M, MA-L.
-var prefixBits = [...]int{36, 28, 24}
+var prefixBits = ouitable.PrefixBits
 
-// Vendors maps MAC prefixes to organisation names.
+// Vendors maps MAC prefixes to organisation names: the embedded registry,
+// searched in place, and parsed entries (an override file) that take
+// precedence over it at the same prefix length.
 type Vendors struct {
+	table *ouitable.Table // nil for a parsed table
 	byLen [len(prefixBits)]map[uint64]string
 }
 
@@ -35,27 +37,19 @@ func newVendors() *Vendors {
 	return v
 }
 
-var (
-	embeddedOnce sync.Once
-	embedded     *Vendors
-	embeddedErr  error
-)
+var embedded = sync.OnceValues(func() (*Vendors, error) {
+	t, err := ouitable.Decode(oui.Data)
+	if err != nil {
+		return nil, fmt.Errorf("embedded OUI table: %w", err)
+	}
+	v := newVendors()
+	v.table = t
+	return v, nil
+})
 
-// Embedded returns the registry compiled into the binary, parsed once.
-func Embedded() (*Vendors, error) {
-	embeddedOnce.Do(func() {
-		zr, err := gzip.NewReader(bytes.NewReader(oui.Data))
-		if err != nil {
-			embeddedErr = fmt.Errorf("embedded OUI table: %w", err)
-			return
-		}
-		embedded, embeddedErr = Parse(zr)
-		if embeddedErr != nil {
-			embeddedErr = fmt.Errorf("embedded OUI table: %w", embeddedErr)
-		}
-	})
-	return embedded, embeddedErr
-}
+// Embedded returns the registry compiled into the binary. It is searched in
+// place: nothing is parsed or copied.
+func Embedded() (*Vendors, error) { return embedded() }
 
 // Load returns the embedded registry with the override file applied on top,
 // if path is not empty.
@@ -145,9 +139,10 @@ func parsePrefix(s string) (key uint64, idx int, err error) {
 	return v >> (len(digits)*4 - bits), idx, nil
 }
 
-// With returns a copy of v with ov's entries taking precedence.
+// With returns a copy of v with ov's parsed entries taking precedence.
 func (v *Vendors) With(ov *Vendors) *Vendors {
 	out := newVendors()
+	out.table = v.table
 	for i := range v.byLen {
 		for k, n := range v.byLen[i] {
 			out.byLen[i][k] = n
@@ -162,8 +157,17 @@ func (v *Vendors) With(ov *Vendors) *Vendors {
 // Len is the number of assignments.
 func (v *Vendors) Len() int {
 	n := 0
-	for _, m := range v.byLen {
-		n += len(m)
+	if v.table != nil {
+		n = v.table.Len()
+	}
+	for i, m := range v.byLen {
+		for k := range m {
+			if v.table == nil {
+				n++
+			} else if _, ok := v.table.Find(i, k); !ok {
+				n++
+			}
+		}
 	}
 	return n
 }
@@ -178,8 +182,14 @@ func (v *Vendors) Lookup(mac net.HardwareAddr) (string, bool) {
 		m = m<<8 | uint64(b)
 	}
 	for i, bits := range prefixBits {
-		if name, ok := v.byLen[i][m>>(48-bits)]; ok {
+		key := m >> (48 - bits)
+		if name, ok := v.byLen[i][key]; ok {
 			return name, true
+		}
+		if v.table != nil {
+			if name, ok := v.table.Find(i, key); ok {
+				return name, true
+			}
 		}
 	}
 	return "", false

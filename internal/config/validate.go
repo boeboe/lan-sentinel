@@ -110,6 +110,13 @@ func (v *validator) interfaces(cfg *Config) {
 			v.add(k+".passive.promiscuous", "requires passive.enabled")
 		}
 		v.activeInterface(k, ic, cfg.Active)
+		if ic.DHCP.Servers != nil {
+			for j, s := range *ic.DHCP.Servers {
+				if !s.Is4() || !s.IsGlobalUnicast() { // private ranges count; broadcast, multicast and 0.0.0.0 do not
+					v.add(fmt.Sprintf("%s.dhcp.servers[%d]", k, j), "%s is not a unicast IPv4 address (a DHCP server identifier, option 54)", s)
+				}
+			}
+		}
 	}
 }
 

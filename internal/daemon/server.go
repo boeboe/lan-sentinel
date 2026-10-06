@@ -22,6 +22,9 @@ import (
 // presences are the presence states, for status and metrics.
 var presences = []string{"ACTIVE", "RECENT", "STALE", "MISSING"}
 
+// dhcpStatuses are the DHCP server allowlist verdicts (lan_sentinel_dhcp_servers).
+var dhcpStatuses = []string{"allowed", "unexpected", "unchecked"}
+
 // startAPI opens the reader and starts the API server on the configured
 // socket (and loopback listener, with /metrics when enabled).
 func (d *Daemon) startAPI(ctx context.Context) error {
@@ -119,11 +122,19 @@ func (d *Daemon) status(ctx context.Context) api.Status {
 		s.Database.OK, s.Database.Error = false, err.Error()
 	}
 	collectors := d.registry.List()
+	var passes map[string]map[string]scheduler.PassSummary
+	if d.sched != nil {
+		passes = d.sched.LastPasses()
+	}
 	for _, i := range ifs {
-		is := api.InterfaceStatus{InterfaceInfo: i, Collectors: []platform.CollectorStatus{}}
+		is := api.InterfaceStatus{InterfaceInfo: i, Collectors: []api.CollectorStatus{}}
 		for _, c := range collectors {
 			if c.Interface == i.Name {
-				is.Collectors = append(is.Collectors, c)
+				cs := api.CollectorStatus{CollectorStatus: c}
+				if p, ok := passes[i.Name][c.Collector]; ok {
+					cs.LastPass = &p
+				}
+				is.Collectors = append(is.Collectors, cs)
 				if c.State == platform.StateFailed || c.State == platform.StateUnsupported {
 					s.Problems = append(s.Problems, c.Interface+" "+c.Collector+": "+c.Error)
 				}
@@ -142,8 +153,8 @@ func (d *Daemon) status(ctx context.Context) api.Status {
 }
 
 // gather collects the metrics (docs/ARCHITECTURE.md §3, Metrics). Labels are
-// interface, presence, type, source, protocol, port, result, reason and
-// collector only.
+// interface, presence, type, source, protocol, port, result, reason,
+// collector and status only.
 func (d *Daemon) gather(ctx context.Context) []metrics.Family {
 	cfg := d.cfg.Load()
 	var fams []metrics.Family
@@ -160,6 +171,16 @@ func (d *Daemon) gather(ctx context.Context) []metrics.Family {
 			}
 		}
 		add("hosts", "Hosts per interface and presence state.", metrics.Gauge, hosts...)
+	}
+	if counts, err := d.reader.DHCPServerCounts(ctx, d.clock.Now().Add(-cfg.Presence.Stale.D())); err == nil {
+		var servers []metrics.Sample
+		for _, ic := range cfg.Interfaces {
+			for _, st := range dhcpStatuses {
+				servers = append(servers, metrics.Sample{Labels: metrics.L("interface", ic.Name, "status", st), Value: float64(counts[ic.Name][st])})
+			}
+		}
+		add("dhcp_servers", "DHCP servers (identity, relay and sender) heard from within presence.stale, per interface and allowlist verdict.",
+			metrics.Gauge, servers...)
 	}
 
 	var evs []metrics.Sample

@@ -1246,6 +1246,70 @@ func (r *Reader) KnownIPv4(ctx context.Context, iface string) ([]KnownAddr, erro
 	return out, err
 }
 
+// DHCPServers lists the DHCP servers seen, by interface and identity.
+func (r *Reader) DHCPServers(ctx context.Context, f DHCPServerFilter) ([]DHCPServer, error) {
+	var w where
+	if f.Interface != "" {
+		w.add(`c.interface = ?`, f.Interface)
+	}
+	if f.Status != "" {
+		w.add(`d.status = ?`, strings.ToLower(f.Status))
+	}
+	out := []DHCPServer{}
+	err := r.read(ctx, func(tx *sql.Tx) error {
+		rows, err := tx.QueryContext(ctx, `SELECT c.interface, d.server_id, d.relay, d.mac, d.ip, coalesce(d.host_id, ''), d.status,
+			d.config_json, d.first_seen, d.last_seen
+			FROM dhcp_servers d JOIN network_contexts c ON c.id = d.context_id`+w.sql()+
+			` ORDER BY c.interface, d.server_id = '', d.server_id, d.relay, d.last_seen DESC, d.id`, w.args...)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var d DHCPServer
+			var cfg string
+			var first, last int64
+			if err := rows.Scan(&d.Interface, &d.ServerID, &d.Relay, &d.MAC, &d.IP, &d.HostID, &d.Status, &cfg, &first, &last); err != nil {
+				return err
+			}
+			if err := json.Unmarshal([]byte(cfg), &d.Config); err != nil || d.Config == nil {
+				d.Config = map[string]string{}
+			}
+			d.FirstSeen, d.LastSeen = timeOf(first), timeOf(last)
+			out = append(out, d)
+		}
+		return rows.Err()
+	})
+	return out, err
+}
+
+// DHCPServerCounts counts, per interface and status, the DHCP servers
+// (identity, relay and sender) heard from since the given time.
+func (r *Reader) DHCPServerCounts(ctx context.Context, since time.Time) (map[string]map[string]int, error) {
+	out := map[string]map[string]int{}
+	err := r.read(ctx, func(tx *sql.Tx) error {
+		rows, err := tx.QueryContext(ctx, `SELECT c.interface, d.status, count(*) FROM dhcp_servers d
+			JOIN network_contexts c ON c.id = d.context_id WHERE d.last_seen >= ? GROUP BY c.interface, d.status`, since.UnixMilli())
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var iface, status string
+			var n int
+			if err := rows.Scan(&iface, &status, &n); err != nil {
+				return err
+			}
+			if out[iface] == nil {
+				out[iface] = map[string]int{}
+			}
+			out[iface][status] = n
+		}
+		return rows.Err()
+	})
+	return out, err
+}
+
 // HostCounts counts hosts per interface and presence.
 func (r *Reader) HostCounts(ctx context.Context) (map[string]map[string]int, error) {
 	out := map[string]map[string]int{}

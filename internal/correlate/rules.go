@@ -78,6 +78,9 @@ func (c *Correlator) observe(ctx context.Context, o observation.Observation) {
 	if o.Hostname != "" && validNameType(o.NameType) {
 		c.name(ctx, h, o, obsID, ev)
 	}
+	if o.Source == observation.PassiveDHCPServer && mac != nil { // the sender's own MAC, not an IP holder's
+		c.dhcpServerReply(ctx, h, o, obsID, ev)
+	}
 }
 
 // bindMAC returns the host for (context, MAC), creating it if needed.
@@ -142,7 +145,7 @@ func onLink(n *netContext, ip netip.Addr, src observation.Source) bool {
 	}
 	if ip.Is4() {
 		switch src {
-		case observation.PassiveARP, observation.ARPScan, observation.PassiveDHCP, observation.KernelNeighbor:
+		case observation.PassiveARP, observation.ARPScan, observation.PassiveDHCP, observation.PassiveDHCPLease, observation.KernelNeighbor:
 			return true
 		}
 		return false

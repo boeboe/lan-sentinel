@@ -4,6 +4,7 @@ package storetest
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"log/slog"
 	"net"
@@ -123,4 +124,26 @@ func Seed(t testing.TB, dir string) (*store.Store, string, Expected) {
 		t.Fatalf("seed: %v, %d op errors", err, st.OpErrors())
 	}
 	return st, path, exp
+}
+
+// AddDHCPServers records two DHCP servers on eth1 in a seeded database: the
+// site's, allowed, and a rogue one without a server identifier, unexpected.
+func AddDHCPServers(t testing.TB, st *store.Store) {
+	t.Helper()
+	ctx := context.Background()
+	err := st.Submit(ctx, func(ctx context.Context, tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `INSERT INTO dhcp_servers (context_id, server_id, relay, mac, ip, status, config_json, first_seen, last_seen)
+			SELECT id, '192.168.110.1', '', '00:00:5e:00:01:01', '192.168.110.1', 'allowed',
+				'{"router":"192.168.110.1","dns":"192.168.110.1","subnet_mask":"255.255.255.0"}', ?, ? FROM network_contexts WHERE interface = 'eth1'
+			UNION ALL
+			SELECT id, '', '', '02:00:00:00:00:66', '192.168.110.66', 'unexpected', '{}', ?, ? FROM network_contexts WHERE interface = 'eth1'`,
+			T0.UnixMilli(), T0.Add(4*time.Hour).UnixMilli(), T0.Add(2*time.Hour).UnixMilli(), T0.Add(2*time.Hour).UnixMilli())
+		return err
+	})
+	if err == nil {
+		err = st.Flush(ctx)
+	}
+	if err != nil || st.OpErrors() != 0 {
+		t.Fatalf("dhcp servers: %v, %d op errors", err, st.OpErrors())
+	}
 }

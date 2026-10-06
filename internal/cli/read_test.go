@@ -15,6 +15,7 @@ import (
 	"lan-sentinel/internal/api"
 	"lan-sentinel/internal/config"
 	"lan-sentinel/internal/platform"
+	"lan-sentinel/internal/probe/scheduler"
 	"lan-sentinel/internal/store"
 	"lan-sentinel/internal/store/storetest"
 )
@@ -72,6 +73,7 @@ type readFixture struct {
 func serve(t *testing.T) *readFixture {
 	t.Helper()
 	st, db, exp := storetest.Seed(t, golden)
+	storetest.AddDHCPServers(t, st)
 	r, err := st.Reader(time.Hour)
 	if err != nil {
 		t.Fatal(err)
@@ -91,7 +93,14 @@ func serve(t *testing.T) *readFixture {
 				State: f.state, Database: api.DatabaseStatus{Path: db, OK: f.state != api.StateUnhealthy, Error: "boom", Size: 41e6},
 				Active: store.ActiveState{Disabled: true, Reason: "PLC fault"},
 				Interfaces: []api.InterfaceStatus{{InterfaceInfo: store.InterfaceInfo{Name: "eth1", State: "up", Prefixes: []string{"192.168.110.0/24"}},
-					Collectors: []platform.CollectorStatus{{Collector: "capture", State: platform.StateFailed, Error: "socket(AF_PACKET): operation not permitted"}}}},
+					Collectors: []api.CollectorStatus{
+						{CollectorStatus: platform.CollectorStatus{Collector: "arp", State: platform.StateRunning, Backend: "afpacket"},
+							LastPass: &scheduler.PassSummary{At: clientNow.Add(-2 * time.Minute), Seconds: 26.3, Probed: 253, Replied: 14, Complete: true}},
+						{CollectorStatus: platform.CollectorStatus{Collector: "capture", State: platform.StateFailed, Error: "socket(AF_PACKET): operation not permitted"}},
+						{CollectorStatus: platform.CollectorStatus{Collector: "icmp", State: platform.StateRunning, Backend: "ping socket"},
+							LastPass: &scheduler.PassSummary{At: clientNow.Add(-90 * time.Minute), Seconds: 4000, Probed: 9, Replied: 7, Blocked: 2}},
+						{CollectorStatus: platform.CollectorStatus{Collector: "tcp", State: platform.StateDisabled, Backend: "socket"}},
+					}}},
 				Hosts:    map[string]map[string]int{"eth1": {"ACTIVE": 1, "STALE": 2}},
 				Problems: []string{"eth1 capture: socket(AF_PACKET): operation not permitted"},
 			}
@@ -147,12 +156,23 @@ func TestReadCommands(t *testing.T) {
 		{"services", []string{"services", "list", "--port", "502"}, 0, []string{"502/tcp", "OPEN", "192.168.110.50"}},
 		{"services csv", []string{"-o", "csv", "services", "list", "--state", "open"}, 0, []string{"IP,MAC,IFACE,PORT,STATE,LAST CHECK"}},
 		{"interfaces", []string{"interfaces", "list"}, 0, []string{"eth1", "192.168.110.0/24", "on", "unknown"}},
+		{"dhcp servers", []string{"dhcp", "servers"}, 0, []string{
+			"SERVER ID      RELAY  MAC                IP              IFACE  STATUS      ROUTER         DNS            MASK           LAST SEEN",
+			"192.168.110.1  -      00:00:5e:00:01:01  192.168.110.1   eth1   allowed     192.168.110.1  192.168.110.1  255.255.255.0  1h ago",
+			"unknown        -      02:00:00:00:00:66  192.168.110.66  eth1   unexpected  -              -              -              3h ago"}},
+		{"dhcp servers csv", []string{"-o", "csv", "dhcp", "servers", "--status", "unexpected"}, 0, []string{
+			"SERVER ID,RELAY,MAC,IP,IFACE,STATUS,ROUTER,DNS,MASK,LAST SEEN\nunknown,,02:00:00:00:00:66,192.168.110.66,eth1,unexpected,,,,2026-10-01T12:00:00Z"}},
+		{"dhcp servers json", []string{"-o", "json", "dhcp", "servers", "--interface", "eth1"}, 0, []string{`"server_id": "192.168.110.1"`, `"status": "unexpected"`}},
+		{"dhcp servers bad status", []string{"dhcp", "servers", "--status", "rogue"}, ExitUsage, nil},
 		{"db info", []string{"db", "info"}, 0, []string{fmt.Sprintf("Schema:    %d", store.LatestSchemaVersion()), "Journal:   wal", "hosts", "4"}},
 		{"db info json", []string{"-o", "json", "db", "info"}, 0, []string{fmt.Sprintf(`"schema_version": %d`, store.LatestSchemaVersion())}},
 		{"db check", []string{"db", "check"}, 0, []string{"ok"}},
 		{"db check json", []string{"-o", "json", "db", "check"}, 0, []string{`"ok": true`}},
 		{"show json", []string{"-o", "json", "hosts", "show", "00000000-0000-0000-0000-000000000000"}, 2, nil},
-		{"status degraded is not set", []string{"daemon", "status"}, 0, []string{"Version:    1.2.3 (linux/arm64)   PID 412   up 3d 4h", "DISABLED (PLC fault)", "41 MB", "1 active, 2 stale", "operation not permitted"}},
+		{"status degraded is not set", []string{"daemon", "status"}, 0, []string{"Version:    1.2.3 (linux/arm64)   PID 412   up 3d 4h", "DISABLED (PLC fault)", "41 MB", "1 active, 2 stale", "operation not permitted",
+			"         arp        running     afpacket    last pass 2m ago: 253 swept, 14 replied (26 s)\n",
+			"         icmp       running     ping socket last pass 1h ago: 9 probed, 7 replied, 2 blocked (67 min, cut short)\n",
+			"         tcp        disabled    socket\n"}},
 		{"status json", []string{"-o", "json", "daemon", "status"}, 0, []string{`"pid": 412`}},
 	}
 	for _, tt := range tests {
@@ -223,6 +243,7 @@ func TestOfflineAndUsage(t *testing.T) {
 	}{
 		{"offline find", []string{"--offline", "hosts", "find", a}, 0, "192.168.110.52", ""},
 		{"offline interfaces", []string{"--offline", "interfaces", "list"}, 0, "eth1", ""},
+		{"offline dhcp servers", []string{"--offline", "dhcp", "servers", "--status", "allowed"}, 0, "192.168.110.1", ""},
 		{"offline db check", []string{"--offline", "db", "check"}, 0, "ok", ""},
 		{"offline status refused", []string{"--offline", "daemon", "status"}, ExitUsage, "", "needs the running daemon"},
 		{"offline watch refused", []string{"--offline", "watch"}, ExitUsage, "", "needs the running daemon"},

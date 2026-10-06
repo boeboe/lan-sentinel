@@ -278,6 +278,9 @@ func TestReloadConfigThroughTheAPI(t *testing.T) {
 	}
 	h.waitState("eth1", platform.CollectorARP, platform.StateRunning)
 	h.waitLog("applied=[interfaces[0].active.enabled]")
+	// The log says what runs, at start-up and in the reload's message.
+	h.waitLog("msg=\"active discovery: off\"")
+	h.waitLog("msg=\"configuration reloaded; active discovery: arp every 5m on eth1 (192.168.110.0/24)\"")
 
 	// A new interface needs a restart; the active change beside it applies.
 	h.writeConfig(strings.Replace(testConfig(h.dir, "debug", activeConfig), eth1,
@@ -309,6 +312,37 @@ func TestReloadConfigThroughTheAPI(t *testing.T) {
 	if h.d.Config().Logging.Level != "debug" {
 		t.Errorf("rejected reload changed the level to %s", h.d.Config().Logging.Level)
 	}
+
+	// With the kill switch set, the log says nothing is probed.
+	if _, err := client.DisableActive(ctx, "PLC fault"); err != nil {
+		t.Fatal(err)
+	}
+	h.writeConfig(testConfig(h.dir, "info", activeConfig))
+	if _, err := client.ReloadConfig(ctx); err != nil {
+		t.Fatal(err)
+	}
+	h.waitLog("active discovery: stopped by the kill switch (arp every 5m on eth1 (192.168.110.0/24))")
+}
+
+// An interface's DHCP allowlist changes on reload, beside a restart-only
+// change of the same interface.
+func TestReloadAppliesDHCPAllowlist(t *testing.T) {
+	h := startWith(t, testConfig("$DIR", "info", activeConfig), 0, activeLinks)
+	defer h.stop()
+	h.writeConfig(strings.Replace(testConfig(h.dir, "info", activeConfig), "    active:",
+		"    dhcp: { servers: [192.168.110.1] }\n    passive: { promiscuous: true }\n    active:", 1))
+	res, err := h.d.ReloadConfig(context.Background(), "bart")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(res.Applied, config.Change{Key: "interfaces[0].dhcp.servers", New: "[192.168.110.1]"}) ||
+		!slices.Contains(res.NotApplied, config.Change{Key: "interfaces[0].passive.promiscuous", Old: "false", New: "true"}) {
+		t.Errorf("reload = %+v", res)
+	}
+	ic := h.d.Config().Interfaces[0]
+	if !ic.DHCP.Allowed(netip.MustParseAddr("192.168.110.1")) || ic.Passive.Promiscuous {
+		t.Errorf("running interface = %+v", ic)
+	}
 }
 
 // The running values a reload keeps must validate with the new file: an
@@ -328,6 +362,33 @@ func TestReloadRevalidatesKeptValues(t *testing.T) {
 		t.Errorf("running config changed: %+v", cfg.Active)
 	}
 	h.waitLog("actor=bart")
+}
+
+// daemon status shows a probe's backend and its last periodic pass.
+func TestStatusShowsLastPass(t *testing.T) {
+	h := startWith(t, testConfig("$DIR", "info", "active: { startup_delay: 0s }\n"), 0, activeLinks)
+	defer h.stop()
+	h.tx.FrameReply = arpNetwork(map[string]net.HardwareAddr{"192.168.110.3": plcMAC})
+	stop := h.drive()
+	defer stop()
+	client := api.NewClient(filepath.Join(h.dir, "api.sock"), 5*time.Second)
+	for deadline := time.Now().Add(20 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+		st, err := client.Status(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, c := range st.Interfaces[0].Collectors {
+			if c.Collector == platform.CollectorARP && c.LastPass != nil {
+				if p := c.LastPass; p.Probed != 253 || p.Replied != 1 || !p.Complete || c.Backend != "fake" {
+					t.Errorf("arp = %+v, last pass %+v", c.CollectorStatus, *p)
+				}
+				return
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no last pass in status: %+v", st.Interfaces)
+		}
+	}
 }
 
 // After shutdown the correlator is gone: kill-switch requests fail at once

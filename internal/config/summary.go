@@ -120,6 +120,8 @@ type InterfaceSummary struct {
 	// excludes), and SweepSeconds how long one takes at the ARP rate.
 	SweepTargets uint64  `json:"sweep_targets,omitempty"`
 	SweepSeconds float64 `json:"sweep_seconds,omitempty"`
+	// DHCPServers is the DHCP server allowlist; nil without one.
+	DHCPServers *[]string `json:"dhcp_servers,omitempty"`
 }
 
 // Summary is what `config validate` prints for a valid configuration.
@@ -169,6 +171,13 @@ func Summarize(cfg *Config) Summary {
 				is.SweepSeconds = float64(is.SweepTargets) / r * 1.02 // paced 2% below the rate
 			}
 		}
+		if ic.DHCP.Servers != nil {
+			servers := make([]string, len(*ic.DHCP.Servers))
+			for i, a := range *ic.DHCP.Servers {
+				servers[i] = a.String()
+			}
+			is.DHCPServers = &servers
+		}
 		anyActive = anyActive || ic.Active.Enabled
 		s.Interfaces = append(s.Interfaces, is)
 	}
@@ -202,4 +211,28 @@ func Summarize(cfg *Config) Summary {
 		s.MaxPacketsPerSecond = math.Min(rate, a.MaxPacketsPerSecond)
 	}
 	return s
+}
+
+// ActiveText says in one line what active discovery runs, for the log at
+// start-up and on reload: "arp every 5m on eth0 (192.168.0.0/24 exclude
+// 192.168.0.1)", "off", or "no probe enabled on eth0 (...)".
+func (s Summary) ActiveText() string {
+	var on []string
+	for _, is := range s.Interfaces {
+		if !is.Active {
+			continue
+		}
+		nets := strings.Join(is.Networks, ", ")
+		if len(is.Exclude) > 0 {
+			nets += " exclude " + strings.Join(is.Exclude, ", ")
+		}
+		on = append(on, is.Name+" ("+nets+")")
+	}
+	switch {
+	case len(on) == 0:
+		return "off"
+	case len(s.Probes) == 0:
+		return "no probe enabled on " + strings.Join(on, ", ")
+	}
+	return strings.Join(s.Probes, ", ") + " on " + strings.Join(on, ", ")
 }

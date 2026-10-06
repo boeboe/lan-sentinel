@@ -78,6 +78,8 @@ func discoveryFrames(t *testing.T, runnerMAC net.HardwareAddr, prefix netip.Pref
 	out := [][]byte{
 		frames.ARP(layers.ARPRequest, injPLC, ipOf(101), frames.Broadcast, ipOf(101)), // gratuitous
 		frames.DHCP{Type: layers.DHCPMsgTypeDiscover, Client: injHMI, Hostname: "HMI-TEST"}.Frame(),
+		frames.DHCP{Type: layers.DHCPMsgTypeOffer, Client: injHMI, YourIP: ipOf(120), Server: injSRV, ServerIP: ipOf(103),
+			ServerID: ipOf(103), Router: []string{ipOf(103)}, SubnetMask: "255.255.255.0"}.Frame(),
 		frames.MDNS4(injPLC, ipOf(101), []layers.DNSResourceRecord{
 			frames.SRV("PLC._http._tcp.local", "plc-test.local", 80), frames.A("plc-test.local", ipOf(101)),
 		}, nil),
@@ -194,6 +196,8 @@ func TestCaptureDecodesDiscoveryFrames(t *testing.T) {
 	want := []string{
 		"passive_arp " + injPLC.String() + " " + ipOf(101),
 		"passive_dhcp " + injHMI.String() + " dhcp:HMI-TEST",
+		"passive_dhcp " + injHMI.String(), // the offer to it binds nothing
+		"passive_dhcp_server " + injSRV.String() + " " + ipOf(103),
 		"passive_mdns " + injPLC.String() + " " + ipOf(101) + " mdns:plc-test.local",
 		"passive_dns " + ipOf(101) + " dns_ptr:plc-test.plant.example", // DNS answers carry no MAC
 		"passive_ipv4 " + injSRV.String() + " " + ipOf(103),
@@ -349,13 +353,17 @@ func TestCaptureDropCounter(t *testing.T) {
 }
 
 // TestDaemonCapturesNames: the daemon's capture collector turns injected
-// frames into hosts with names, and reports the collector running.
+// frames into hosts with names, reports a DHCP server outside the
+// interface's allowlist, and reports the collector running.
 func TestDaemonCapturesNames(t *testing.T) {
 	iface := env(t, "LS_TEST_IFACE")
 	prefix := netip.MustParsePrefix(env(t, "LS_TEST_PREFIX"))
 	dir := t.TempDir()
 	cfgPath, db := filepath.Join(dir, "config.yaml"), filepath.Join(dir, "hosts.db")
-	cfg := "version: 1\ninterfaces:\n  - name: " + iface + "\npassive: { protocols: { ipv6: true } }\n" +
+	server := prefix.Masked().Addr().As4()
+	server[3] = 103
+	cfg := "version: 1\ninterfaces:\n  - name: " + iface + "\n    dhcp: { servers: [" + prefix.Masked().Addr().Next().String() + "] }\n" +
+		"passive: { protocols: { ipv6: true } }\n" +
 		"storage: { path: " + db + " }\napi: { socket: " + filepath.Join(dir, "api.sock") + " }\nlogging: { format: text }\n"
 	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
 		t.Fatal(err)
@@ -383,6 +391,8 @@ func TestDaemonCapturesNames(t *testing.T) {
 		"HOSTNAME_ADDED " + iface + " " + injPLC.String() + " mdns:plc-test.local",
 		"HOSTNAME_ADDED " + iface + " " + injHMI.String() + " dhcp:HMI-TEST",
 		"HOSTNAME_ADDED " + iface + " " + injSW.String() + " lldp:test-sw-01",
+		"DHCP_SERVER_DISCOVERED " + iface + " " + injSRV.String() + " " + netip.AddrFrom4(server).String(),
+		"DHCP_SERVER_UNEXPECTED " + iface + " " + injSRV.String() + " " + netip.AddrFrom4(server).String(),
 	}
 	for attempt := 1; ; attempt++ {
 		inject(t, 1, discoveryFrames(t, ownMAC(t, iface), prefix)...)

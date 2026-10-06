@@ -36,7 +36,9 @@ func TestFixturesCurrent(t *testing.T) {
 
 // TestCaptureScenario replays the site-a capture through the whole daemon:
 // the capture decoders, the correlator and the store. It reconstructs the
-// injected IP change and the duplicate IP from frames alone.
+// injected IP change and the duplicate IP from frames alone, and with a
+// DHCP allowlist it reports the rogue server and the allowed server's new
+// DNS server.
 func TestCaptureScenario(t *testing.T) {
 	dir := t.TempDir()
 	pcap, err := filepath.Abs("../fixtures/site-a-eth1.pcapng")
@@ -45,7 +47,7 @@ func TestCaptureScenario(t *testing.T) {
 	}
 	db := filepath.Join(dir, "hosts.db")
 	cfgPath := filepath.Join(dir, "config.yaml")
-	cfg := "version: 1\ninterfaces:\n  - name: eth1\n    prefixes: [192.168.110.0/24]\n    replay: { file: " + pcap +
+	cfg := "version: 1\ninterfaces:\n  - name: eth1\n    prefixes: [192.168.110.0/24]\n    dhcp: { servers: [192.168.110.2] }\n    replay: { file: " + pcap +
 		" }\nreplay: { exit_when_done: true }\nstorage: { path: " + db + " }\napi: { socket: " + filepath.Join(dir, "api.sock") + " }\nlogging: { format: text, level: warn }\n"
 	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
 		t.Fatal(err)
@@ -73,7 +75,7 @@ func TestCaptureScenario(t *testing.T) {
 	defer conn.Close()
 	label := map[string]string{
 		fixtures.PLCA.String(): "A", fixtures.PLCB.String(): "B", fixtures.PLCC.String(): "C",
-		fixtures.HMI.String(): "HMI", fixtures.Server.String(): "SRV", fixtures.Switch.String(): "SW",
+		fixtures.HMI.String(): "HMI", fixtures.Server.String(): "SRV", fixtures.Switch.String(): "SW", fixtures.Rogue.String(): "ROGUE",
 	}
 	at := func(ms int64) string { return time.UnixMilli(ms).UTC().Sub(fixtures.SiteA).String() }
 	rows := func(q string, scan func(r *sql.Rows) string) []string {
@@ -117,13 +119,42 @@ func TestCaptureScenario(t *testing.T) {
 		"10m1s HOST_DISCOVERED HMI >mac",
 		"10m1s HOSTNAME_ADDED HMI >dhcp:HMI-LINE3",
 		"10m2s IP_ADDED HMI >192.168.110.20",
+		"10m2s DHCP_SERVER_DISCOVERED SRV >192.168.110.2",
 		"10m3s HOSTNAME_ADDED HMI >dns_ptr:hmi-line3.plant.example",
 		"1h0m0s IP_CHANGED A 192.168.110.50>192.168.110.51",
 		"2h0m0s HOST_DISCOVERED B >mac",
+		"2h30m0s HOST_DISCOVERED ROGUE >mac",
+		"2h30m0s DHCP_SERVER_DISCOVERED ROGUE >192.168.110.66",
+		"2h30m0s DHCP_SERVER_UNEXPECTED ROGUE >192.168.110.66",
 		"3h0m0s HOST_DISCOVERED C >mac",
 		"3h0m0s DUPLICATE_IP_DETECTED C >192.168.110.51 (A)",
 		"3h30m0s IP_CHANGED A 192.168.110.51>192.168.110.52",
 		"3h30m0s DUPLICATE_IP_RESOLVED C >192.168.110.51 (A)",
+		"3h30m0s DHCP_CONFIG_CHANGED SRV dns=192.168.110.2>dns=192.168.110.2,192.168.110.4",
+	})
+
+	// The servers, kept apart from the hosts they are; the rogue's offer
+	// bound nothing to the HMI.
+	servers := rows(`SELECT server_id, relay, mac, ip, status, config_json, first_seen, last_seen FROM dhcp_servers ORDER BY id`,
+		func(r *sql.Rows) string {
+			var id, relay, mac, ip, status, cfg string
+			var first, last int64
+			if err := r.Scan(&id, &relay, &mac, &ip, &status, &cfg, &first, &last); err != nil {
+				t.Fatal(err)
+			}
+			return fmt.Sprintf("%s %q %s %s %s %s %s..%s", id, relay, label[mac], ip, status, cfg, at(first), at(last))
+		})
+	expect(t, "dhcp servers", servers, []string{
+		`192.168.110.2 "" SRV 192.168.110.2 allowed {"dns":"192.168.110.2,192.168.110.4","router":"192.168.110.1","subnet_mask":"255.255.255.0"} 10m2s..3h30m0s`,
+		`192.168.110.66 "" ROGUE 192.168.110.66 unexpected {"router":"192.168.110.66","subnet_mask":"255.255.255.0"} 2h30m0s..2h30m0s`,
+	})
+	// Server-confirmed leases keep their own provenance; the servers'
+	// addresses come from their replies.
+	leases := rows(`SELECT a.ip || ' ' || s.source FROM address_sources s JOIN addresses a ON a.id = s.address_id
+		WHERE s.source LIKE 'passive_dhcp%' ORDER BY a.ip, s.source`, scanString)
+	expect(t, "dhcp address sources", leases, []string{
+		"192.168.110.2 passive_dhcp_server", "192.168.110.20 passive_dhcp_lease", "192.168.110.51 passive_dhcp_lease",
+		"192.168.110.52 passive_dhcp_lease", "192.168.110.66 passive_dhcp_server",
 	})
 
 	find := func(ip string, d time.Duration) []string {
@@ -160,7 +191,7 @@ func TestCaptureScenario(t *testing.T) {
 		return label[mac] + " " + name
 	})
 	expect(t, "preferred names", names, []string{
-		"HMI HMI-LINE3", "SRV -", "A plc-a.local", "B -", "C -", "SW plant-sw-01",
+		"HMI HMI-LINE3", "SRV -", "A plc-a.local", "B -", "C -", "SW plant-sw-01", "ROGUE -",
 	})
 	// IPv6 is off by default, and the repeated echo within the refresh
 	// interval was stored once.

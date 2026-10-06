@@ -133,7 +133,8 @@ func New(ctx context.Context, o Options) (*Correlator, error) {
 	return c, nil
 }
 
-// SetConfig applies a reloaded configuration (thresholds; interfaces are
+// SetConfig applies a reloaded configuration: thresholds, and DHCP
+// allowlists at each server's next reply (the set of interfaces is
 // restart-only).
 func (c *Correlator) SetConfig(cfg *config.Config) { c.cfg.Store(cfg) }
 

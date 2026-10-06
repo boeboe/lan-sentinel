@@ -91,9 +91,16 @@ func printSummary(w io.Writer, l *config.Loaded, s config.Summary) {
 			}
 			active += fmt.Sprintf("  sweep %d addresses (%s)", is.SweepTargets, sweepTime(is.SweepSeconds))
 		}
-		rows = append(rows, []string{"  " + is.Name, passive, active})
+		dhcp := "no allowlist"
+		switch {
+		case is.DHCPServers != nil && len(*is.DHCPServers) == 0:
+			dhcp = "none expected"
+		case is.DHCPServers != nil:
+			dhcp = strings.Join(*is.DHCPServers, ", ")
+		}
+		rows = append(rows, []string{"  " + is.Name, passive, active, dhcp})
 	}
-	_ = writeTable(w, []string{"  NAME", "PASSIVE", "ACTIVE"}, rows)
+	_ = writeTable(w, []string{"  NAME", "PASSIVE", "ACTIVE", "DHCP SERVERS"}, rows)
 
 	probes := "none"
 	if len(s.Probes) > 0 {

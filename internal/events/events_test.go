@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"io/fs"
 	"log/slog"
 	"path/filepath"
 	"regexp"
@@ -18,13 +19,24 @@ import (
 	"lan-sentinel/migrations"
 )
 
-// The catalogue must match the CHECK constraint on events.type.
+// The catalogue must match the CHECK constraint on events.type, as the
+// last migration that (re)creates the table defines it.
 func TestCatalogueMatchesSchema(t *testing.T) {
-	schema0, err := migrations.FS.ReadFile("0001_init.sql")
+	files, err := fs.Glob(migrations.FS, "*.sql")
 	if err != nil {
 		t.Fatal(err)
 	}
-	block := regexp.MustCompile(`(?s)type\s+TEXT\s+NOT NULL CHECK \(type IN \((.*?)\)\)`).FindSubmatch(schema0)
+	sort.Strings(files)
+	var block [][]byte
+	for _, name := range files {
+		sql, err := migrations.FS.ReadFile(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if m := regexp.MustCompile(`(?s)type\s+TEXT\s+NOT NULL CHECK \(type IN \((.*?)\)\)`).FindSubmatch(sql); m != nil {
+			block = m
+		}
+	}
 	if block == nil {
 		t.Fatal("events.type CHECK constraint not found")
 	}

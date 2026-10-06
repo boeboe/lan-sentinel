@@ -98,6 +98,8 @@ func TestValidationRules(t *testing.T) {
 		{"tcp zero timeout", iface + "active: { tcp: { targets: [{port: 502}] } }\n", "active.tcp.targets[0].timeout", "greater than zero"},
 		{"zero probe interval", iface + "active: { arp: { interval: 0s } }\n", "active.arp.interval", "at least 10s"},
 		{"udp unknown probe", iface + "active: { udp: { probes: [snmp] } }\n", "active.udp.probes[0]", "must be one of"},
+		{"dhcp server not unicast", iface + "    dhcp: { servers: [192.168.0.1, 255.255.255.255] }\n", "interfaces[0].dhcp.servers[1]", "not a unicast IPv4 address"},
+		{"dhcp server ipv6", iface + "    dhcp: { servers: [fe80::1] }\n", "interfaces[0].dhcp.servers[0]", "not a unicast IPv4 address"},
 		{"udp duplicate probe", iface + "active: { udp: { probes: [ntp, ntp] } }\n", "active.udp.probes[1]", "more than once"},
 		{"udp enabled without probes", iface + "active: { udp: { enabled: true, probes: [] } }\n", "active.udp.probes", "at least one probe"},
 		{"profile udp", iface + "profiles: { x: { udp: [modbus] } }\n", "profiles.x.udp[0]", "must be one of"},

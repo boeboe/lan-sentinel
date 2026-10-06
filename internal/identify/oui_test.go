@@ -1,11 +1,20 @@
 package identify
 
 import (
+	"bufio"
+	"bytes"
+	"compress/gzip"
+	"fmt"
+	"math/rand/v2"
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+
+	"lan-sentinel/data/oui"
+	"lan-sentinel/internal/ouitable"
 )
 
 func mac(t *testing.T, s string) net.HardwareAddr {
@@ -107,5 +116,101 @@ func TestMACFlags(t *testing.T) {
 		if UnicastMAC(m) != tt.unicast || LocallyAdministered(m) != tt.laa {
 			t.Errorf("%s: unicast=%v laa=%v", tt.mac, UnicastMAC(m), LocallyAdministered(m))
 		}
+	}
+}
+
+// registry reads the committed readable registry (data/oui/oui.tsv.gz).
+func registry(t *testing.T) map[string]string {
+	t.Helper()
+	f, err := os.Open("../../data/oui/oui.tsv.gz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	zr, err := gzip.NewReader(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries := map[string]string{}
+	sc := bufio.NewScanner(zr)
+	for sc.Scan() {
+		if prefix, name, ok := strings.Cut(sc.Text(), "\t"); ok && !strings.HasPrefix(prefix, "#") {
+			entries[prefix] = name
+		}
+	}
+	if err := sc.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return entries
+}
+
+// The embedded table is the committed registry, encoded: `make oui` keeps
+// them in step, and every lookup answers as parsing the registry did.
+func TestEmbeddedMatchesRegistry(t *testing.T) {
+	entries := registry(t)
+	want, err := ouitable.Encode(entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(want, oui.Data) {
+		t.Fatal("data/oui/oui.bin is not data/oui/oui.tsv.gz encoded: run make oui (or go run ./data/oui/gen -from-tsv data/oui/oui.tsv.gz)")
+	}
+	var text strings.Builder
+	for prefix, name := range entries {
+		fmt.Fprintf(&text, "%s\t%s\n", prefix, name)
+	}
+	parsed, err := Parse(strings.NewReader(text.String()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	table, err := Embedded()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if table.Len() != parsed.Len() || table.Len() != len(entries) {
+		t.Fatalf("Len = %d, parsed %d, registry %d", table.Len(), parsed.Len(), len(entries))
+	}
+	agree := func(m net.HardwareAddr) {
+		t.Helper()
+		got, gok := table.Lookup(m)
+		want, wok := parsed.Lookup(m)
+		if got != want || gok != wok {
+			t.Fatalf("Lookup(%s) = %q, %v; parsing gives %q, %v", m, got, gok, want, wok)
+		}
+	}
+	for prefix := range entries {
+		digits := prefix + strings.Repeat("0", 12-len(prefix))
+		var m net.HardwareAddr
+		for i := 0; i < 12; i += 2 {
+			b, _ := strconv.ParseUint(digits[i:i+2], 16, 8)
+			m = append(m, byte(b))
+		}
+		agree(m)
+		m[5] ^= 0xff // elsewhere in the block
+		agree(m)
+	}
+	rnd := rand.New(rand.NewPCG(1, 2))
+	for range 200000 {
+		m := make(net.HardwareAddr, 6)
+		v := rnd.Uint64()
+		for i := range m {
+			m[i] = byte(v >> (8 * i))
+		}
+		agree(m)
+	}
+}
+
+// Start-up no longer parses the registry: getting the embedded table
+// allocates (almost) nothing.
+func TestEmbeddedIsNotParsed(t *testing.T) {
+	if _, err := Embedded(); err != nil {
+		t.Fatal(err)
+	}
+	if n := testing.AllocsPerRun(10, func() { _, _ = Embedded() }); n != 0 {
+		t.Errorf("Embedded allocates %v times per call", n)
+	}
+	v, _ := Embedded()
+	if n := testing.AllocsPerRun(100, func() { _, _ = v.Lookup(net.HardwareAddr{0, 0x1b, 0x1b, 1, 2, 3}) }); n > 1 {
+		t.Errorf("Lookup allocates %v times", n)
 	}
 }

@@ -48,6 +48,11 @@ const (
 	InterfaceDown       Type = "INTERFACE_DOWN"
 	SubnetChanged       Type = "SUBNET_CHANGED"
 	DatabaseRecreated   Type = "DATABASE_RECREATED"
+
+	DHCPServerDiscovered Type = "DHCP_SERVER_DISCOVERED"
+	DHCPServerUnexpected Type = "DHCP_SERVER_UNEXPECTED"
+	DHCPServerMACChanged Type = "DHCP_SERVER_MAC_CHANGED"
+	DHCPConfigChanged    Type = "DHCP_CONFIG_CHANGED"
 )
 
 // Severity is an event's severity.
@@ -94,6 +99,10 @@ func init() {
 		{InterfaceDown, "interface-down", Warning},
 		{SubnetChanged, "subnet-changed", Notice},
 		{DatabaseRecreated, "db-recreated", Warning},
+		{DHCPServerDiscovered, "dhcp-server-discovered", Notice},
+		{DHCPServerUnexpected, "dhcp-server-unexpected", Warning},
+		{DHCPServerMACChanged, "dhcp-server-mac-changed", Warning},
+		{DHCPConfigChanged, "dhcp-config-changed", Notice},
 	} {
 		catalogue[s.Type] = s
 	}

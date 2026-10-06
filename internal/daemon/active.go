@@ -63,7 +63,7 @@ func (d *Daemon) startScheduler(ctx context.Context, start func(string, func(con
 			probe.TCP: tcp.Engine{TX: tx}, probe.UDP: udp.Engine{TX: tx},
 		},
 		Budget: d.budget, Switch: d.sw, Emit: func(o observation.Observation) { d.bus.Publish(o) },
-		Operator: d.bus.PublishOperator, Registry: d.registry, Backend: tx.Backend(), Clock: d.clock, Logger: d.log,
+		Operator: d.bus.PublishOperator, Registry: d.registry, Backend: tx.Backend, Clock: d.clock, Logger: d.log,
 	})
 	start("scheduler", d.sched.Run)
 	return nil

@@ -22,26 +22,31 @@ type Source string
 
 // Sources (docs/DATA_MODEL.md §2).
 const (
-	PassiveARP     Source = "passive_arp"
-	PassiveIPv4    Source = "passive_ipv4"
-	PassiveIPv6    Source = "passive_ipv6"
-	PassiveNDP     Source = "passive_ndp"
-	PassiveDHCP    Source = "passive_dhcp"
-	PassiveMDNS    Source = "passive_mdns"
-	PassiveDNS     Source = "passive_dns"
-	PassiveLLDP    Source = "passive_lldp"
-	KernelNeighbor Source = "kernel_neighbor"
-	ARPScan        Source = "arp_scan"
-	ICMPScan       Source = "icmp_scan"
-	NDPProbe       Source = "ndp_probe"
-	TCPConnect     Source = "tcp_connect"
-	UDPProbe       Source = "udp_probe"
+	PassiveARP  Source = "passive_arp"
+	PassiveIPv4 Source = "passive_ipv4"
+	PassiveIPv6 Source = "passive_ipv6"
+	PassiveNDP  Source = "passive_ndp"
+	PassiveDHCP Source = "passive_dhcp"
+	// PassiveDHCPLease is a server's DHCPACK that allocates or renews a
+	// lease (yiaddr); PassiveDHCPServer is the sender of a DHCP reply, the
+	// server or the relay that forwarded it (docs/DATA_MODEL.md §5.6).
+	PassiveDHCPLease  Source = "passive_dhcp_lease"
+	PassiveDHCPServer Source = "passive_dhcp_server"
+	PassiveMDNS       Source = "passive_mdns"
+	PassiveDNS        Source = "passive_dns"
+	PassiveLLDP       Source = "passive_lldp"
+	KernelNeighbor    Source = "kernel_neighbor"
+	ARPScan           Source = "arp_scan"
+	ICMPScan          Source = "icmp_scan"
+	NDPProbe          Source = "ndp_probe"
+	TCPConnect        Source = "tcp_connect"
+	UDPProbe          Source = "udp_probe"
 )
 
 // Sources lists every valid source.
 var Sources = []Source{
-	PassiveARP, PassiveIPv4, PassiveIPv6, PassiveNDP, PassiveDHCP, PassiveMDNS, PassiveDNS, PassiveLLDP,
-	KernelNeighbor, ARPScan, ICMPScan, NDPProbe, TCPConnect, UDPProbe,
+	PassiveARP, PassiveIPv4, PassiveIPv6, PassiveNDP, PassiveDHCP, PassiveDHCPLease, PassiveDHCPServer, PassiveMDNS,
+	PassiveDNS, PassiveLLDP, KernelNeighbor, ARPScan, ICMPScan, NDPProbe, TCPConnect, UDPProbe,
 }
 
 // Valid reports whether s is a known source.
@@ -78,6 +83,24 @@ const (
 const (
 	MetaProbe          = "probe"
 	MetaIdentityPrefix = "id."
+)
+
+// Meta keys of DHCP observations (docs/DATA_MODEL.md §2, §5.6): the
+// message type, the server identifier (option 54, absent when missing or
+// invalid), the relay address (giaddr), whether a relay agent information
+// option (82) was present, the advertised router (3), DNS servers (6) and
+// subnet mask (1), the lease time (51) and, on an ACK that allocates
+// nothing (the answer to an INFORM), config_only.
+const (
+	MetaDHCP         = "dhcp"
+	MetaServerID     = "server_id"
+	MetaRelay        = "relay"
+	MetaRelayAgent   = "relay_agent"
+	MetaRouter       = "router"
+	MetaDNS          = "dns"
+	MetaSubnetMask   = "subnet_mask"
+	MetaLeaseSeconds = "lease_seconds"
+	MetaConfigOnly   = "config_only"
 )
 
 // ProvesPresence reports whether an observation is evidence that its host

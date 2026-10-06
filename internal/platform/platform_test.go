@@ -13,8 +13,15 @@ import (
 
 func TestNewBackends(t *testing.T) {
 	b := platform.New()
-	if b.Capturer.Backend() != "afpacket" || b.Transmitter.Backend() != "socket" || b.Neighbors.Backend() != "netlink" {
-		t.Errorf("backends = %s %s %s", b.Capturer.Backend(), b.Transmitter.Backend(), b.Neighbors.Backend())
+	tx := b.Transmitter
+	if b.Capturer.Backend() != "afpacket" || b.Neighbors.Backend() != "netlink" || tx.Backend(platform.TransportFrames) != "afpacket" ||
+		tx.Backend(platform.TransportTCP) != "socket" || tx.Backend(platform.TransportUDP) != "socket" {
+		t.Errorf("backends = %s %s %s %s %s", b.Capturer.Backend(), b.Neighbors.Backend(), tx.Backend(platform.TransportFrames),
+			tx.Backend(platform.TransportTCP), tx.Backend(platform.TransportUDP))
+	}
+	// Which ICMP socket depends on net.ipv4.ping_group_range.
+	if icmp := tx.Backend(platform.TransportICMP); icmp != "ping socket" && icmp != "raw socket" {
+		t.Errorf("icmp backend = %q", icmp)
 	}
 }
 

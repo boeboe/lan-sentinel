@@ -139,7 +139,7 @@ func TestTransmitter(t *testing.T) {
 		t.Errorf("silent udp: %v", err)
 	}
 	_ = silent.Close()
-	if len(tx.Datagrams()) != 2 || tx.Backend() != "fake" {
+	if len(tx.Datagrams()) != 2 || tx.Backend(platform.TransportFrames) != "fake" {
 		t.Errorf("datagrams = %+v", tx.Datagrams())
 	}
 	tx.FramesErr, tx.ICMPErr = errors.New("eperm"), errors.New("eperm")

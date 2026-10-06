@@ -66,8 +66,8 @@ tools: dev-image ## capcheck for linux/amd64 and linux/arm64 into dist/tools/ (p
 package: release tools ## Release tarballs per target into dist/release/ with SHA256SUMS (VERSION=vX.Y.Z)
 	@$(RUN) build/release.sh package
 
-oui: dev-image ## Regenerate data/oui/oui.tsv.gz from the IEEE registries (each release)
-	@$(RUN) go run ./data/oui/gen -out data/oui/oui.tsv.gz
+oui: dev-image ## Regenerate data/oui/oui.tsv.gz and oui.bin from the IEEE registries (each release)
+	@$(RUN) go run ./data/oui/gen -out data/oui/oui.tsv.gz -bin data/oui/oui.bin
 
 fixtures: dev-image ## Regenerate the synthetic pcap fixtures in test/fixtures
 	@$(RUN) go run ./test/fixtures/gen -dir test/fixtures

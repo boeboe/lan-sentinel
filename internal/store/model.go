@@ -157,6 +157,33 @@ type ServiceRow struct {
 	IPs       []string `json:"ips"`
 }
 
+// DHCPServer is a DHCP server identity seen on an interface through one
+// relay (or none) from one sender (docs/DATA_MODEL.md §5.6).
+type DHCPServer struct {
+	Interface string `json:"interface"`
+	// ServerID is the server identifier (option 54); empty when the replies
+	// had none or an invalid one, so the server's identity is unknown.
+	ServerID string `json:"server_id,omitempty"`
+	Relay    string `json:"relay,omitempty"` // giaddr of relayed replies
+	// MAC and IP are the replies' sender: the server, or the relay.
+	MAC    string `json:"mac"`
+	IP     string `json:"ip,omitempty"`
+	HostID string `json:"host_id,omitempty"`
+	// Status is the allowlist verdict at the last reply: allowed,
+	// unexpected, or unchecked (no allowlist on the interface).
+	Status string `json:"status"`
+	// Config is what the server last advertised: router, dns, subnet_mask.
+	Config    map[string]string `json:"config"`
+	FirstSeen time.Time         `json:"first_seen"`
+	LastSeen  time.Time         `json:"last_seen"`
+}
+
+// DHCPServerFilter selects DHCP servers.
+type DHCPServerFilter struct {
+	Interface string
+	Status    string
+}
+
 // InterfaceInfo is one monitored interface (network context).
 type InterfaceInfo struct {
 	Name      string    `json:"name"`

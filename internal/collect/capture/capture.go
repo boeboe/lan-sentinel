@@ -1,4 +1,4 @@
-// Package capture is the passive capture collector (FR-PA-1 to FR-PA-6):
+// Package capture is the passive capture collector (FR-PA-1 to FR-PA-7):
 // one receive-only AF_PACKET ring per interface through platform.Capturer,
 // a kernel BPF filter limited to the discovery protocols, and the shared
 // decoders. It never transmits and never touches state: decoded frames

@@ -262,6 +262,56 @@ func TestScalarTypes(t *testing.T) {
 	}
 }
 
+// No dhcp.servers is no allowlist; an empty list expects no server.
+func TestDHCPAllowlist(t *testing.T) {
+	base := "version: 1\ninterfaces:\n  - name: eth0\n"
+	for _, tt := range []struct {
+		name, yml string
+		checked   bool
+		allowed   string
+	}{
+		{"no allowlist", base, false, ""},
+		{"none expected", base + "    dhcp: { servers: [] }\n", true, ""},
+		{"one server", base + "    dhcp: { servers: [192.168.0.1] }\n", true, "192.168.0.1"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			d := mustLoad(t, tt.yml, LoadOptions{}).Config.Interfaces[0].DHCP
+			if d.Checked() != tt.checked {
+				t.Errorf("Checked() = %v", d.Checked())
+			}
+			if d.Allowed(netip.Addr{}) || d.Allowed(netip.MustParseAddr("192.168.0.9")) {
+				t.Error("an unknown or unlisted identity is allowed")
+			}
+			if tt.allowed != "" && !d.Allowed(netip.MustParseAddr(tt.allowed)) {
+				t.Errorf("%s not allowed", tt.allowed)
+			}
+			s := Summarize(mustLoad(t, tt.yml, LoadOptions{}).Config).Interfaces[0].DHCPServers
+			if (s != nil) != tt.checked || s != nil && strings.Join(*s, ",") != tt.allowed {
+				t.Errorf("summary = %v", s)
+			}
+		})
+	}
+}
+
+func TestActiveText(t *testing.T) {
+	base := "version: 1\ninterfaces:\n  - name: eth0\n"
+	on := "    active: { enabled: true, networks: [192.168.0.0/24], exclude: [192.168.0.1] }\n"
+	for _, tt := range []struct{ name, yml, want string }{
+		{"off", base, "off"},
+		{"arp", base + on, "arp every 5m on eth0 (192.168.0.0/24 exclude 192.168.0.1)"},
+		{"no probe", base + on + "active: { arp: { enabled: false } }\n", "no probe enabled on eth0 (192.168.0.0/24 exclude 192.168.0.1)"},
+		{"several", base + on + "  - name: eth1\n    active: { enabled: true, networks: [10.0.0.0/24] }\n  - name: eth2\n" +
+			"active: { icmp: { enabled: true }, udp: { enabled: true, probes: [ntp] } }\n",
+			"arp every 5m, icmp every 10m, udp ntp every 15m on eth0 (192.168.0.0/24 exclude 192.168.0.1), eth1 (10.0.0.0/24)"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := Summarize(mustLoad(t, tt.yml, LoadOptions{}).Config).ActiveText(); got != tt.want {
+				t.Errorf("ActiveText() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestDiff(t *testing.T) {
 	old := Defaults()
 	old.Interfaces = []InterfaceConfig{{Name: "eth1"}}

@@ -68,6 +68,7 @@ type fixture struct {
 func start(t *testing.T) *fixture {
 	t.Helper()
 	st, _, exp := storetest.Seed(t, golden)
+	storetest.AddDHCPServers(t, st)
 	r, err := st.Reader(time.Hour)
 	if err != nil {
 		t.Fatal(err)
@@ -172,6 +173,13 @@ func TestEndpoints(t *testing.T) {
 	if err != nil || len(svc) != 1 {
 		t.Errorf("services: %v %+v", err, svc)
 	}
+	servers, err := c.DHCPServers(ctx, store.DHCPServerFilter{Interface: "eth1"})
+	if err != nil || len(servers) != 2 || servers[0].ServerID != "192.168.110.1" || servers[0].Config["router"] != "192.168.110.1" || servers[1].ServerID != "" {
+		t.Errorf("dhcp servers: %v %+v", err, servers)
+	}
+	if rogue, err := c.DHCPServers(ctx, store.DHCPServerFilter{Status: "unexpected"}); err != nil || len(rogue) != 1 || rogue[0].MAC != "02:00:00:00:00:66" {
+		t.Errorf("unexpected dhcp servers: %v %+v", err, rogue)
+	}
 	raw, err := c.Config(ctx)
 	if err != nil || !strings.Contains(string(raw), `"name":"eth2"`) {
 		t.Errorf("config: %v %s", err, raw)
@@ -214,7 +222,7 @@ func TestErrors(t *testing.T) {
 	for _, path := range []string{
 		"/v1/hosts/find", "/v1/history", "/v1/hosts?presence=sometimes", "/v1/hosts?kind=planet&q=x", "/v1/events?type=nonsense",
 		"/v1/events?since=yesterday", "/v1/observations?limit=-1", "/v1/observations?unbound=maybe", "/v1/services?port=x",
-		"/v1/hosts/x/history?since=x", "/v1/hosts/x/evidence?since=x", "/v1/events/stream?port=x",
+		"/v1/hosts/x/history?since=x", "/v1/hosts/x/evidence?since=x", "/v1/events/stream?port=x", "/v1/dhcp/servers?status=rogue",
 	} {
 		resp, err := http.Get("http://" + f.listen + path)
 		if err != nil {

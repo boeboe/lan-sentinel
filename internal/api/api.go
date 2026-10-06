@@ -23,6 +23,7 @@ import (
 	"lan-sentinel/internal/config"
 	"lan-sentinel/internal/events"
 	"lan-sentinel/internal/platform"
+	"lan-sentinel/internal/probe/scheduler"
 	"lan-sentinel/internal/store"
 )
 
@@ -66,7 +67,14 @@ type DatabaseStatus struct {
 // InterfaceStatus is an interface with its collectors.
 type InterfaceStatus struct {
 	store.InterfaceInfo
-	Collectors []platform.CollectorStatus `json:"collectors"`
+	Collectors []CollectorStatus `json:"collectors"`
+}
+
+// CollectorStatus is a collector's state and, for a probe, its last
+// periodic pass.
+type CollectorStatus struct {
+	platform.CollectorStatus
+	LastPass *scheduler.PassSummary `json:"last_pass,omitempty"`
 }
 
 // Subscriber streams live events (events.Engine).
@@ -115,6 +123,7 @@ func New(o Options) *Server {
 		"/v1/events":              s.events,
 		"/v1/events/stream":       s.stream,
 		"/v1/services":            s.services,
+		"/v1/dhcp/servers":        s.dhcpServers,
 		"/v1/config":              s.config,
 		"/v1/db":                  s.db,
 		"/v1/db/check":            s.dbCheck,
@@ -621,6 +630,19 @@ func (s *Server) services(w http.ResponseWriter, r *http.Request) {
 	}
 	svc, err := s.o.Reader.Services(r.Context(), f)
 	s.reply(w, svc, err)
+}
+
+func (s *Server) dhcpServers(w http.ResponseWriter, r *http.Request) {
+	p := &params{r: r}
+	f := store.DHCPServerFilter{Interface: p.str("interface"), Status: p.str("status")}
+	switch strings.ToLower(f.Status) {
+	case "", "allowed", "unexpected", "unchecked":
+	default:
+		s.fail(w, badParam{"status: want allowed, unexpected or unchecked, got " + strconv.Quote(f.Status)})
+		return
+	}
+	servers, err := s.o.Reader.DHCPServers(r.Context(), f)
+	s.reply(w, servers, err)
 }
 
 func (s *Server) config(w http.ResponseWriter, _ *http.Request) {

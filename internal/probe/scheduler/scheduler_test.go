@@ -202,7 +202,7 @@ func newRig(t *testing.T, cfg *config.Config) *rig {
 			}
 			return nil
 		},
-		Registry: r.reg, Backend: "fake", Clock: r.sim, Rand: rand.New(rand.NewPCG(1, 2)),
+		Registry: r.reg, Backend: func(transport string) string { return "fake " + transport }, Clock: r.sim, Rand: rand.New(rand.NewPCG(1, 2)),
 	})
 	return r
 }
@@ -515,6 +515,57 @@ func TestReloadTogglesInterfaceActive(t *testing.T) {
 	r.waitState(probe.ARP, platform.StateDisabled)
 	r.sim.Advance(time.Hour)
 	r.eng[probe.ARP].quiet(t)
+}
+
+// The last periodic pass of each probe is kept for `daemon status`: what
+// was sent and answered; a pass with nothing to send on is not one.
+func TestLastPasses(t *testing.T) {
+	cfg := baseConfig()
+	cfg.Active.StartupDelay, cfg.Active.Jitter = 0, 0
+	cfg.Active.TCP = config.TCPProbeConfig{Enabled: true, Interval: config.Duration(5 * time.Minute),
+		Targets: []config.TCPTarget{{Port: 502, Timeout: config.Duration(time.Second)}}}
+	r := newRig(t, cfg)
+	r.eng[probe.TCP].result = func(p probe.Pass) ([]probe.Result, error) {
+		return []probe.Result{{Port: 502, State: "OPEN"}, {Port: 502, State: "REFUSED"}, {Port: 502, State: "TIMEOUT", Count: 3},
+			{Port: 502, State: probe.Blocked}}, nil
+	}
+	r.s.o.Known = known{"eth1": {netip.MustParseAddr("192.168.110.5")}}
+	if got := r.s.LastPasses(); len(got) != 0 {
+		t.Fatalf("passes before any = %v", got)
+	}
+	r.start()
+	r.advanceUntil(probe.ARP, time.Millisecond)
+	sweep := r.eng[probe.ARP].all()[0]
+	r.advanceUntil(probe.TCP, time.Millisecond)
+	var arp, tcp PassSummary
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(time.Millisecond) {
+		p := r.s.LastPasses()["eth1"]
+		if arp, tcp = p["arp"], p["tcp"]; !arp.At.IsZero() && !tcp.At.IsZero() {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("passes = %+v", r.s.LastPasses())
+		}
+	}
+	if arp.Probed != len(sweep.Targets) || arp.Replied != len(sweep.Targets) || !arp.Complete || arp.Blocked != 0 {
+		t.Errorf("arp pass = %+v (%d targets)", arp, len(sweep.Targets))
+	}
+	if tcp.Probed != 5 || tcp.Replied != 2 || tcp.Blocked != 1 || !tcp.Complete {
+		t.Errorf("tcp pass = %+v", tcp)
+	}
+	if st := r.state(probe.ARP); st.Backend != "fake frames" {
+		t.Errorf("arp backend = %q", st.Backend)
+	}
+	// The link goes away: the next due pass has nothing to send on.
+	r.mu.Lock()
+	r.links = map[string]probe.Link{}
+	r.mu.Unlock()
+	before := r.s.LastPasses()["eth1"]["arp"]
+	r.sim.Advance(6 * time.Minute)
+	time.Sleep(20 * time.Millisecond)
+	if after := r.s.LastPasses()["eth1"]["arp"]; after != before {
+		t.Errorf("a pass without a link was recorded: %+v", after)
+	}
 }
 
 // advanceUntil moves the clock in steps until p runs and returns how far it

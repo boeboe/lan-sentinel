@@ -29,6 +29,7 @@ type backend interface {
 	Rollups(ctx context.Context, f store.ObservationFilter) ([]store.Rollup, error)
 	Events(ctx context.Context, f store.EventFilter) ([]store.Event, error)
 	Services(ctx context.Context, f store.ServiceFilter) ([]store.ServiceRow, error)
+	DHCPServers(ctx context.Context, f store.DHCPServerFilter) ([]store.DHCPServer, error)
 	DBInfo(ctx context.Context) (store.DBInfo, error)
 	DBCheck(ctx context.Context) (store.CheckResult, error)
 	Close() error

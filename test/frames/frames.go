@@ -5,6 +5,7 @@
 package frames
 
 import (
+	"encoding/binary"
 	"net"
 	"net/netip"
 
@@ -120,6 +121,14 @@ type DHCP struct {
 	VendorClass  string
 	Server       net.HardwareAddr // frame source for server messages
 	ServerIP     string
+	// Server options and relaying (offer, ack, nak).
+	ServerID     string   // option 54
+	Router       []string // option 3
+	DNS          []string // option 6
+	SubnetMask   string   // option 1
+	LeaseSeconds uint32   // option 51; 0: none
+	Relay        string   // giaddr
+	RelayAgent   []byte   // option 82
 }
 
 // Frame builds the DHCP message as a client (discover, request, decline,
@@ -136,6 +145,9 @@ func (d DHCP) Frame() []byte {
 	if d.YourIP != "" {
 		msg.YourClientIP = IP(d.YourIP).To4()
 	}
+	if d.Relay != "" {
+		msg.RelayAgentIP = IP(d.Relay).To4()
+	}
 	add := func(t layers.DHCPOpt, v []byte) {
 		if len(v) > 0 {
 			msg.Options = append(msg.Options, layers.NewDHCPOption(t, v))
@@ -145,6 +157,23 @@ func (d DHCP) Frame() []byte {
 	add(layers.DHCPOptClientID, d.ClientID)
 	add(layers.DHCPOptParamsRequest, d.ParamRequest)
 	add(layers.DHCPOptClassID, []byte(d.VendorClass))
+	addrs := func(list ...string) []byte {
+		var b []byte
+		for _, a := range list {
+			if a != "" {
+				b = append(b, IP(a).To4()...)
+			}
+		}
+		return b
+	}
+	add(layers.DHCPOptServerID, addrs(d.ServerID))
+	add(layers.DHCPOptRouter, addrs(d.Router...))
+	add(layers.DHCPOptDNS, addrs(d.DNS...))
+	add(layers.DHCPOptSubnetMask, addrs(d.SubnetMask))
+	if d.LeaseSeconds > 0 {
+		add(layers.DHCPOptLeaseTime, binary.BigEndian.AppendUint32(nil, d.LeaseSeconds))
+	}
+	add(layers.DHCPOpt(82), d.RelayAgent)
 	switch d.Type {
 	case layers.DHCPMsgTypeOffer, layers.DHCPMsgTypeAck, layers.DHCPMsgTypeNak:
 		msg.Operation = layers.DHCPOpReply

@@ -76,7 +76,7 @@ make test-net     # network integration tests in Docker (CAP_NET_RAW only)
 make test-systemd # daemon under systemd in a container with the deploy/ unit
 make run-dev      # daemon in the dev container on deploy/config.dev.yaml (replay)
 make tools        # tools/capcheck for linux/amd64 + linux/arm64 (privilege check for boards)
-make oui          # regenerate the embedded IEEE OUI table (each release)
+make oui          # regenerate the IEEE OUI registry and the embedded table (each release)
 make fixtures     # regenerate the synthetic pcap fixtures in test/fixtures
 make fmt / tidy   # fix formatting / go.mod
 make shell        # shell in the dev container

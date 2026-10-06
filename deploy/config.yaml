@@ -7,6 +7,8 @@ interfaces:
   - name: eth0
     passive: { enabled: true, promiscuous: false }   # promiscuous only on a mirror/SPAN port
     active:  { enabled: false }                      # active discovery is off until reviewed per site
+    # dhcp: { servers: [192.168.0.1] }               # allowed DHCP server identifiers (option 54); others raise
+    #                                                # DHCP_SERVER_UNEXPECTED; [] expects none; unset: no verdict
   # - name: eth1
   #   passive: { enabled: true }
   #   active:

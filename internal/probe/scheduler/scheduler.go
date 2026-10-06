@@ -63,10 +63,11 @@ type Options struct {
 	Emit     func(observation.Observation)
 	Operator func(context.Context, observation.Operator) error
 	Registry *platform.Registry
-	Backend  string
-	Clock    clock.Clock
-	Logger   *slog.Logger
-	Rand     *rand.Rand
+	// Backend names the facility behind a transport (Transmitter.Backend).
+	Backend func(transport string) string
+	Clock   clock.Clock
+	Logger  *slog.Logger
+	Rand    *rand.Rand
 	// ReplyTimeout overrides probe.DefaultReplyTimeout (tests).
 	ReplyTimeout time.Duration
 }
@@ -77,6 +78,28 @@ var Protocols = []probe.Protocol{probe.ARP, probe.ICMP, probe.TCP, probe.UDP}
 var collectors = map[probe.Protocol]string{
 	probe.ARP: platform.CollectorARP, probe.ICMP: platform.CollectorICMP,
 	probe.TCP: platform.CollectorTCP, probe.UDP: platform.CollectorUDP,
+}
+
+// transports says how each protocol's probes leave the box.
+var transports = map[probe.Protocol]string{
+	probe.ARP: platform.TransportFrames, probe.ICMP: platform.TransportICMP,
+	probe.TCP: platform.TransportTCP, probe.UDP: platform.TransportUDP,
+}
+
+// PassSummary is the outcome of the last periodic pass of a probe on an
+// interface, for `daemon status`; passes are never logged.
+type PassSummary struct {
+	At      time.Time `json:"at"` // when it ended
+	Seconds float64   `json:"seconds"`
+	// Probed counts the probes sent (an ARP sweep's addresses, TCP connects);
+	// Replied those answered: a reply, or TCP OPEN or REFUSED; Blocked the
+	// ones the policy refused, which were not sent.
+	Probed  int `json:"probed"`
+	Replied int `json:"replied"`
+	Blocked int `json:"blocked,omitempty"`
+	// Complete is false for a pass cut short: the kill switch, a reload, a
+	// failure.
+	Complete bool `json:"complete"`
 }
 
 // Scheduler runs periodic probe passes and operator scans.
@@ -90,6 +113,7 @@ type Scheduler struct {
 	reload    chan struct{}
 	counts    map[Count]uint64
 	durations map[[2]string]float64
+	passes    map[[2]string]PassSummary // interface, collector
 }
 
 // Count is a lan_sentinel_probe_total series.
@@ -113,7 +137,7 @@ func New(o Options) *Scheduler {
 	}
 	return &Scheduler{
 		o: o, backoff: probe.NewBackoff(), rnd: o.Rand, reload: make(chan struct{}),
-		counts: map[Count]uint64{}, durations: map[[2]string]float64{},
+		counts: map[Count]uint64{}, durations: map[[2]string]float64{}, passes: map[[2]string]PassSummary{},
 	}
 }
 
@@ -188,6 +212,39 @@ func (s *Scheduler) record(iface string, p probe.Protocol, results []probe.Resul
 	s.durations[[2]string{iface, string(p)}] = took.Seconds()
 }
 
+// summarise records a periodic pass for LastPasses.
+func (s *Scheduler) summarise(iface string, p probe.Protocol, results []probe.Result, took time.Duration, complete bool) {
+	sum := PassSummary{At: s.o.Clock.Now().UTC(), Seconds: took.Seconds(), Complete: complete}
+	for _, r := range results {
+		switch r.State {
+		case probe.Blocked:
+			sum.Blocked += r.N()
+			continue
+		case probe.Reply, string(observation.ServiceOpen), string(observation.ServiceRefused):
+			sum.Replied += r.N()
+		}
+		sum.Probed += r.N()
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.passes[[2]string{iface, collectors[p]}] = sum
+}
+
+// LastPasses returns the last periodic pass per interface and probe
+// collector (arp, icmp, tcp, udp).
+func (s *Scheduler) LastPasses() map[string]map[string]PassSummary {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := map[string]map[string]PassSummary{}
+	for k, v := range s.passes {
+		if out[k[0]] == nil {
+			out[k[0]] = map[string]PassSummary{}
+		}
+		out[k[0]][k[1]] = v
+	}
+	return out
+}
+
 // portLabel keeps the port label's values few (CLAUDE.md rule 9): the UDP
 // probes' ports and the TCP ports of the configuration (active.tcp.targets
 // and profiles); a TCP port given only to `scan run` is "other".
@@ -237,9 +294,14 @@ func (s *Scheduler) Run(ctx context.Context) error {
 }
 
 func (s *Scheduler) report(iface string, p probe.Protocol, state platform.State, err error) {
-	if s.o.Registry != nil {
-		s.o.Registry.Set(iface, collectors[p], s.o.Backend, state, err)
+	if s.o.Registry == nil {
+		return
 	}
+	backend := ""
+	if s.o.Backend != nil {
+		backend = s.o.Backend(transports[p])
+	}
+	s.o.Registry.Set(iface, collectors[p], backend, state, err)
 }
 
 // probeConfig returns whether p runs periodically and how often.
@@ -319,8 +381,12 @@ func (s *Scheduler) loop(ctx context.Context, iface string, p probe.Protocol) {
 			}
 		}
 		start := s.o.Clock.Now()
-		results, err := s.pass(ctx, cfg, iface, p, interval)
-		s.record(iface, p, results, s.o.Clock.Now().Sub(start))
+		results, ran, err := s.pass(ctx, cfg, iface, p, interval)
+		took := s.o.Clock.Now().Sub(start)
+		s.record(iface, p, results, took)
+		if ran {
+			s.summarise(iface, p, results, took, err == nil && ctx.Err() == nil)
+		}
 		switch {
 		case errors.Is(err, probe.ErrDisabled), ctx.Err() != nil:
 		case err != nil:
@@ -380,20 +446,21 @@ func (s *Scheduler) newPass(ctx context.Context, iface string) (probe.Pass, bool
 }
 
 // pass runs one periodic pass: ARP sweeps the configured networks; ICMP,
-// TCP and UDP probe the known hosts that are due (back-off).
-func (s *Scheduler) pass(ctx context.Context, cfg *config.Config, iface string, p probe.Protocol, interval time.Duration) ([]probe.Result, error) {
+// TCP and UDP probe the known hosts that are due (back-off). ran is false
+// when there was nothing to send on (the interface is absent or down).
+func (s *Scheduler) pass(ctx context.Context, cfg *config.Config, iface string, p probe.Protocol, interval time.Duration) (results []probe.Result, ran bool, err error) {
 	ic, ok := probe.InterfaceConfig(cfg, iface)
 	if !ok {
-		return nil, nil
+		return nil, false, nil
 	}
 	pass, ok := s.newPass(ctx, iface)
 	if !ok {
-		return nil, nil
+		return nil, false, nil
 	}
 	pctx, cancel := s.passContext(ctx)
 	defer cancel()
-	results, err := s.periodic(pctx, cfg, ic, pass, p, interval)
-	return results, s.stopped(err)
+	results, err = s.periodic(pctx, cfg, ic, pass, p, interval)
+	return results, true, s.stopped(err)
 }
 
 // stopped reports a pass cut short by the kill switch as ErrDisabled, not

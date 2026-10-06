@@ -6,7 +6,8 @@
 # It runs once per target Debian release (RELEASES, default: the targets
 # bullseye, bookworm and trixie, systemd 247, 252 and 257).
 # Checks Type=notify start-up, the service identity and capabilities, the
-# clock sync state, the database, SIGHUP and `config reload`, clean shutdown and the
+# clock sync state, the database, SIGHUP and `config reload`, an upgrade with
+# the same install commands, clean shutdown and the
 # systemd-analyze score, and runs tools/capcheck as a transient unit with
 # exactly the reference unit's [Service] sandboxing and capabilities.
 set -euo pipefail
@@ -59,6 +60,8 @@ check() { # check DESCRIPTION COMMAND...
 	if "$@"; then echo "ok:   $d"; else echo "FAIL: $d" >&2; fail=1; fi
 }
 journal_has() { x journalctl -u lan-sentinel --no-pager -o cat | grep -q "$1"; }
+journal_count() { x journalctl -u lan-sentinel --no-pager -o cat | grep -c "$1" || true; }
+journal_more() { [ "$(journal_count "$1")" -gt "$2" ]; } # journal_more TEXT N: more than N lines with TEXT
 wait_for() { # wait_for SECONDS COMMAND...
 	local n=$1
 	shift
@@ -131,8 +134,31 @@ fi
 check "capcheck sees root with CAP_NET_RAW only" grep -Eq '^privilege: +CapEff=0x2000: euid 0 \(root\), CAP_NET_RAW$' "$work/capcheck.txt"
 if [ "$fail" != 0 ] || [ -n "${KEEP_JOURNAL:-}" ]; then cat "$work/capcheck.txt"; fi
 
+# The same commands again, as an upgrade over the running daemon: they keep
+# the site's config and restart the daemon on the installed binary.
+x sh -c 'echo "# site edit, kept across upgrades" >>/etc/lan-sentinel/config.yaml'
+before=$(x systemctl show -p MainPID --value lan-sentinel)
+stops=$(journal_count "lan-sentinel stopped")
+if docker exec -w /root/release "$NAME" bash -euxo pipefail -c "$install_block" >"$work/upgrade.txt" 2>&1; then
+	echo "ok:   the install commands run again over the running daemon"
+else
+	echo "FAIL: the install commands run again over the running daemon" >&2
+	cat "$work/upgrade.txt" >&2
+	fail=1
+fi
+restarted() {
+	local now
+	now=$(x systemctl show -p MainPID --value lan-sentinel)
+	[ "$now" != 0 ] && [ "$now" != "$before" ]
+}
+check "the upgrade keeps the site's config" x grep -q "site edit, kept across upgrades" /etc/lan-sentinel/config.yaml
+check "the upgrade restarts the daemon" wait_for 60 restarted
+check "service active after the upgrade" wait_for 60 x systemctl is-active --quiet lan-sentinel
+check "the upgrade stopped the previous daemon cleanly" journal_more "lan-sentinel stopped" "$stops"
+
+stops=$(journal_count "lan-sentinel stopped")
 x systemctl stop lan-sentinel
-check "clean shutdown" wait_for 15 journal_has "lan-sentinel stopped"
+check "clean shutdown" wait_for 15 journal_more "lan-sentinel stopped" "$stops"
 check "WAL and -shm removed on shutdown (after API traffic)" x sh -c '! test -e /data/lan-sentinel/hosts.db-wal && ! test -e /data/lan-sentinel/hosts.db-shm'
 
 summary+=("Debian $release: $(x systemctl --version | head -1 | cut -d' ' -f1-2), exposure ${score:-unknown}, clock ${clock:-unknown}: $([ "$fail" = 0 ] && echo PASS || echo FAIL)")
