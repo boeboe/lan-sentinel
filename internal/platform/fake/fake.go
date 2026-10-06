@@ -8,6 +8,7 @@ import (
 	"errors"
 	"net"
 	"net/netip"
+	"os"
 	"sync"
 	"time"
 
@@ -270,24 +271,88 @@ type SentFrame struct {
 	Data      []byte
 }
 
-// Transmitter records frames and answers TCP dials from a table.
+// Transmitter records probes and answers them through scriptable
+// responders, like the hosts on a network would.
 type Transmitter struct {
 	mu     sync.Mutex
 	frames []SentFrame
 	dials  []netip.AddrPort
+	udp    []UDPDatagram
+	echoes []netip.Addr
 	// TCPResult maps a target to the error DialTCP returns; nil or missing
 	// means the connection succeeds.
 	TCPResult map[netip.AddrPort]error
+	// FrameReply answers a frame written to a frame connection with frames
+	// delivered to that connection's reader.
+	FrameReply func(iface string, frame []byte) [][]byte
+	// EchoReply answers an ICMP message sent to dst (nil: no reply).
+	EchoReply func(dst netip.Addr, msg []byte) []byte
+	// UDPReply answers a UDP payload sent to addr (nil: no reply).
+	UDPReply func(addr netip.AddrPort, payload []byte) []byte
+	// FramesErr and ICMPErr, if set, are returned when opening.
+	FramesErr, ICMPErr error
+}
+
+// UDPDatagram is a UDP payload sent by a probe.
+type UDPDatagram struct {
+	Interface string
+	Addr      netip.AddrPort
+	Payload   []byte
 }
 
 // Backend implements platform.Transmitter.
 func (t *Transmitter) Backend() string { return "fake" }
 
-// SendFrame implements platform.Transmitter.
-func (t *Transmitter) SendFrame(_ context.Context, iface string, frame []byte) error {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	t.frames = append(t.frames, SentFrame{Interface: iface, Data: append([]byte(nil), frame...)})
+// Frames implements platform.Transmitter.
+func (t *Transmitter) Frames(_ context.Context, iface string, _ uint16) (platform.FrameConn, error) {
+	if t.FramesErr != nil {
+		return nil, t.FramesErr
+	}
+	return &frameConn{t: t, iface: iface, in: make(chan platform.Frame, 1024), done: make(chan struct{})}, nil
+}
+
+type frameConn struct {
+	t     *Transmitter
+	iface string
+	in    chan platform.Frame
+	done  chan struct{}
+	once  sync.Once
+}
+
+func (c *frameConn) WriteFrame(_ context.Context, frame []byte) error {
+	select {
+	case <-c.done:
+		return net.ErrClosed
+	default:
+	}
+	c.t.mu.Lock()
+	c.t.frames = append(c.t.frames, SentFrame{Interface: c.iface, Data: append([]byte(nil), frame...)})
+	reply := c.t.FrameReply
+	c.t.mu.Unlock()
+	if reply != nil {
+		for _, r := range reply(c.iface, frame) {
+			select {
+			case c.in <- platform.Frame{Time: time.Now(), Interface: c.iface, Data: r}:
+			default:
+			}
+		}
+	}
+	return nil
+}
+
+func (c *frameConn) ReadFrame(ctx context.Context) (platform.Frame, error) {
+	select {
+	case f := <-c.in:
+		return f, nil
+	case <-c.done:
+		return platform.Frame{}, net.ErrClosed
+	case <-ctx.Done():
+		return platform.Frame{}, ctx.Err()
+	}
+}
+
+func (c *frameConn) Close() error {
+	c.once.Do(func() { close(c.done) })
 	return nil
 }
 
@@ -305,13 +370,107 @@ func (t *Transmitter) DialTCP(_ context.Context, _ string, addr netip.AddrPort, 
 	return c1, nil
 }
 
-// ICMPConn implements platform.Transmitter.
-func (t *Transmitter) ICMPConn(context.Context, string, bool) (net.PacketConn, error) {
-	return nil, errors.New("fake: ICMP not simulated")
+// DialUDP implements platform.Transmitter.
+func (t *Transmitter) DialUDP(_ context.Context, iface string, addr netip.AddrPort) (net.Conn, error) {
+	return &udpConn{t: t, iface: iface, addr: addr, in: make(chan []byte, 4)}, nil
 }
 
-// Frames returns every frame sent so far.
-func (t *Transmitter) Frames() []SentFrame {
+// udpConn is a connected UDP socket whose replies come from UDPReply.
+type udpConn struct {
+	net.Conn // unused methods
+	t        *Transmitter
+	iface    string
+	addr     netip.AddrPort
+	in       chan []byte
+	deadline time.Time
+}
+
+func (u *udpConn) Write(p []byte) (int, error) {
+	u.t.mu.Lock()
+	u.t.udp = append(u.t.udp, UDPDatagram{Interface: u.iface, Addr: u.addr, Payload: append([]byte(nil), p...)})
+	reply := u.t.UDPReply
+	u.t.mu.Unlock()
+	if reply != nil {
+		if r := reply(u.addr, p); r != nil {
+			u.in <- r
+		}
+	}
+	return len(p), nil
+}
+
+func (u *udpConn) Read(p []byte) (int, error) {
+	var timeout <-chan time.Time
+	if !u.deadline.IsZero() {
+		timer := time.NewTimer(time.Until(u.deadline))
+		defer timer.Stop()
+		timeout = timer.C
+	}
+	select {
+	case r := <-u.in:
+		return copy(p, r), nil
+	case <-timeout:
+		return 0, os.ErrDeadlineExceeded
+	}
+}
+
+func (u *udpConn) SetReadDeadline(t time.Time) error { u.deadline = t; return nil }
+func (u *udpConn) SetDeadline(t time.Time) error     { u.deadline = t; return nil }
+func (u *udpConn) Close() error                      { return nil }
+
+// ICMPConn implements platform.Transmitter: a ping socket answering from
+// EchoReply.
+func (t *Transmitter) ICMPConn(context.Context, string) (platform.EchoConn, error) {
+	if t.ICMPErr != nil {
+		return nil, t.ICMPErr
+	}
+	return &echoConn{t: t, in: make(chan echo, 64), done: make(chan struct{})}, nil
+}
+
+type echo struct {
+	msg  []byte
+	from netip.Addr
+}
+
+type echoConn struct {
+	t    *Transmitter
+	in   chan echo
+	done chan struct{}
+	once sync.Once
+}
+
+func (e *echoConn) Ping() bool { return true }
+
+func (e *echoConn) WriteTo(msg []byte, dst netip.Addr) error {
+	e.t.mu.Lock()
+	e.t.echoes = append(e.t.echoes, dst)
+	reply := e.t.EchoReply
+	e.t.mu.Unlock()
+	if reply != nil {
+		if r := reply(dst, msg); r != nil {
+			e.in <- echo{r, dst}
+		}
+	}
+	return nil
+}
+
+func (e *echoConn) ReadFrom(ctx context.Context, buf []byte) (int, netip.Addr, error) {
+	select {
+	case r := <-e.in:
+		return copy(buf, r.msg), r.from, nil
+	case <-e.done:
+		return 0, netip.Addr{}, net.ErrClosed
+	case <-ctx.Done():
+		return 0, netip.Addr{}, ctx.Err()
+	}
+}
+
+func (e *echoConn) Close() error {
+	e.once.Do(func() { close(e.done) })
+	return nil
+}
+
+// SentFrames returns every frame sent so far.
+func (t *Transmitter) SentFrames() []SentFrame {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return append([]SentFrame(nil), t.frames...)
@@ -322,6 +481,20 @@ func (t *Transmitter) Dials() []netip.AddrPort {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return append([]netip.AddrPort(nil), t.dials...)
+}
+
+// Datagrams returns every UDP probe payload sent so far.
+func (t *Transmitter) Datagrams() []UDPDatagram {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return append([]UDPDatagram(nil), t.udp...)
+}
+
+// Echoes returns every ICMP destination so far.
+func (t *Transmitter) Echoes() []netip.Addr {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return append([]netip.Addr(nil), t.echoes...)
 }
 
 // Backends returns a full set of fakes.

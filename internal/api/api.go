@@ -48,7 +48,7 @@ type Status struct {
 	Active     store.ActiveState         `json:"active"`
 	Interfaces []InterfaceStatus         `json:"interfaces"`
 	Hosts      map[string]map[string]int `json:"hosts"` // interface → presence → count
-	LastScan   *time.Time                `json:"last_scan"`
+	LastScan   *store.Scan               `json:"last_scan"`
 }
 
 // DatabaseStatus is the database part of the status.
@@ -81,7 +81,10 @@ type Options struct {
 	Config     func() any // the effective configuration
 	Events     Subscriber
 	Metrics    http.Handler // served on the TCP listener only; nil disables it
-	Logger     *slog.Logger
+	// Control serves the operator endpoints (kill switch, scans); nil
+	// answers them with 503.
+	Control Control
+	Logger  *slog.Logger
 }
 
 // Server serves the API.
@@ -117,6 +120,14 @@ func New(o Options) *Server {
 	} {
 		s.mux.HandleFunc(path, readOnly(h))
 	}
+	for path, h := range map[string]http.HandlerFunc{
+		"/v1/active/disable": s.activeDisable,
+		"/v1/active/enable":  s.activeEnable,
+		"/v1/scans/plan":     s.scanPlan,
+		"/v1/scans":          s.scan,
+	} {
+		s.mux.HandleFunc(path, postOnly(h))
+	}
 	s.mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, errorBody{"no such endpoint: " + r.URL.Path})
 	})
@@ -124,7 +135,7 @@ func New(o Options) *Server {
 }
 
 // readOnly allows GET (and HEAD) only, answering other methods with a JSON
-// 405: every v1 endpoint reads.
+// 405: every v1 endpoint but the operator ones reads.
 func readOnly(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
@@ -230,6 +241,7 @@ func (s *Server) server(ctx context.Context, h http.Handler) *http.Server {
 		Handler:           h,
 		ReadHeaderTimeout: 5 * time.Second,
 		BaseContext:       func(net.Listener) context.Context { return ctx },
+		ConnContext:       func(ctx context.Context, c net.Conn) context.Context { return context.WithValue(ctx, connKey{}, c) },
 		ErrorLog:          slog.NewLogLogger(s.o.Logger.Handler(), slog.LevelDebug),
 	}
 }

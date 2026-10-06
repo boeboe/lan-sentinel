@@ -30,6 +30,8 @@ import (
 	"lan-sentinel/internal/logging"
 	"lan-sentinel/internal/observation"
 	"lan-sentinel/internal/platform"
+	"lan-sentinel/internal/probe"
+	"lan-sentinel/internal/probe/scheduler"
 	"lan-sentinel/internal/service"
 	"lan-sentinel/internal/store"
 )
@@ -75,6 +77,11 @@ type Daemon struct {
 	correlator *correlate.Correlator
 	replayDone chan struct{}
 	stop       func() // stops the pipeline: collectors, drain, correlator
+
+	sw       *probe.Switch        // the kill switch
+	switchMu sync.Mutex           // serialises kill-switch changes
+	budget   *probe.Budget        // live mode only
+	sched    *scheduler.Scheduler // live mode only
 }
 
 // Ready is closed once the daemon has signalled readiness.
@@ -160,7 +167,17 @@ func (d *Daemon) Run(ctx context.Context) error {
 	}
 	d.log.Info("database ready", "path", st.Path(), "schema_version", st.SchemaVersion())
 
+	if d.reader, err = st.Reader(loaded.Config.Identity.NameExpiry.D()); err != nil {
+		_ = d.store.Close()
+		return err
+	}
+	if err := d.initSwitch(ctx); err != nil {
+		_ = d.reader.Close()
+		_ = d.store.Close()
+		return fmt.Errorf("read the kill switch: %w", err)
+	}
 	if err := d.startPipeline(ctx); err != nil {
+		_ = d.reader.Close()
 		_ = d.store.Close()
 		return err
 	}
@@ -335,6 +352,9 @@ func (d *Daemon) reload() {
 	}
 	if d.reader != nil {
 		d.reader.SetNameExpiry(next.Identity.NameExpiry.D())
+	}
+	if d.sched != nil {
+		d.sched.Reload()
 	}
 	d.log.Info("configuration reloaded", "path", loaded.Path, "log_level", next.Logging.Level)
 }

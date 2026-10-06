@@ -96,7 +96,11 @@ func TestValidationRules(t *testing.T) {
 		{"tcp per interface above total", iface + "active: { max_concurrent_probes: 2, budgets: { tcp: { max_concurrent_per_interface: 3 } } }\n", "active.budgets.tcp.max_concurrent_per_interface", "must not exceed"},
 		{"tcp bad port", iface + "active: { tcp: { targets: [{port: 70000, timeout: 1s}] } }\n", "active.tcp.targets[0].port", "between 1 and 65535"},
 		{"tcp zero timeout", iface + "active: { tcp: { targets: [{port: 502}] } }\n", "active.tcp.targets[0].timeout", "greater than zero"},
-		{"zero probe interval", iface + "active: { arp: { interval: 0s } }\n", "active.arp.interval", "greater than zero"},
+		{"zero probe interval", iface + "active: { arp: { interval: 0s } }\n", "active.arp.interval", "at least 10s"},
+		{"udp unknown probe", iface + "active: { udp: { probes: [snmp] } }\n", "active.udp.probes[0]", "must be one of"},
+		{"udp duplicate probe", iface + "active: { udp: { probes: [ntp, ntp] } }\n", "active.udp.probes[1]", "more than once"},
+		{"udp enabled without probes", iface + "active: { udp: { enabled: true, probes: [] } }\n", "active.udp.probes", "at least one probe"},
+		{"profile udp", iface + "profiles: { x: { udp: [modbus] } }\n", "profiles.x.udp[0]", "must be one of"},
 		{"bad profile name", iface + "profiles: { Modbus: { arp: true } }\n", "profiles.Modbus", "lowercase"},
 		{"bad profile port", iface + "profiles: { m: { tcp: [0] } }\n", "profiles.m.tcp[0]", "between 1 and 65535"},
 		{"presence stale order", iface + "presence: { recent: 30m, stale: 10m }\n", "presence.stale", "longer than presence.recent"},
@@ -141,9 +145,9 @@ func TestScalarYAMLAndText(t *testing.T) {
 }
 
 func TestSummaryICMPAndEmptyProfile(t *testing.T) {
-	l := mustLoad(t, minimal+"    active: { enabled: true, networks: [10.0.0.0/24] }\nactive: { icmp: { enabled: true } }\nprofiles: {}\n", LoadOptions{})
+	l := mustLoad(t, minimal+"    active: { enabled: true, networks: [10.0.0.0/24] }\nactive: { icmp: { enabled: true }, udp: { enabled: true } }\nprofiles: {}\n", LoadOptions{})
 	s := Summarize(l.Config)
-	if len(s.Probes) != 2 || !strings.HasPrefix(s.Probes[1], "icmp every") || s.MaxPacketsPerSecond != 15 {
+	if len(s.Probes) != 3 || !strings.HasPrefix(s.Probes[1], "icmp every") || s.Probes[2] != "udp ntp, enip every 15m" || s.MaxPacketsPerSecond != 20 {
 		t.Errorf("summary = %+v", s)
 	}
 	settings, err := l.Settings()

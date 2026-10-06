@@ -75,8 +75,11 @@ func (a *app) statusText(w io.Writer, st api.Status) {
 	}
 	fmt.Fprintf(w, "Active:     %s\n", active)
 	last := "never"
-	if st.LastScan != nil {
-		last = a.stamp(*st.LastScan)
+	if ls := st.LastScan; ls != nil {
+		last = fmt.Sprintf("%s  %s  %s (%s)", a.stamp(ls.Started), ls.Interface, ls.Kind, ls.Trigger)
+		if ls.Finished == nil {
+			last += "  running"
+		}
 	}
 	fmt.Fprintf(w, "Last scan:  %s\n", last)
 	fmt.Fprintln(w, "Interfaces:")

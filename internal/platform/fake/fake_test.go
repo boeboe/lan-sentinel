@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/netip"
+	"os"
 	"testing"
 	"time"
 
@@ -78,20 +79,74 @@ func TestInterfacesAndNeighbors(t *testing.T) {
 }
 
 func TestTransmitter(t *testing.T) {
-	tx := &Transmitter{}
-	ctx := context.Background()
-	if err := tx.SendFrame(ctx, "eth1", []byte{1, 2}); err != nil || len(tx.Frames()) != 1 || tx.Frames()[0].Interface != "eth1" {
-		t.Errorf("SendFrame: %v %+v", err, tx.Frames())
+	tx := &Transmitter{
+		FrameReply: func(_ string, f []byte) [][]byte { return [][]byte{append([]byte("re:"), f...)} },
+		EchoReply:  func(_ netip.Addr, msg []byte) []byte { return msg },
+		UDPReply: func(a netip.AddrPort, p []byte) []byte {
+			if a.Port() == 123 {
+				return p
+			}
+			return nil
+		},
 	}
+	ctx := context.Background()
+	fc, err := tx.Frames(ctx, "eth1", 0x0806)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fc.WriteFrame(ctx, []byte("frame")); err != nil || len(tx.SentFrames()) != 1 || tx.SentFrames()[0].Interface != "eth1" {
+		t.Errorf("WriteFrame: %v %+v", err, tx.SentFrames())
+	}
+	if f, err := fc.ReadFrame(ctx); err != nil || string(f.Data) != "re:frame" || f.Interface != "eth1" {
+		t.Errorf("ReadFrame = %+v, %v", f, err)
+	}
+	_ = fc.Close()
+	if _, err := fc.ReadFrame(ctx); err == nil || fc.WriteFrame(ctx, []byte("x")) == nil {
+		t.Error("closed frame connection still works")
+	}
+
 	conn, err := tx.DialTCP(ctx, "eth1", netip.MustParseAddrPort("10.0.0.1:502"), time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
 	_ = conn.Close()
-	if _, err := tx.ICMPConn(ctx, "eth1", false); err == nil {
-		t.Error("ICMPConn should not be simulated")
+
+	ec, err := tx.ICMPConn(ctx, "eth1")
+	if err != nil || !ec.Ping() {
+		t.Fatal(err)
 	}
-	if tx.Backend() != "fake" {
-		t.Error("backend name")
+	dst := netip.MustParseAddr("10.0.0.1")
+	_ = ec.WriteTo([]byte{8, 0}, dst)
+	buf := make([]byte, 16)
+	if n, from, err := ec.ReadFrom(ctx, buf); err != nil || n != 2 || from != dst || len(tx.Echoes()) != 1 {
+		t.Errorf("echo: %d %v %v", n, from, err)
+	}
+	_ = ec.Close()
+	if _, _, err := ec.ReadFrom(ctx, buf); err == nil {
+		t.Error("closed echo connection still reads")
+	}
+
+	uc, _ := tx.DialUDP(ctx, "eth1", netip.MustParseAddrPort("10.0.0.1:123"))
+	_, _ = uc.Write([]byte("ntp"))
+	_ = uc.SetReadDeadline(time.Now().Add(time.Second))
+	if n, err := uc.Read(buf); err != nil || string(buf[:n]) != "ntp" {
+		t.Errorf("udp reply: %q %v", buf[:n], err)
+	}
+	silent, _ := tx.DialUDP(ctx, "eth1", netip.MustParseAddrPort("10.0.0.1:44818"))
+	_, _ = silent.Write([]byte("enip"))
+	_ = silent.SetDeadline(time.Now().Add(10 * time.Millisecond))
+	if _, err := silent.Read(buf); !errors.Is(err, os.ErrDeadlineExceeded) {
+		t.Errorf("silent udp: %v", err)
+	}
+	_ = silent.Close()
+	if len(tx.Datagrams()) != 2 || tx.Backend() != "fake" {
+		t.Errorf("datagrams = %+v", tx.Datagrams())
+	}
+	tx.FramesErr, tx.ICMPErr = errors.New("eperm"), errors.New("eperm")
+	if _, err := tx.Frames(ctx, "eth1", 0x0806); err == nil {
+		t.Error("FramesErr ignored")
+	}
+	if _, err := tx.ICMPConn(ctx, "eth1"); err == nil {
+		t.Error("ICMPErr ignored")
 	}
 }

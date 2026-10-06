@@ -2,6 +2,7 @@ package api
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -14,6 +15,8 @@ import (
 	"strconv"
 	"time"
 
+	"lan-sentinel/internal/probe"
+	"lan-sentinel/internal/probe/scheduler"
 	"lan-sentinel/internal/store"
 )
 
@@ -24,6 +27,7 @@ var ErrUnreachable = errors.New("daemon unreachable")
 type Error struct {
 	Status  int
 	Message string
+	Body    []byte // the raw answer
 }
 
 func (e *Error) Error() string { return e.Message }
@@ -61,13 +65,20 @@ func NewClient(socket string, timeout time.Duration) *Client {
 }
 
 func (c *Client) do(ctx context.Context, hc *http.Client, path string, q url.Values) (*http.Response, error) {
+	return c.send(ctx, hc, http.MethodGet, path, q, nil)
+}
+
+func (c *Client) send(ctx context.Context, hc *http.Client, method, path string, q url.Values, body io.Reader) (*http.Response, error) {
 	u := "http://lan-sentinel" + path
 	if len(q) > 0 {
 		u += "?" + q.Encode()
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	req, err := http.NewRequestWithContext(ctx, method, u, body)
 	if err != nil {
 		return nil, err
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
 	}
 	resp, err := hc.Do(req)
 	if err != nil {
@@ -83,13 +94,65 @@ func (c *Client) do(ctx context.Context, hc *http.Client, path string, q url.Val
 	}
 	if resp.StatusCode != http.StatusOK {
 		defer resp.Body.Close()
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 		var body errorBody
-		if json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&body) != nil || body.Error == "" {
+		if json.Unmarshal(raw, &body) != nil || body.Error == "" {
 			body.Error = resp.Status
 		}
-		return nil, &Error{Status: resp.StatusCode, Message: body.Error}
+		return nil, &Error{Status: resp.StatusCode, Message: body.Error, Body: raw}
 	}
 	return resp, nil
+}
+
+// post sends v as JSON and decodes the answer into out.
+func (c *Client) post(ctx context.Context, hc *http.Client, path string, v, out any) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	resp, err := c.send(ctx, hc, http.MethodPost, path, nil, bytes.NewReader(b))
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+		return fmt.Errorf("api %s: decode: %w", path, err)
+	}
+	return nil
+}
+
+// DisableActive sets the kill switch.
+func (c *Client) DisableActive(ctx context.Context, reason string) (store.ActiveState, error) {
+	var st store.ActiveState
+	err := c.post(ctx, c.http, "/v1/active/disable", SwitchRequest{Reason: reason}, &st)
+	return st, err
+}
+
+// EnableActive clears the kill switch.
+func (c *Client) EnableActive(ctx context.Context, reason string) (store.ActiveState, error) {
+	var st store.ActiveState
+	err := c.post(ctx, c.http, "/v1/active/enable", SwitchRequest{Reason: reason}, &st)
+	return st, err
+}
+
+// PlanScan computes a scan plan in the daemon.
+func (c *Client) PlanScan(ctx context.Context, req probe.Request) (probe.Plan, error) {
+	var p probe.Plan
+	err := c.post(ctx, c.http, "/v1/scans/plan", req, &p)
+	return p, err
+}
+
+// Scan runs an operator scan and waits for it, without the request
+// timeout. A refused scan returns scheduler.ErrScanRefused with the plan
+// in the result.
+func (c *Client) Scan(ctx context.Context, req probe.Request) (scheduler.ScanResult, error) {
+	var res scheduler.ScanResult
+	err := c.post(ctx, c.stream, "/v1/scans", req, &res)
+	var ae *Error
+	if errors.As(err, &ae) && ae.Status == http.StatusConflict && json.Unmarshal(ae.Body, &res) == nil && len(res.Plan.Interfaces)+len(res.Plan.Reasons) > 0 {
+		return res, scheduler.ErrScanRefused
+	}
+	return res, err
 }
 
 func (c *Client) get(ctx context.Context, path string, q url.Values, v any) error {

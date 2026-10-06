@@ -65,6 +65,10 @@ type InterfaceSummary struct {
 	Networks    []string `json:"networks,omitempty"`
 	Exclude     []string `json:"exclude,omitempty"`
 	ReplayFile  string   `json:"replay_file,omitempty"`
+	// SweepTargets is how many addresses an ARP sweep covers (after
+	// excludes), and SweepSeconds how long one takes at the ARP rate.
+	SweepTargets uint64  `json:"sweep_targets,omitempty"`
+	SweepSeconds float64 `json:"sweep_seconds,omitempty"`
 }
 
 // Summary is what `config validate` prints for a valid configuration.
@@ -108,6 +112,12 @@ func Summarize(cfg *Config) Summary {
 			b, _ := e.MarshalText()
 			is.Exclude = append(is.Exclude, string(b))
 		}
+		if ic.Active.Enabled {
+			is.SweepTargets = SweepTargets(ic)
+			if r := cfg.Active.Budgets.ARP.PacketsPerSecond; r > 0 {
+				is.SweepSeconds = float64(is.SweepTargets) / r * 1.02 // paced 2% below the rate
+			}
+		}
 		anyActive = anyActive || ic.Active.Enabled
 		s.Interfaces = append(s.Interfaces, is)
 	}
@@ -132,6 +142,10 @@ func Summarize(cfg *Config) Summary {
 		}
 		s.Probes = append(s.Probes, "tcp "+strings.Join(ports, ", ")+" every "+a.TCP.Interval.String())
 		rate += a.Budgets.TCP.ConnectsPerSecond * TCPConnectTokens
+	}
+	if a.UDP.Enabled && len(a.UDP.Probes) > 0 {
+		s.Probes = append(s.Probes, "udp "+strings.Join(a.UDP.Probes, ", ")+" every "+a.UDP.Interval.String())
+		rate += a.Budgets.UDP.PacketsPerSecond
 	}
 	if anyActive {
 		s.MaxPacketsPerSecond = math.Min(rate, a.MaxPacketsPerSecond)

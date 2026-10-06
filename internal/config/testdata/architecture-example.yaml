@@ -27,6 +27,7 @@ active:
     udp:  { packets_per_second: 5 }
     tcp:  { connects_per_second: 5, max_concurrent_per_interface: 4, max_concurrent_per_host: 1 }
   max_auto_scan_prefix_v4: 24
+  max_sweep_targets: 65536         # addresses one interface's sweep may cover (with allow_wide_scan); above: expert override
   allow_wide_scan: false
   arp:  { enabled: true,  interval: 5m }
   icmp: { enabled: false, interval: 10m }
@@ -35,10 +36,16 @@ active:
     interval: 5m
     targets:
       - { port: 502, name: modbus, timeout: 750ms }
+  udp:                             # protocol-specific probes only; no reply means nothing
+    enabled: false
+    interval: 15m
+    probes: [ntp, enip]            # NTP (123), EtherNet/IP ListIdentity (44818)
 profiles:
   modbus:
     arp: true
     tcp: [502]
+  identify:
+    udp: [enip]
 presence: { active: 5m, recent: 30m, stale: 24h }
 identity:
   hostname_preference: [mdns, dhcp, dns_ptr, lldp]

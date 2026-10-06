@@ -118,7 +118,13 @@ func (d *Daemon) startPipeline(ctx context.Context) error {
 				Registry: d.registry, Logger: d.log})
 			start(platform.CollectorCapture, d.capture.Run)
 		}
-		d.reportPending(cfg)
+		if err := d.startScheduler(ctx, start); err != nil {
+			collCancel()
+			wg.Wait()
+			corrCancel()
+			<-corrDone
+			return err
+		}
 	}
 
 	d.stop = func() {
@@ -131,33 +137,10 @@ func (d *Daemon) startPipeline(ctx context.Context) error {
 		cancel()
 		corrCancel()
 		<-corrDone
+		d.bus.Close() // a late operator request fails instead of waiting for the correlator
 		if n := d.bus.Dropped(); n > 0 {
 			d.log.Warn("observations dropped because the bus was full", "dropped", n)
 		}
 	}
 	return nil
-}
-
-// reportPending records collectors whose implementation lands in a later
-// phase: the probe engines (phase 4).
-func (d *Daemon) reportPending(cfg *config.Config) {
-	backend := d.backends.Transmitter.Backend()
-	for _, ic := range cfg.Interfaces {
-		for _, p := range []struct {
-			name    string
-			enabled bool
-		}{
-			{platform.CollectorARP, cfg.Active.ARP.Enabled},
-			{platform.CollectorICMP, cfg.Active.ICMP.Enabled},
-			{platform.CollectorTCP, cfg.Active.TCP.Enabled},
-		} {
-			if !ic.Active.Enabled || !p.enabled {
-				d.registry.Set(ic.Name, p.name, backend, platform.StateDisabled, nil)
-				continue
-			}
-			err := fmt.Errorf("probe engine: %w (planned for phase 4)", platform.ErrNotImplemented)
-			d.log.Warn("collector unavailable", "interface", ic.Name, "collector", p.name, "backend", backend, "err", err)
-			d.registry.Set(ic.Name, p.name, backend, platform.StateFailed, err)
-		}
-	}
 }

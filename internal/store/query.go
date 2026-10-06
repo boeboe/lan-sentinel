@@ -339,7 +339,7 @@ func (r *Reader) names(ctx context.Context, tx *sql.Tx, cond string, args ...any
 }
 
 func services(ctx context.Context, tx *sql.Tx, hostID string) ([]Service, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT proto, port, state, first_seen, last_seen, last_result_at FROM services
+	rows, err := tx.QueryContext(ctx, `SELECT proto, port, state, first_seen, last_seen, last_result_at, detail_json FROM services
 		WHERE host_id = ? ORDER BY proto, port`, hostID)
 	if err != nil {
 		return nil, err
@@ -359,8 +359,12 @@ func services(ctx context.Context, tx *sql.Tx, hostID string) ([]Service, error)
 func scanService(rows interface{ Scan(...any) error }, extra ...any) (Service, error) {
 	var s Service
 	var first, last, result int64
-	err := rows.Scan(append([]any{&s.Proto, &s.Port, &s.State, &first, &last, &result}, extra...)...)
+	var detail string
+	err := rows.Scan(append([]any{&s.Proto, &s.Port, &s.State, &first, &last, &result, &detail}, extra...)...)
 	s.FirstSeen, s.LastSeen, s.LastResultAt = timeOf(first), timeOf(last), timeOf(result)
+	if err == nil && detail != "" && detail != "{}" {
+		_ = json.Unmarshal([]byte(detail), &s.Detail) // written by the correlator; a bad value shows as none
+	}
 	return s, err
 }
 
@@ -890,7 +894,8 @@ func (r *Reader) Services(ctx context.Context, f ServiceFilter) ([]ServiceRow, e
 	}
 	out := []ServiceRow{}
 	err := r.read(ctx, func(tx *sql.Tx) error {
-		rows, err := tx.QueryContext(ctx, `SELECT s.proto, s.port, s.state, s.first_seen, s.last_seen, s.last_result_at, c.interface, h.host_id, h.mac
+		rows, err := tx.QueryContext(ctx, `SELECT s.proto, s.port, s.state, s.first_seen, s.last_seen, s.last_result_at, s.detail_json,
+			c.interface, h.host_id, h.mac
 			FROM services s JOIN hosts h ON h.host_id = s.host_id JOIN network_contexts c ON c.id = h.context_id`+w.sql()+
 			` ORDER BY s.port, s.proto, c.interface, h.mac`, w.args...)
 		if err != nil {
@@ -1168,6 +1173,78 @@ func (r *Reader) ActiveState(ctx context.Context) (ActiveState, error) {
 		return json.Unmarshal([]byte(v), &a)
 	})
 	return a, err
+}
+
+// Scan is an operator scan on one interface (a scans row).
+type Scan struct {
+	ID        int64           `json:"id"`
+	Interface string          `json:"interface"`
+	Kind      string          `json:"kind"`
+	Trigger   string          `json:"trigger"`
+	Started   time.Time       `json:"started"`
+	Finished  *time.Time      `json:"finished,omitempty"`
+	Targets   int             `json:"targets"`
+	Results   json.RawMessage `json:"results"`
+}
+
+// LastScan returns the latest scan, or nil if there was none.
+func (r *Reader) LastScan(ctx context.Context) (*Scan, error) {
+	var out *Scan
+	err := r.read(ctx, func(tx *sql.Tx) error {
+		var s Scan
+		var started int64
+		var finished sql.NullInt64
+		var results string
+		err := tx.QueryRowContext(ctx, `SELECT s.id, c.interface, s.kind, s.trigger, s.started_at, s.finished_at, s.targets, s.results_json
+			FROM scans s JOIN network_contexts c ON c.id = s.context_id ORDER BY s.started_at DESC, s.id DESC LIMIT 1`).
+			Scan(&s.ID, &s.Interface, &s.Kind, &s.Trigger, &started, &finished, &s.Targets, &results)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		s.Started, s.Results = timeOf(started), json.RawMessage(results)
+		if finished.Valid {
+			t := timeOf(finished.Int64)
+			s.Finished = &t
+		}
+		out = &s
+		return nil
+	})
+	return out, err
+}
+
+// KnownAddr is an address active probes may target: an open IPv4
+// binding, and when it was last confirmed (presence evidence).
+type KnownAddr struct {
+	IP       netip.Addr
+	LastSeen time.Time
+}
+
+// KnownIPv4 returns the open IPv4 bindings of an interface.
+func (r *Reader) KnownIPv4(ctx context.Context, iface string) ([]KnownAddr, error) {
+	var out []KnownAddr
+	err := r.read(ctx, func(tx *sql.Tx) error {
+		rows, err := tx.QueryContext(ctx, `SELECT a.ip, max(a.last_seen) FROM addresses a JOIN network_contexts c ON c.id = a.context_id
+			WHERE c.interface = ? AND a.family = 4 AND a.ended_at IS NULL GROUP BY a.ip ORDER BY a.ip`, iface)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var s string
+			var last int64
+			if err := rows.Scan(&s, &last); err != nil {
+				return err
+			}
+			if ip, err := netip.ParseAddr(s); err == nil {
+				out = append(out, KnownAddr{IP: ip, LastSeen: timeOf(last)})
+			}
+		}
+		return rows.Err()
+	})
+	return out, err
 }
 
 // HostCounts counts hosts per interface and presence.

@@ -11,16 +11,10 @@ import (
 	"lan-sentinel/internal/platform/fake"
 )
 
-func TestNewReportsPendingBackends(t *testing.T) {
-	// Transmit (phase 4) reports ErrNotImplemented.
-	want := platform.ErrNotImplemented
+func TestNewBackends(t *testing.T) {
 	b := platform.New()
-	ctx := context.Background()
-	if b.Capturer.Backend() != "afpacket" {
-		t.Errorf("capture backend = %q", b.Capturer.Backend())
-	}
-	if err := b.Transmitter.SendFrame(ctx, "eth0", nil); !errors.Is(err, want) {
-		t.Errorf("Transmitter.SendFrame err = %v", err)
+	if b.Capturer.Backend() != "afpacket" || b.Transmitter.Backend() != "socket" || b.Neighbors.Backend() != "netlink" {
+		t.Errorf("backends = %s %s %s", b.Capturer.Backend(), b.Transmitter.Backend(), b.Neighbors.Backend())
 	}
 }
 

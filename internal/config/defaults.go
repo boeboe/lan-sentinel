@@ -35,9 +35,11 @@ func Defaults() *Config {
 				TCP:  TCPBudget{ConnectsPerSecond: 5, MaxConcurrentPerInterface: 4, MaxConcurrentPerHost: 1},
 			},
 			MaxAutoScanPrefixV4: 24,
+			MaxSweepTargets:     DefaultMaxSweepTargets,
 			ARP:                 ProbeConfig{Enabled: true, Interval: Duration(5 * time.Minute)},
 			ICMP:                ProbeConfig{Enabled: false, Interval: Duration(10 * time.Minute)},
 			TCP:                 TCPProbeConfig{Enabled: false, Interval: Duration(5 * time.Minute)},
+			UDP:                 UDPProbeConfig{Enabled: false, Interval: Duration(15 * time.Minute), Probes: []string{"ntp", "enip"}},
 		},
 		Presence: PresenceConfig{
 			Active: Duration(5 * time.Minute),

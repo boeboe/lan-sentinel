@@ -203,7 +203,7 @@ func linkInfo(l netlink.Link) (Link, error) {
 	if err != nil {
 		return Link{}, fmt.Errorf("addresses of %s: %w", a.Name, err)
 	}
-	return Link{Name: a.Name, Index: a.Index, MAC: a.HardwareAddr, Up: up, Prefixes: ownPrefixes(addrs)}, nil
+	return Link{Name: a.Name, Index: a.Index, MAC: a.HardwareAddr, Up: up, Prefixes: ownPrefixes(addrs), Addrs: ownAddrs(addrs)}, nil
 }
 
 // ownPrefixes returns the masked subnets of an interface's addresses,
@@ -232,6 +232,25 @@ func ownPrefixes(addrs []netlink.Addr) []netip.Prefix {
 	}
 	sort.Slice(prefixes, func(i, j int) bool { return prefixes[i].String() < prefixes[j].String() })
 	return prefixes
+}
+
+// ownAddrs returns the interface's addresses with their prefix length,
+// leaving out link-local and loopback addresses.
+func ownAddrs(addrs []netlink.Addr) []netip.Prefix {
+	var out []netip.Prefix
+	for _, ad := range addrs {
+		if ad.IPNet == nil {
+			continue
+		}
+		ip, ok := netip.AddrFromSlice(ad.IP)
+		if !ok || ip.Unmap().IsLinkLocalUnicast() || ip.Unmap().IsLoopback() {
+			continue
+		}
+		bits, _ := ad.Mask.Size()
+		out = append(out, netip.PrefixFrom(ip.Unmap(), bits))
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].String() < out[j].String() })
+	return out
 }
 
 func (netlinkInterfaces) List(context.Context) ([]Link, error) {

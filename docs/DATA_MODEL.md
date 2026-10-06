@@ -69,12 +69,15 @@ The capture decoders put protocol detail that is not identity evidence into `met
 | `passive_dhcp` | `dhcp` (message type), `client_id` (option 61, hex), `parameter_request_list` (option 55), `vendor_class` (option 60) |
 | `passive_mdns` | `services` (service types such as `_http._tcp`), `service_ports` (`_http._tcp=80`), `txt` |
 | `passive_lldp` | `chassis_id`, `port_id`, `port_description`, `system_description`, `capabilities`, `management_ip` |
+| `udp_probe` | `probe` (`ntp`, `enip`); service details: NTP `version`, `stratum`, `leap`, `reference_id`, `root_delay_ms`, `root_dispersion_ms` (and `kiss_code` for a kiss-o'-death reply); EtherNet/IP `vendor_id`, `device_type`, `product_code`, `revision`, `status`, `serial_number`, `product_name`, `state`; identity claims under `id.` (`id.product`, `id.device_type`), §5.5 |
+
+The probes emit `arp_scan` (MAC and IP of an ARP reply to a sweep request), `icmp_scan` (IP of an echo reply), `tcp_connect` (IP and `service` with the connect result: OPEN, REFUSED, TIMEOUT, UNREACHABLE or UNKNOWN) and `udp_probe` (IP, `service` `udp/<port>` OPEN and `meta`, only when a protocol-specific probe got an answer; no answer emits nothing).
 
 Which address an observation carries: the ARP sender address (none for a probe); the source address of an NDP message, or the target of an advertisement; `yiaddr` of a DHCP ACK or `ciaddr` of a renewing REQUEST or an INFORM (none for DISCOVER, OFFER, DECLINE, RELEASE, NAK); each A/AAAA address of an mDNS response; the address of a DNS PTR answer; the IPv4/IPv6 header source for `passive_ipv4`/`passive_ipv6`. LLDP observations carry no address.
 
 Sources: `passive_arp`, `passive_ipv4`, `passive_ipv6`, `passive_ndp`, `passive_dhcp`, `passive_mdns`, `passive_dns`, `passive_lldp`, `kernel_neighbor`, `arp_scan`, `icmp_scan`, `ndp_probe`, `tcp_connect`, `udp_probe`.
 
-Events that are not caused by an observation use one of these internal causes instead of a source: `presence` (presence ticker), `expiry` (binding expiry), `iface_monitor` (interface manager), `scheduler` (scan runs), `operator` (API/CLI action), `integrity_check` (start-up database check).
+Events that are not caused by an observation use one of these internal causes instead of a source: `presence` (presence ticker), `expiry` (binding expiry), `iface_monitor` (interface manager), `operator` (kill switch and operator scans), `integrity_check` (start-up database check).
 
 ## 3. Time and interval semantics
 
@@ -92,7 +95,7 @@ A binding in effect at T with `T > last_seen` was **unconfirmed** at T: it was t
 
 `hosts` has `first_seen` and `last_seen` (no `ended_at`: hosts are never closed, only their presence changes).
 
-## 4. Schema (`migrations/0001_init.sql`, read-side indexes in `0002_read_indexes.sql`)
+## 4. Schema (`migrations/0001_init.sql`, read-side indexes in `0002_read_indexes.sql`, probe details in `0003_probes.sql`)
 
 | Table | Columns | Purpose |
 | --- | --- | --- |
@@ -102,12 +105,12 @@ A binding in effect at T with `T > last_seen` was **unconfirmed** at T: it was t
 | `addresses` | id, context_id, host_id, ip, family, conflict, first_seen, last_seen, ended_at | IP bindings over time |
 | `address_sources` | address_id, source, first_seen, last_seen | Which sources confirmed a binding |
 | `names` | id, host_id, name, name_type, source, first_seen, last_seen, ended_at | Hostnames with provenance |
-| `services` | id, host_id, proto, port, state, first_seen, last_seen, last_result_at | Current probe result per host/port |
+| `services` | id, host_id, proto, port, state, first_seen, last_seen, last_result_at, detail_json | Current probe result per host/port; `detail_json`: what a protocol-specific probe learnt (§5.5) |
 | `identifications` | id, host_id, field, value, confidence, source, evidence_json, first_seen, last_seen | Device identification evidence |
 | `observations` | id, ts, context_id, source, mac, ip, hostname, name_type, service_json, meta_json, host_id | Raw evidence, compacted; `host_id` NULL if unbound |
 | `observation_rollups` | id, hour, context_id, host_id, source, mac, ip, count, first_ts, last_ts | Hourly roll-ups of observations |
 | `events` | id, ts, type, severity, context_id, host_id, related_host_id, old_value, new_value, cause, observation_id, evidence_json, clock_synced | Permanent history |
-| `scans` | id, context_id, kind, trigger, started_at, finished_at, targets, results_json | Scan runs |
+| `scans` | id, context_id, kind, trigger, started_at, finished_at, targets, results_json | Operator scans, one row per interface: `kind` the probes (`arp,tcp/502`), `trigger` `operator` (periodic passes are not recorded), `targets` the larger of the sweep and known-host counts, `results_json` `{counts: {probe: {result: n}}, responders, seconds, aborted?}`. A scan left unfinished by a crash is closed at the next start (`finished_at` = `started_at`, aborted, with `SCAN_COMPLETED`) |
 | `runtime_state` | key, value, updated_at | Persisted operator state (kill switch, §8) |
 | `schema_migrations` | version, applied_at | Migration tracking |
 
@@ -141,6 +144,7 @@ Every host row carries `context_id`. `names`, `services`, `identifications` and 
 - `names(name COLLATE NOCASE)` — name queries are case-insensitive; `names(host_id, first_seen)` — every name of a host
 - `events(ts)`, `events(host_id, ts)`, `events(related_host_id, ts)`, `events(type, ts)`, `events(context_id, ts)`, `events(context_id, type, ts)`
 - `events(old_value)`, `events(new_value)`, `events(json_extract(evidence_json, '$.ip'))` — IP timelines
+- `scans(started_at)` — the last scan (`daemon status`)
 - `observations(ts)`, `observations(host_id, ts)`, `observation_rollups(hour)`, `observation_rollups(host_id, hour)`. Observations have no MAC or IP index (they are the high-volume table); `observations list --mac/--ip` walks the time index back from the latest until its limit is filled, so `--host` or `--since` keeps it cheap.
 
 ### Point-in-time query
@@ -177,7 +181,7 @@ Before the rules: an observation for an interface that is not configured is drop
 ### 5.1 Binding the observation to a host
 
 1. **Observation has a MAC.** The host is the row with `(context_id, mac)`. If none exists, create it and emit `HOST_DISCOVERED`; if the same MAC already exists as a host on another context, also emit `MAC_MOVED` on the new host with `related_host_id` set to the other host. Update `hosts.last_seen` and presence.
-2. **Observation has no MAC but has an IP** (TCP/UDP/ICMP probe results, DNS PTR answers). If exactly one open binding for that IP exists in the context, attach to that host. If there are none or several (conflict), the observation is stored with `host_id = NULL`, changes no state, and increments `lan_sentinel_observations_unbound_total{source}`. A MAC-less observation never creates a host. A `passive_dns` observation is a resolver's statement about another host, not evidence from the host itself: it only adds its name (§5.4) and neither updates presence nor confirms the binding.
+2. **Observation has no MAC but has an IP** (TCP/UDP/ICMP probe results, DNS PTR answers). If exactly one open binding for that IP exists in the context, attach to that host. If there are none or several (conflict), the observation is stored with `host_id = NULL`, changes no state, and increments `lan_sentinel_observations_unbound_total{source}`. A MAC-less observation never creates a host. It updates presence and confirms the binding only when it is evidence that the host answered just now: a `tcp_connect` OPEN or REFUSED, an `icmp_scan` reply, a `udp_probe` reply. A TCP TIMEOUT or UNREACHABLE is no answer: it records the service result (§5.5) but neither updates presence nor confirms the binding, so it can neither keep a host ACTIVE nor bring a MISSING one back, and it never counts against the host either. A `passive_dns` observation is a resolver's statement about another host, not evidence from the host itself: it only adds its name (§5.4) and likewise neither updates presence nor confirms the binding.
 3. **Observation has neither** — dropped and counted the same way.
 
 ### 5.2 Which IPs are attributed
@@ -221,6 +225,8 @@ Names are last-known attributes with provenance and freshness: each binding keep
 ### 5.5 Services
 
 A probe result attached to a host upserts `services`. A transition into OPEN emits `SERVICE_OPENED`; out of OPEN emits `SERVICE_CLOSED`. Repeated identical results emit nothing.
+
+A `udp_probe` result also records what the probe learnt, in the generic service and identification model (no protocol-specific host state): the `meta` keys without the `id.` prefix (including `probe`) replace `services.detail_json` of that service; each `id.<field>` key is an identification (`field`, value, source = the probe name, confidence 0.9: the device's own statement) with the details as evidence. A field a probe reports for the first time, or with a new value, emits `VENDOR_IDENTIFIED` (old `field=old value`, new `field=value`); the same value again only refreshes `last_seen`. A `device_type` claim also sets `hosts.device_type`. A probe that gets no answer emits no observation, so it changes nothing: it is never evidence that a host or service is gone.
 
 ## 6. Presence
 
@@ -274,10 +280,12 @@ Thresholds are configurable (`presence:`). Transitions into MISSING emit `HOST_D
 | `HOSTNAME_*` | old name (`type:name`) | new name (`type:name`) | |
 | `SERVICE_OPENED` | previous state (empty for a first result) | `proto/port` | IP and state in evidence |
 | `SERVICE_CLOSED` | `proto/port` | new state | IP in evidence |
-| `VENDOR_IDENTIFIED` | old value | new value (`field=value`) | Not emitted for the OUI manufacturer set at discovery (recorded in `identifications`, source `oui`, confidence 0.7). Emitted with `proxy_arp=true` when a host is flagged as a proxy-ARP device (§5.2) |
+| `VENDOR_IDENTIFIED` | old value | new value (`field=value`) | Not emitted for the OUI manufacturer set at discovery (recorded in `identifications`, source `oui`, confidence 0.7). Emitted with `proxy_arp=true` when a host is flagged as a proxy-ARP device (§5.2), and for each new or changed identity claim of a protocol-specific probe, e.g. `product=1756-L71/B LOGIX5571`, `device_type=Programmable Logic Controller` (§5.5) |
 | `DUPLICATE_IP_DETECTED` | — | IP | `host_id` = new claimer, `related_host_id` = existing holder |
 | `DUPLICATE_IP_RESOLVED` | — | IP | `host_id` = remaining holder, `related_host_id` = the host that left |
-| `SCAN_*`, `ACTIVE_*`, `INTERFACE_*` | — | summary text | no host |
+| `SCAN_STARTED`, `SCAN_COMPLETED` | — | summary text (probes, targets; counts, duration, or why it was aborted) | context of the scanned interface, no host; evidence `{actor, interface}` |
+| `ACTIVE_DISABLED`, `ACTIVE_ENABLED` | — | `active discovery disabled by <actor>: <reason>` | no host or context; evidence `{actor, reason}`; actor `env` when `LAN_SENTINEL_ACTIVE_DISABLED=1` stopped it at start-up |
+| `INTERFACE_*` | — | `up` / `down` | no host |
 | `SUBNET_CHANGED` | prefix closed | prefix opened | no host |
 | `DATABASE_RECREATED` | — | quarantined file (`<path>.corrupt-<UTC time>`) | no host or context; evidence `reason` = the integrity-check failure; always the new database's first event |
 
@@ -295,7 +303,7 @@ Every event is self-contained, so pruning observations never weakens history:
 
 ## 8. Runtime state
 
-`runtime_state` holds operator state that must survive restarts. In v1 only `active_disabled` (`{"disabled": true, "reason": "...", "by": "cli", "at": ...}`). A kill switch set through the API or CLI stays set across daemon restarts until explicitly cleared. `LAN_SENTINEL_ACTIVE_DISABLED=1` forces active discovery off regardless of this row, and the API refuses to enable while it is set.
+`runtime_state` holds operator state that must survive restarts. In v1 only `active_disabled` (`{"disabled": true, "reason": "...", "by": "<unix user>", "at": ...}`), written by the correlator when the API sets the kill switch and deleted when it is cleared. A kill switch set through the API or CLI stays set across daemon restarts until explicitly cleared. `LAN_SENTINEL_ACTIVE_DISABLED=1` forces active discovery off regardless of this row and is not written to it (the daemon records `ACTIVE_DISABLED` with actor `env` at start-up instead), and the API refuses to enable while it is set.
 
 ## 9. Retention and compaction
 

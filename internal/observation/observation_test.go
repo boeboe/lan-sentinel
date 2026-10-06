@@ -3,6 +3,7 @@ package observation
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net"
 	"net/netip"
 	"strings"
@@ -122,5 +123,87 @@ func TestBusCancellation(t *testing.T) {
 	defer cancel2()
 	if err := empty.Barrier(ctx2); err == nil {
 		t.Error("Barrier returned without a consumer")
+	}
+}
+
+func TestPublishOperatorWaitsForTheConsumer(t *testing.T) {
+	b := NewBus(4)
+	got := make(chan Operator, 1)
+	go func() {
+		for m := range b.C() {
+			switch {
+			case m.Operator != nil:
+				got <- *m.Operator
+			case m.Barrier != nil:
+				close(m.Barrier)
+			}
+		}
+	}()
+	if err := b.PublishOperator(context.Background(), Operator{Kind: OpActiveDisabled, Actor: "bart"}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case op := <-got:
+		if op.Kind != OpActiveDisabled || op.Actor != "bart" {
+			t.Errorf("operator = %+v", op)
+		}
+	default:
+		t.Error("PublishOperator returned before the consumer saw the message")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	full := NewBus(1)
+	full.ch <- Message{}
+	if err := full.PublishOperator(ctx, Operator{}); !errors.Is(err, context.Canceled) {
+		t.Errorf("PublishOperator on a full bus = %v", err)
+	}
+}
+
+func TestProvesPresence(t *testing.T) {
+	ip := netip.MustParseAddr("10.0.0.1")
+	svc := func(s ServiceState) *ServiceResult { return &ServiceResult{Proto: "tcp", Port: 502, State: s} }
+	tests := []struct {
+		o    Observation
+		want bool
+	}{
+		{Observation{Source: PassiveARP, MAC: net.HardwareAddr{0, 1, 2, 3, 4, 5}, IP: ip}, true},
+		{Observation{Source: PassiveDNS, IP: ip, Hostname: "x"}, false},
+		{Observation{Source: TCPConnect, IP: ip, Service: svc(ServiceOpen)}, true},
+		{Observation{Source: TCPConnect, IP: ip, Service: svc(ServiceRefused)}, true},
+		{Observation{Source: TCPConnect, IP: ip, Service: svc(ServiceTimeout)}, false},
+		{Observation{Source: TCPConnect, IP: ip, Service: svc(ServiceUnreachable)}, false},
+		{Observation{Source: ICMPScan, IP: ip}, true},
+	}
+	for _, tt := range tests {
+		if got := tt.o.ProvesPresence(); got != tt.want {
+			t.Errorf("%s %v: ProvesPresence = %v", tt.o.Source, tt.o.Service, got)
+		}
+	}
+}
+
+func TestClosedBusFailsBlockingPublishes(t *testing.T) {
+	b := NewBus(1)
+	b.ch <- Message{} // full, and nobody reads
+	b.Close()
+	b.Close() // idempotent
+	ctx := context.Background()
+	for name, err := range map[string]error{
+		"operator": b.PublishOperator(ctx, Operator{}),
+		"barrier":  b.Barrier(ctx),
+		"wait":     b.PublishWait(ctx, Observation{}),
+		"link":     b.PublishLink(ctx, LinkState{}),
+	} {
+		if !errors.Is(err, ErrBusClosed) {
+			t.Errorf("%s on a closed bus = %v", name, err)
+		}
+	}
+	// A barrier already queued when the consumer stops.
+	b2 := NewBus(4)
+	errc := make(chan error, 1)
+	go func() { errc <- b2.Barrier(ctx) }()
+	<-b2.C() // taken but never closed
+	b2.Close()
+	if err := <-errc; !errors.Is(err, ErrBusClosed) {
+		t.Errorf("pending barrier = %v", err)
 	}
 }

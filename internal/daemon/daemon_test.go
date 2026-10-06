@@ -81,6 +81,7 @@ func (f *fakeNotifier) count(c string) int {
 }
 
 type harness struct {
+	tx       *fake.Transmitter
 	capt     *fake.Capturer
 	neigh    *fake.Neighbors
 	ifaces   *fake.Interfaces
@@ -121,8 +122,8 @@ func startWith(t *testing.T, cfg string, watchdog time.Duration, setup func(*fak
 		sim: clock.NewSim(time.Date(2026, 10, 1, 10, 0, 0, 0, time.UTC)), errc: make(chan error, 1),
 	}
 	h.writeConfig(strings.ReplaceAll(cfg, "$DIR", dir))
-	backends, capt, neigh, ifaces, _ := fake.Backends()
-	h.capt, h.neigh, h.ifaces = capt, neigh, ifaces
+	backends, capt, neigh, ifaces, tx := fake.Backends()
+	h.capt, h.neigh, h.ifaces, h.tx = capt, neigh, ifaces, tx
 	if setup != nil {
 		setup(neigh, ifaces)
 	}
@@ -225,8 +226,8 @@ func TestStartupAndShutdown(t *testing.T) {
 	}
 	want := map[string]platform.State{
 		"capture": platform.StateRunning, "interface": platform.StateRunning, "neighbor": platform.StateRunning,
-		// Probe engines land in phase 4: enabled ones are reported failed.
-		"arp": platform.StateFailed, "tcp": platform.StateFailed, "icmp": platform.StateDisabled,
+		// Enabled probe engines run; the others are reported disabled.
+		"arp": platform.StateRunning, "tcp": platform.StateRunning, "icmp": platform.StateDisabled, "udp": platform.StateDisabled,
 	}
 	got := h.waitCollectors(len(want))
 	for _, c := range got {

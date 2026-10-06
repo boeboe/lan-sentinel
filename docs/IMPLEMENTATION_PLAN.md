@@ -87,19 +87,21 @@ Deferred checks that need real hardware or data from real sites. Each closes a p
 
 ## Phase 4 — Active discovery with OT safety (3–4 weeks)
 
-- [ ] Probe scheduler: per-probe intervals, startup delay, jitter, randomised target order, global and per-protocol token buckets, concurrency cap, TCP per-interface and per-host caps, per-target spacing, excludes, timeout back-off
-- [ ] Kill switch: env, `POST /v1/active/disable` and `/v1/active/enable`, persisted in `runtime_state`, `ACTIVE_DISABLED/ENABLED` events, `active disable|enable` CLI
-- [ ] Scan planner shared by `scan plan` (`POST /v1/scans/plan`, and offline from config) and `scan run` (`POST /v1/scans`), with identical refusal rules
-- [ ] `Transmitter`: `AF_PACKET` frame writes, `SO_BINDTODEVICE` TCP connects, ping or raw ICMP sockets
-- [ ] ARP sweep (native Go) within configured networks only; `max_auto_scan_prefix_v4` guard
-- [ ] TCP connect probes bound to the interface, with OPEN/REFUSED/TIMEOUT/UNREACHABLE; `SERVICE_OPENED/CLOSED`
-- [ ] ICMP echo via unprivileged ping sockets where allowed, else raw with `CAP_NET_RAW`
-- [ ] IPv6 NDP solicitation for known addresses (no IPv6 sweeping)
-- [ ] UDP framework that only runs protocol-specific probes; no generic UDP open/closed claims
-- [ ] Scan profiles from config; `scan run` CLI; `SCAN_STARTED/COMPLETED` events and `scans` rows
-- [ ] Docker network tests for probes: packet counting per protocol and per target against the budgets, excludes, prefix guard, result classification
+- [x] Probe scheduler: per-probe intervals, startup delay, jitter, randomised target order, global and per-protocol token buckets, concurrency cap, TCP per-interface and per-host caps, per-target spacing, excludes, timeout back-off
+- [x] Kill switch: env, `POST /v1/active/disable` and `/v1/active/enable`, persisted in `runtime_state`, `ACTIVE_DISABLED/ENABLED` events, `active disable|enable` CLI
+- [x] Scan planner shared by `scan plan` (`POST /v1/scans/plan`, and offline from config) and `scan run` (`POST /v1/scans`), with identical refusal rules
+- [x] `Transmitter`: `AF_PACKET` frame writes, `SO_BINDTODEVICE` TCP connects, ping or raw ICMP sockets
+- [x] ARP sweep (native Go) within configured networks only; `max_auto_scan_prefix_v4` guard
+- [x] TCP connect probes bound to the interface, with OPEN/REFUSED/TIMEOUT/UNREACHABLE; `SERVICE_OPENED/CLOSED`
+- [x] ICMP echo via unprivileged ping sockets where allowed, else raw with `CAP_NET_RAW`
+- [ ] ~~IPv6 NDP solicitation for known addresses (no IPv6 sweeping)~~ — *deferred: v1 active discovery is IPv4-first (decided 6 Oct 2026)*
+- [x] UDP framework that only runs protocol-specific probes; no generic UDP open/closed claims; NTP and EtherNet/IP ListIdentity probes (disabled by default, enrichment only)
+- [x] Scan profiles from config; `scan run` CLI; `SCAN_STARTED/COMPLETED` events and `scans` rows
+- [x] Docker network tests for probes: packet counting per protocol and per target against the budgets, excludes, prefix guard, result classification
 
 **Exit:** active probing defaults to off, and when enabled never exceeds the global, per-protocol and per-host limits on a traffic-counting test rig; `scan plan` estimates match measured packets within 10%; the kill switch stops probing within one tick and survives a restart; soak test against real OT devices (PLC, inverter, HMI) shows no faults.
+
+*Status (6 Oct 2026):* met in Docker (`make test-net`, `TestActiveDiscovery`, as uid 65534 with only `CAP_NET_RAW`): every one-second window on the wire within the global and per-protocol budgets (at most 10 ARP requests and 10 packets in any second against budgets of 10 and 20), no probe to excluded or unconfigured addresses, ≥ 1 s between probes to one target, a measured scan of 145 packets in about 17.5 s against a plan of 147 packets and an estimated typical duration of 17.1 s, OPEN/REFUSED/UNREACHABLE classified, the kill switch stopping a running sweep within one second and persisting across a restart. Open: the soak test against real OT devices (PLC, inverter, HMI), which needs the site hardware.
 
 ## Phase 5 — Release builds, hardening, pilot rollout (2 weeks)
 

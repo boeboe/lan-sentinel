@@ -96,17 +96,33 @@ type NeighborConfig struct {
 
 // ActiveConfig holds global active-discovery settings and safety budgets.
 type ActiveConfig struct {
-	StartupDelay        Duration       `yaml:"startup_delay" json:"startup_delay"`
-	Jitter              float64        `yaml:"jitter" json:"jitter"`
-	MaxPacketsPerSecond float64        `yaml:"max_packets_per_second" json:"max_packets_per_second"`
-	MaxConcurrentProbes int            `yaml:"max_concurrent_probes" json:"max_concurrent_probes"`
-	MinTargetInterval   Duration       `yaml:"min_target_interval" json:"min_target_interval"`
-	Budgets             Budgets        `yaml:"budgets" json:"budgets"`
-	MaxAutoScanPrefixV4 int            `yaml:"max_auto_scan_prefix_v4" json:"max_auto_scan_prefix_v4"`
-	AllowWideScan       bool           `yaml:"allow_wide_scan" json:"allow_wide_scan"`
-	ARP                 ProbeConfig    `yaml:"arp" json:"arp"`
-	ICMP                ProbeConfig    `yaml:"icmp" json:"icmp"`
-	TCP                 TCPProbeConfig `yaml:"tcp" json:"tcp"`
+	StartupDelay        Duration `yaml:"startup_delay" json:"startup_delay"`
+	Jitter              float64  `yaml:"jitter" json:"jitter"`
+	MaxPacketsPerSecond float64  `yaml:"max_packets_per_second" json:"max_packets_per_second"`
+	MaxConcurrentProbes int      `yaml:"max_concurrent_probes" json:"max_concurrent_probes"`
+	MinTargetInterval   Duration `yaml:"min_target_interval" json:"min_target_interval"`
+	Budgets             Budgets  `yaml:"budgets" json:"budgets"`
+	MaxAutoScanPrefixV4 int      `yaml:"max_auto_scan_prefix_v4" json:"max_auto_scan_prefix_v4"`
+	AllowWideScan       bool     `yaml:"allow_wide_scan" json:"allow_wide_scan"`
+	// MaxSweepTargets caps the addresses one interface's ARP sweep covers
+	// (after excludes). Above DefaultMaxSweepTargets it is an expert
+	// override: it needs allow_wide_scan and rates and concurrency at or
+	// below their defaults.
+	MaxSweepTargets int            `yaml:"max_sweep_targets" json:"max_sweep_targets"`
+	ARP             ProbeConfig    `yaml:"arp" json:"arp"`
+	ICMP            ProbeConfig    `yaml:"icmp" json:"icmp"`
+	TCP             TCPProbeConfig `yaml:"tcp" json:"tcp"`
+	UDP             UDPProbeConfig `yaml:"udp" json:"udp"`
+}
+
+// UDPProbeNames are the protocol-specific UDP probes (FR-AC-6).
+var UDPProbeNames = []string{"ntp", "enip"}
+
+// UDPProbeConfig configures periodic protocol-specific UDP probes.
+type UDPProbeConfig struct {
+	Enabled  bool     `yaml:"enabled" json:"enabled"`
+	Interval Duration `yaml:"interval" json:"interval"`
+	Probes   []string `yaml:"probes" json:"probes"`
 }
 
 // Budgets are the per-protocol rate limits beneath the global packet budget.
@@ -156,9 +172,10 @@ type TCPTarget struct {
 
 // ProfileConfig is a named on-demand scan profile.
 type ProfileConfig struct {
-	ARP  bool  `yaml:"arp" json:"arp"`
-	ICMP bool  `yaml:"icmp" json:"icmp"`
-	TCP  []int `yaml:"tcp" json:"tcp"`
+	ARP  bool     `yaml:"arp" json:"arp"`
+	ICMP bool     `yaml:"icmp" json:"icmp"`
+	TCP  []int    `yaml:"tcp" json:"tcp"`
+	UDP  []string `yaml:"udp,omitempty" json:"udp,omitempty"`
 }
 
 // PresenceConfig holds presence thresholds (time since last observation).

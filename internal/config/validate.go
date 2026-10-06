@@ -9,20 +9,24 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"lan-sentinel/internal/netrange"
 )
 
 var (
 	ifaceNameRe   = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.:-]{0,14}$`)
 	profileNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
 
-	logLevels   = []string{"trace", "debug", "info", "warn", "error"}
-	logFormats  = []string{"journald", "text", "json"}
-	nameTypes   = []string{"mdns", "dhcp", "dns_ptr", "lldp", "netbios"}
-	replayExts  = []string{".pcap", ".pcapng", ".pcap.gz", ".pcapng.gz", ".jsonl"}
-	minDBSize   = ByteSize(10 * 1000 * 1000)
-	minRingSize = ByteSize(256 << 10)
-	maxRingSize = ByteSize(256 << 20)
-	minIfPrefix = 8
+	logLevels  = []string{"trace", "debug", "info", "warn", "error"}
+	logFormats = []string{"journald", "text", "json"}
+	nameTypes  = []string{"mdns", "dhcp", "dns_ptr", "lldp", "netbios"}
+	replayExts = []string{".pcap", ".pcapng", ".pcap.gz", ".pcapng.gz", ".jsonl"}
+	minDBSize  = ByteSize(10 * 1000 * 1000)
+	// minProbeInterval keeps periodic probing from becoming a flood.
+	minProbeInterval = 10 * time.Second
+	minRingSize      = ByteSize(256 << 10)
+	maxRingSize      = ByteSize(256 << 20)
+	minIfPrefix      = 8
 )
 
 // Validate checks cfg and returns every problem found.
@@ -135,20 +139,83 @@ func (v *validator) activeInterface(k string, ic InterfaceConfig, ac ActiveConfi
 	if ic.Active.Enabled && len(ic.Active.Networks) == 0 {
 		v.add(k+".active.networks", "at least one network is required when active discovery is enabled")
 	}
+	var hosts []netrange.Range
 	for j, n := range ic.Active.Networks {
 		nk := fmt.Sprintf("%s.active.networks[%d]", k, j)
 		switch {
 		case !n.Addr().Is4():
-			v.add(nk, "%s: only IPv4 networks can be scanned; IPv6 discovery is limited to NDP for observed addresses", n)
+			v.add(nk, "%s: only IPv4 networks can be scanned (v1 active discovery is IPv4-first)", n)
 		case n != n.Masked():
 			v.add(nk, "%s has host bits set; use %s", n, n.Masked())
 		case n.Bits() < ac.MaxAutoScanPrefixV4 && !ac.AllowWideScan:
 			v.add(nk, "%s is wider than /%d; narrow it or set active.allow_wide_scan: true", n, ac.MaxAutoScanPrefixV4)
+		default:
+			hosts = append(hosts, netrange.Hosts(n))
 		}
+	}
+	if n := SweepTargets(ic); n > uint64(max(ac.MaxSweepTargets, 0)) && len(hosts) > 0 {
+		v.add(k+".active.networks", "the networks hold %d addresses to sweep, more than active.max_sweep_targets (%d)", n, ac.MaxSweepTargets)
 	}
 	for j, e := range ic.Active.Exclude {
 		if !e.IsSingleIP() && e.Prefix != e.Masked() {
 			v.add(fmt.Sprintf("%s.active.exclude[%d]", k, j), "%s has host bits set; use %s", e.Prefix, e.Masked())
+		}
+	}
+}
+
+// Sweep limits: DefaultMaxSweepTargets is active.max_sweep_targets' default
+// (a /16: nearly two hours at 10 pps); above it is an expert override.
+// MaxSweepTargetsCeiling (a /8) only keeps the value sane.
+const (
+	DefaultMaxSweepTargets = 1 << 16
+	MaxSweepTargetsCeiling = 1 << 24
+)
+
+// SweepTargets counts the addresses an interface's ARP sweep covers: the
+// host addresses of its IPv4 networks less the excluded ones (the
+// interface's own addresses, known only at run time, are not taken off).
+func SweepTargets(ic InterfaceConfig) uint64 {
+	var hosts, cut []netrange.Range
+	for _, n := range ic.Active.Networks {
+		if n.Addr().Is4() {
+			hosts = append(hosts, netrange.Hosts(n))
+		}
+	}
+	for _, e := range ic.Active.Exclude {
+		if e.Addr().Is4() {
+			cut = append(cut, netrange.Of(e.Prefix))
+		}
+	}
+	return netrange.New(hosts...).Minus(cut...).Len()
+}
+
+// sweepOverride checks active.max_sweep_targets. Above the default it is an
+// expert override, allowed only with allow_wide_scan and with the global and
+// ARP rates and the concurrency cap at or below their defaults, so a wider
+// sweep only ever takes longer, never sends faster.
+func (v *validator) sweepOverride(a ActiveConfig) {
+	const k = "active.max_sweep_targets"
+	switch {
+	case a.MaxSweepTargets < 1 || a.MaxSweepTargets > MaxSweepTargetsCeiling:
+		v.add(k, "must be between 1 and %d, got %d", MaxSweepTargetsCeiling, a.MaxSweepTargets)
+		return
+	case a.MaxSweepTargets <= DefaultMaxSweepTargets:
+		return
+	case !a.AllowWideScan:
+		v.add(k, "%d is above %d, an expert override that needs active.allow_wide_scan: true", a.MaxSweepTargets, DefaultMaxSweepTargets)
+	}
+	d := Defaults().Active
+	for _, c := range []struct {
+		key        string
+		got, limit float64
+	}{
+		{"active.max_packets_per_second", a.MaxPacketsPerSecond, d.MaxPacketsPerSecond},
+		{"active.budgets.arp.packets_per_second", a.Budgets.ARP.PacketsPerSecond, d.Budgets.ARP.PacketsPerSecond},
+		{"active.max_concurrent_probes", float64(a.MaxConcurrentProbes), float64(d.MaxConcurrentProbes)},
+	} {
+		if c.got > c.limit {
+			v.add(c.key, "%v exceeds its default %v, which the expert override active.max_sweep_targets above %d does not allow",
+				c.got, c.limit, DefaultMaxSweepTargets)
 		}
 	}
 }
@@ -176,6 +243,7 @@ func (v *validator) active(cfg *Config) {
 	if a.MaxAutoScanPrefixV4 < minIfPrefix || a.MaxAutoScanPrefixV4 > 32 {
 		v.add("active.max_auto_scan_prefix_v4", "must be between %d and 32, got %d", minIfPrefix, a.MaxAutoScanPrefixV4)
 	}
+	v.sweepOverride(a)
 
 	for _, nb := range []struct {
 		name string
@@ -204,9 +272,19 @@ func (v *validator) active(cfg *Config) {
 		v.add("active.budgets.tcp.max_concurrent_per_interface", "must not exceed active.max_concurrent_probes (%d), got %d", a.MaxConcurrentProbes, t.MaxConcurrentPerInterface)
 	}
 
-	v.positive("active.arp.interval", a.ARP.Interval)
-	v.positive("active.icmp.interval", a.ICMP.Interval)
-	v.positive("active.tcp.interval", a.TCP.Interval)
+	for _, iv := range []struct {
+		key string
+		d   Duration
+	}{{"active.arp.interval", a.ARP.Interval}, {"active.icmp.interval", a.ICMP.Interval},
+		{"active.tcp.interval", a.TCP.Interval}, {"active.udp.interval", a.UDP.Interval}} {
+		if iv.d.D() < minProbeInterval {
+			v.add(iv.key, "must be at least %s, got %s", Duration(minProbeInterval), iv.d)
+		}
+	}
+	v.udpProbes("active.udp.probes", a.UDP.Probes)
+	if a.UDP.Enabled && len(a.UDP.Probes) == 0 {
+		v.add("active.udp.probes", "at least one probe is required when active.udp.enabled is true")
+	}
 	if a.TCP.Enabled && len(a.TCP.Targets) == 0 {
 		v.add("active.tcp.targets", "at least one target is required when active.tcp.enabled is true")
 	}
@@ -224,15 +302,30 @@ func (v *validator) active(cfg *Config) {
 	}
 }
 
+func (v *validator) udpProbes(key string, probes []string) {
+	seen := map[string]bool{}
+	for i, p := range probes {
+		k := fmt.Sprintf("%s[%d]", key, i)
+		switch {
+		case !slices.Contains(UDPProbeNames, p):
+			v.add(k, "must be one of %v, got %q", UDPProbeNames, p)
+		case seen[p]:
+			v.add(k, "%q is listed more than once", p)
+		}
+		seen[p] = true
+	}
+}
+
 func (v *validator) profiles(cfg *Config) {
 	for name, pr := range cfg.Profiles {
 		k := "profiles." + name
 		if !profileNameRe.MatchString(name) {
 			v.add(k, "profile names use lowercase letters, digits, '-' and '_'")
 		}
-		if !pr.ARP && !pr.ICMP && len(pr.TCP) == 0 {
+		if !pr.ARP && !pr.ICMP && len(pr.TCP) == 0 && len(pr.UDP) == 0 {
 			v.add(k, "enables no probe")
 		}
+		v.udpProbes(k+".udp", pr.UDP)
 		for i, port := range pr.TCP {
 			if port < 1 || port > 65535 {
 				v.add(fmt.Sprintf("%s.tcp[%d]", k, i), "must be between 1 and 65535, got %d", port)

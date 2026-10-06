@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"golang.org/x/sys/unix"
+
+	"lan-sentinel/migrations"
 )
 
 // Reader runs the read-only queries behind the API and `--offline`
@@ -83,7 +85,34 @@ func OpenReadOnly(path string, o ReadOptions) (*Reader, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("open database %s: %w", path, err)
 	}
+	if err := checkSchema(db); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("open database %s: %w", path, err)
+	}
 	return r, nil
+}
+
+// ErrSchemaVersion is returned offline when the database was written by an
+// older or newer binary: only the daemon migrates.
+var ErrSchemaVersion = errors.New("database schema does not match this binary")
+
+func checkSchema(db *sql.DB) error {
+	ms, err := loadMigrations(migrations.FS)
+	if err != nil {
+		return err
+	}
+	v, err := schemaVersion(context.Background(), db)
+	if err != nil {
+		return err
+	}
+	latest := ms[len(ms)-1].version
+	switch {
+	case v < latest:
+		return fmt.Errorf("%w: version %d, this binary uses %d; start the daemon once to migrate it", ErrSchemaVersion, v, latest)
+	case v > latest:
+		return fmt.Errorf("%w: version %d is newer than this binary supports (%d)", ErrSchemaVersion, v, latest)
+	}
+	return nil
 }
 
 // besideWAL checks what a read-only connection needs beside a running

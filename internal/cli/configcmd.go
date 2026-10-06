@@ -88,6 +88,7 @@ func printSummary(w io.Writer, l *config.Loaded, s config.Summary) {
 			if len(is.Exclude) > 0 {
 				active += "  exclude " + strings.Join(is.Exclude, ", ")
 			}
+			active += fmt.Sprintf("  sweep %d addresses (%s)", is.SweepTargets, sweepTime(is.SweepSeconds))
 		}
 		rows = append(rows, []string{"  " + is.Name, passive, active})
 	}
@@ -102,11 +103,26 @@ func printSummary(w io.Writer, l *config.Loaded, s config.Summary) {
 	fmt.Fprintf(w, "Budgets:  global %g pps; arp %g pps; icmp %g pps; ndp %g pps; udp %g pps; tcp %g connects/s (≤%d per interface, ≤%d per host)\n",
 		c.Active.MaxPacketsPerSecond, b.ARP.PacketsPerSecond, b.ICMP.PacketsPerSecond, b.NDP.PacketsPerSecond,
 		b.UDP.PacketsPerSecond, b.TCP.ConnectsPerSecond, b.TCP.MaxConcurrentPerInterface, b.TCP.MaxConcurrentPerHost)
+	if c.Active.MaxSweepTargets > config.DefaultMaxSweepTargets {
+		fmt.Fprintf(w, "Expert override: active.max_sweep_targets %d (default %d); preview operator sweeps with scan plan\n",
+			c.Active.MaxSweepTargets, config.DefaultMaxSweepTargets)
+	}
 	if s.MaxPacketsPerSecond == 0 {
 		fmt.Fprintln(w, "Estimated maximum probe rate: 0 pps (active discovery is disabled on every interface)")
 	} else {
 		fmt.Fprintf(w, "Estimated maximum probe rate: %g pps\n", s.MaxPacketsPerSecond)
 	}
+}
+
+// sweepTime prints how long a full sweep takes.
+func sweepTime(seconds float64) string {
+	switch {
+	case seconds < 120:
+		return fmt.Sprintf("~%.0f s", seconds)
+	case seconds < 2*3600:
+		return fmt.Sprintf("~%.0f min", seconds/60)
+	}
+	return fmt.Sprintf("~%.1f h", seconds/3600)
 }
 
 func (a *app) configShowCmd() *cobra.Command {

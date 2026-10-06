@@ -41,16 +41,17 @@ func (c *Correlator) observe(ctx context.Context, o observation.Observation) {
 	obsID := c.st.nextObservationID
 	ev := events.EvidenceFrom(o)
 
-	// §5.1: bind the observation to a host. A MAC-less name observation
-	// (a DNS answer) describes the holder of the IP but is not evidence that
-	// it is present or still holds the address.
+	// §5.1: bind the observation to a host. A MAC-less observation that is
+	// not evidence of presence (a DNS answer, a TCP timeout) describes the
+	// holder of the IP but neither updates presence nor confirms the
+	// binding.
 	var h *host
-	discovered, nameOnly := false, false
+	discovered, present := false, true
 	if mac != nil {
 		h, discovered = c.bindMAC(ctx, n, mac, o, obsID, ev)
 	} else if hs := c.st.holders[ipKey{n.id, ip}]; len(hs) == 1 {
-		h, nameOnly = hs[0].host, o.Source == observation.PassiveDNS
-		if !nameOnly {
+		h, present = hs[0].host, o.ProvesPresence()
+		if present {
 			c.seen(ctx, h, o, ev)
 		}
 	}
@@ -65,11 +66,14 @@ func (c *Correlator) observe(ctx context.Context, o observation.Observation) {
 	if h == nil {
 		return
 	}
-	if ip.IsValid() && !nameOnly {
+	if ip.IsValid() && present {
 		c.attribute(ctx, h, ip, o, obsID, ev, discovered)
 	}
 	if o.Service != nil {
 		c.service(ctx, h, *o.Service, o, obsID, ev)
+		if o.Meta[observation.MetaProbe] != "" {
+			c.probeDetails(ctx, h, o, obsID, ev)
+		}
 	}
 	if o.Hostname != "" && validNameType(o.NameType) {
 		c.name(ctx, h, o, obsID, ev)

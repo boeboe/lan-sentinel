@@ -120,6 +120,7 @@ func New(ctx context.Context, o Options) (*Correlator, error) {
 		c.emit(ctx, events.Event{TS: now, Type: events.DatabaseRecreated, New: r.QuarantinedTo, Cause: causeIntegrity,
 			Evidence: events.Evidence{TS: now, Reason: r.Reason}})
 	}
+	c.closeOpenScans(ctx, now)
 	for _, ic := range o.Config.Interfaces {
 		if _, ok := c.st.contexts[ic.Name]; ok {
 			continue
@@ -192,6 +193,8 @@ func (c *Correlator) Handle(ctx context.Context, m observation.Message) {
 		close(m.Barrier)
 	case m.Link != nil:
 		c.link(ctx, *m.Link)
+	case m.Operator != nil:
+		c.operator(ctx, *m.Operator)
 	default:
 		c.observe(ctx, m.Observation)
 	}

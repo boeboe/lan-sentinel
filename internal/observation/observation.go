@@ -71,6 +71,33 @@ const (
 	ServiceUnknown     ServiceState = "UNKNOWN"
 )
 
+// Meta keys of probe observations (docs/DATA_MODEL.md §5.5): MetaProbe
+// names the protocol-specific probe that produced a udp_probe result; keys
+// with MetaIdentityPrefix are the device's claims about itself
+// (identifications); the other keys describe the service.
+const (
+	MetaProbe          = "probe"
+	MetaIdentityPrefix = "id."
+)
+
+// ProvesPresence reports whether an observation is evidence that its host
+// is there right now. Everything with a MAC is; of the MAC-less ones, a
+// TCP connect that was answered (OPEN or REFUSED), an ICMP echo reply and
+// a UDP probe reply are. A DNS answer is a resolver's statement, and a TCP
+// TIMEOUT or UNREACHABLE is no answer at all.
+func (o Observation) ProvesPresence() bool {
+	if len(o.MAC) > 0 {
+		return true
+	}
+	if o.Source == PassiveDNS {
+		return false
+	}
+	if o.Service != nil {
+		return o.Service.State == ServiceOpen || o.Service.State == ServiceRefused
+	}
+	return true
+}
+
 // ServiceResult is the outcome of probing one protocol/port.
 type ServiceResult struct {
 	Proto string       `json:"proto"`

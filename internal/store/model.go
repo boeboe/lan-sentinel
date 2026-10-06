@@ -65,6 +65,9 @@ type Service struct {
 	FirstSeen    time.Time `json:"first_seen"`
 	LastSeen     time.Time `json:"last_seen"`
 	LastResultAt time.Time `json:"last_result_at"`
+	// Detail is what a protocol-specific probe learnt about the service
+	// (e.g. the NTP stratum), empty for plain TCP connects.
+	Detail map[string]string `json:"detail,omitempty"`
 }
 
 // Identification is a derived fact with confidence and evidence.

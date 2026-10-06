@@ -57,6 +57,10 @@ type host struct {
 	nameChange map[observation.NameType]time.Time
 	preferred  string
 
+	// Latest identification per field and probe source ("field\x00source"),
+	// for VENDOR_IDENTIFIED on a change (§5.5).
+	idents map[string]string
+
 	// Proxy-ARP detection (docs/DATA_MODEL.md §5.2): when this MAC last
 	// answered ARP for each address, and for those held by another live host.
 	proxyARP    bool
@@ -77,7 +81,7 @@ func newHost() *host {
 	return &host{
 		bindings: map[netip.Addr]*binding{}, services: map[string]*serviceRow{},
 		names: map[observation.NameType]*nameRow{}, nameChange: map[observation.NameType]time.Time{},
-		arpClaims: map[netip.Addr]time.Time{}, arpOverlaps: map[netip.Addr]time.Time{},
+		arpClaims: map[netip.Addr]time.Time{}, arpOverlaps: map[netip.Addr]time.Time{}, idents: map[string]string{},
 	}
 }
 
@@ -116,7 +120,14 @@ type state struct {
 	holders      map[ipKey][]*binding       // open bindings per IP
 	ipLastChange map[ipKey]time.Time
 
-	nextContextID, nextPrefixID, nextAddressID, nextObservationID, nextServiceID, nextNameID int64
+	nextContextID, nextPrefixID, nextAddressID, nextObservationID, nextServiceID, nextNameID, nextScanID int64
+
+	openScans []openScan // left unfinished by the previous run
+}
+
+type openScan struct {
+	id, ctx int64
+	kind    string
 }
 
 func newState() *state {
@@ -314,6 +325,24 @@ func (s *state) load(ctx context.Context, tx *sql.Tx) error {
 		}
 		return nil
 	})
+	q(`SELECT host_id, field, source, value FROM identifications WHERE source IN (`+probeSources+`) ORDER BY last_seen, id`, func(r *sql.Rows) error {
+		var hid, field, src, value string
+		if err := r.Scan(&hid, &field, &src, &value); err != nil {
+			return err
+		}
+		if h := byID[hid]; h != nil {
+			h.idents[identKey(field, src)] = value
+		}
+		return nil
+	})
+	q(`SELECT id, context_id, kind FROM scans WHERE finished_at IS NULL ORDER BY id`, func(r *sql.Rows) error {
+		var sc openScan
+		if err := r.Scan(&sc.id, &sc.ctx, &sc.kind); err != nil {
+			return err
+		}
+		s.openScans = append(s.openScans, sc)
+		return nil
+	})
 	q(`SELECT host_id, name_type, max(max(first_seen), max(coalesce(ended_at, 0))) FROM names GROUP BY host_id, name_type`, func(r *sql.Rows) error {
 		var hid, typ string
 		var t int64
@@ -331,7 +360,7 @@ func (s *state) load(ctx context.Context, tx *sql.Tx) error {
 	}{
 		{"network_contexts", &s.nextContextID}, {"context_prefixes", &s.nextPrefixID},
 		{"addresses", &s.nextAddressID}, {"observations", &s.nextObservationID}, {"services", &s.nextServiceID},
-		{"names", &s.nextNameID},
+		{"names", &s.nextNameID}, {"scans", &s.nextScanID},
 	} {
 		q(`SELECT coalesce(max(id), 0) FROM `+c.table, func(r *sql.Rows) error { return r.Scan(c.dst) })
 	}

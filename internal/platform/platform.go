@@ -102,11 +102,15 @@ type NeighborSource interface {
 
 // Link is a network interface with its own addresses.
 type Link struct {
-	Name     string
-	Index    int
-	MAC      net.HardwareAddr
-	Up       bool
+	Name  string
+	Index int
+	MAC   net.HardwareAddr
+	Up    bool
+	// Prefixes are the masked subnets of the interface's addresses
+	// (loopback and link-local left out); Addrs are the addresses
+	// themselves with their prefix length.
 	Prefixes []netip.Prefix
+	Addrs    []netip.Prefix
 }
 
 // LinkEvent is an interface change. Resync means notifications were lost.
@@ -124,18 +128,46 @@ type InterfaceMonitor interface {
 	Watch(ctx context.Context) (<-chan LinkEvent, error)
 }
 
+// FrameConn sends and receives the link-layer frames of one EtherType on
+// one interface (ARP probes). It carries no protocol logic. Received frames
+// carry their interface; the host's own outgoing frames are not returned.
+type FrameConn interface {
+	// WriteFrame sends a complete Ethernet frame out of the interface.
+	WriteFrame(ctx context.Context, frame []byte) error
+	// ReadFrame blocks until a frame arrives, ctx is done or the
+	// connection is closed.
+	ReadFrame(ctx context.Context) (Frame, error)
+	Close() error
+}
+
+// EchoConn is an IPv4 ICMP socket bound to an interface: a kernel ping
+// socket where net.ipv4.ping_group_range allows it, else a raw socket.
+type EchoConn interface {
+	// WriteTo sends an ICMP message (header and body) to dst.
+	WriteTo(msg []byte, dst netip.Addr) error
+	// ReadFrom returns the next ICMP message (without an IP header) and its
+	// sender, until ctx is done.
+	ReadFrom(ctx context.Context, buf []byte) (int, netip.Addr, error)
+	// Ping reports a kernel ping socket: the kernel sets the echo
+	// identifier and checksum and delivers only replies to this socket.
+	Ping() bool
+	Close() error
+}
+
 // Transmitter sends probes. Every probe leaves through the interface it was
-// scheduled for.
+// scheduled for, and only CAP_NET_RAW is needed.
 type Transmitter interface {
 	Backend() string
-	// SendFrame writes a complete link-layer frame (ARP, NDP).
-	SendFrame(ctx context.Context, iface string, frame []byte) error
-	// DialTCP makes a plain connect() bound to iface. The caller closes the
-	// connection immediately and never writes a payload.
+	// Frames opens a frame connection on iface for one EtherType.
+	Frames(ctx context.Context, iface string, etherType uint16) (FrameConn, error)
+	// DialTCP makes a plain connect() bound to iface (SO_BINDTODEVICE).
+	// The caller closes the connection immediately and never writes.
 	DialTCP(ctx context.Context, iface string, addr netip.AddrPort, timeout time.Duration) (net.Conn, error)
-	// ICMPConn opens an ICMP echo socket bound to iface: a ping socket where
-	// net.ipv4.ping_group_range allows it, else a raw socket.
-	ICMPConn(ctx context.Context, iface string, ipv6 bool) (net.PacketConn, error)
+	// DialUDP opens a UDP socket bound to iface and connected to addr, for
+	// protocol-specific probes.
+	DialUDP(ctx context.Context, iface string, addr netip.AddrPort) (net.Conn, error)
+	// ICMPConn opens an IPv4 ICMP echo socket bound to iface.
+	ICMPConn(ctx context.Context, iface string) (EchoConn, error)
 }
 
 // Backends is the set of platform implementations.

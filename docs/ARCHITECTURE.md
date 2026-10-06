@@ -63,8 +63,8 @@ LAN Sentinel is Linux only, and so is the code base. The kernel-facing parts (in
 | SQLite driver | `modernc.org/sqlite` (pure Go) | No cgo; static cross-compile |
 | Packet capture | `AF_PACKET` TPACKET_V3 via `gopacket/afpacket`, classic-BPF filter (`golang.org/x/net/bpf`) | No cgo, no libpcap; kernel-side filtering keeps CPU low |
 | Neighbours and interfaces | `vishvananda/netlink` dump + `RTM_NEWNEIGH`/`RTM_DELNEIGH`, link and address subscriptions, resync after `ENOBUFS` and periodically | Event-driven, no `ip neigh` polling |
-| ARP/NDP send | Raw `AF_PACKET` socket (`mdlayher/arp`, `mdlayher/ndp`) | Needs only `CAP_NET_RAW` |
-| TCP probes | Plain `net.Dialer` connect with timeout, immediate close, bound to the interface with `SO_BINDTODEVICE` | Safe for OT; classifies OPEN / REFUSED / TIMEOUT / UNREACHABLE; leaves via the probed interface |
+| ARP send | Request frames built with `gopacket/layers`, sent and received on an `AF_PACKET` socket bound to the interface behind the platform `Transmitter` (no `mdlayher` libraries); NDP probing deferred (v1 is IPv4-first) | Needs only `CAP_NET_RAW`; protocol logic stays out of the platform layer, so engines are tested against fakes |
+| TCP probes | Bare connect: plain `net.Dialer` connect with timeout, bound to the interface with `SO_BINDTODEVICE`, SYN retransmissions capped (`TCP_SYNCNT` 2), closed at once with a RST (`SO_LINGER` 0). The RST close is for bare connects only; a protocol-specific TCP probe that exchanges data (none in v1) closes orderly with FIN | Safe for OT: no payload, at most 3 packets per connect (§5), no connection left in `TIME_WAIT` or `CLOSE_WAIT` on either side; classifies OPEN / REFUSED / TIMEOUT / UNREACHABLE; leaves via the probed interface |
 | Presence | ACTIVE / RECENT / STALE / MISSING, configurable thresholds | Quiet PLCs are not offline |
 | Logging | `log/slog` with a journald handler; text or JSON on a terminal or in a container; transitions only | No journal spam |
 | Service manager | systemd, `Type=notify` with watchdog | Readiness, supervision and sandboxing in one place |
@@ -103,7 +103,7 @@ Four small interfaces over the kernel facilities. Nothing outside `internal/plat
 | `Capturer` | `Open(iface, filter, promisc) (FrameSource, error)`, `Stats()` | `AF_PACKET` TPACKET_V3 ring |
 | `NeighborSource` | `Snapshot(ctx) ([]Neighbor, error)`, `Watch(ctx) (<-chan NeighborEvent, error)`; entries carry the NUD state and the confirmation age | rtnetlink neighbour dump and subscription |
 | `InterfaceMonitor` | `List(ctx)`, `Watch(ctx) (<-chan LinkEvent, error)` | rtnetlink link and address dump and subscription |
-| `Transmitter` | `SendFrame(iface, frame)`, `DialTCP(iface, addr, timeout)`, `ICMPConn(iface, ipv6)` | `AF_PACKET` write, `SO_BINDTODEVICE`, ping or raw ICMP socket |
+| `Transmitter` | `Frames(iface, etherType) FrameConn` (write and read frames; each read frame carries its interface), `DialTCP(iface, addr, timeout)`, `DialUDP(iface, addr)`, `ICMPConn(iface) EchoConn` | `AF_PACKET` socket bound to the interface and EtherType (the host's own and outgoing frames are not read back), `SO_BINDTODEVICE` TCP and UDP sockets, a ping socket or, where `net.ipv4.ping_group_range` forbids it, a raw ICMP socket bound to the interface |
 
 Each backend reports availability per interface (`running`, `disabled`, `unsupported`, `failed` with error) to the collector registry, which feeds `daemon status` and `lan_sentinel_collector_up`. Shared tests run against fake implementations of these interfaces; the Linux implementations are tested in Docker (§9).
 
@@ -111,7 +111,11 @@ Each backend reports availability per interface (`running`, `disabled`, `unsuppo
 Dumps the neighbour table at startup, then subscribes to `RTM_NEWNEIGH`/`RTM_DELNEIGH`, and takes a fresh dump after notification loss (`ENOBUFS`: the backend resubscribes and signals a resync) and every `neighbor.resync_interval` (default 10 min). Emits source `kernel_neighbor` with the NUD state as `neighbor_state` for resolved entries only (REACHABLE, STALE, DELAY, PROBE; not INCOMPLETE, FAILED, NOARP or PERMANENT). Each observation is stamped with the time the kernel last confirmed reachability (`ndm_confirmed`), and an entry is emitted again only when it is reconfirmed or its MAC changes. A STALE entry that lingers therefore never makes a switched-off device look present, and STALE is never read as offline either.
 
 ### Active probes (`internal/probe`)
-A scheduler runs independent probe engines (ARP, ICMP, NDP, TCP, UDP) per interface; engines build packets themselves and transmit through the platform `Transmitter`. Each engine draws from its own protocol token bucket and from one global token bucket (packets/s; a TCP connect costs 3 tokens), and holds a slot of one global semaphore (concurrency). TCP additionally holds a per-interface and a per-target-host semaphore, and every target has a minimum spacing between probes. The scheduler applies startup delay, jitter, randomised target order, excludes, the prefix guard, timeout back-off and the kill switch. The same planner computes `scan plan` dry runs and gates `scan run`. See §5.
+Four engines, ARP (`probe/arp`), ICMP (`probe/icmp`), TCP (`probe/tcp`) and protocol-specific UDP (`probe/udp`), build their packets themselves and send through the platform `Transmitter`; IPv6 NDP probing is deferred (v1 is IPv4-first). Engines only emit observations (`arp_scan`, `icmp_scan`, `tcp_connect`, `udp_probe`) on the bus; they never touch state. ARP sweeps the configured networks and is the primary discovery mechanism; ICMP, TCP and UDP probe known hosts only, the open IPv4 bindings inside those networks (plus, in an operator scan, the hosts that answered its ARP sweep). A UDP probe is one well-formed request of its protocol, NTP mode 3 (123) or EtherNet/IP ListIdentity (44818), matched to its reply by a random token; a reply is service evidence with details (NTP version, stratum, leap indicator, reference ID, root delay and dispersion) and, for ListIdentity, the device's identity claims (product name, device type; vendor ID, product code, revision, serial number, status and state as details). No reply means nothing. A new UDP probe is one more `Prober`.
+
+Before every send an engine acquires the shared budget (`probe.Budget`), which checks the policy (kill switch, active discovery on the interface, target inside the configured networks, IPv4, not excluded) before it waits and again right before it returns, takes a slot of the global concurrency semaphore (TCP also the per-interface and per-host ones), waits for the target's spacing (without holding up probes to other targets), and books the send time: the earliest moment that respects the target's spacing, the protocol budget and the global packet budget (a TCP connect costs 3), booked in all three at once. Budgets are paced (the next send is due cost/rate after the previous one, 2% below the rate) and enforced over a sliding window of 1.02 s; a probe that leaves late (a timer that fired late, a goroutine not scheduled at once) is re-booked at the moment it actually leaves, so the budgets count real send times and no one-second window on the wire ever holds more than the budget. Every wait is counted per protocol and reason (`lan_sentinel_probe_throttled_total`).
+
+The scheduler (`probe/scheduler`) runs one loop per interface with active discovery and per protocol. The first pass waits for the startup delay plus a random share, up to `jitter`, of the interval; later passes follow the interval ±`jitter`; targets go in random order. An ARP sweep is never listed: its addresses (the networks less excludes and the interface's own addresses, `internal/netrange`) are counted and walked in a random order by a keyed permutation, so a sweep needs constant memory however wide it is. ICMP, TCP and UDP passes skip targets in back-off. Back-off is kept per interface, address, probe type and port (TCP) or probe (UDP), so one probe that goes unanswered never slows another: after three unanswered probes in a row (no reply, TIMEOUT or UNREACHABLE) that probe goes to the address at four times its interval. An answer to it ends the back-off; fresh positive evidence for the address (the open binding confirmed after the last miss: passive traffic, the neighbour table, an answer to another probe) eases it, so the next probe goes at the normal interval and one more miss brings the back-off back at once. ARP sweeps are not backed off. TCP passes go port by port, UDP passes probe by probe. A reload applies new budgets at once and new intervals and enabled probes at each loop's next step. The kill switch cancels running passes and scans at once; the loops then wait for it to clear. Operator scans (`scan run`) go through the same budgets, one interface after another: the ARP sweep, then ICMP, TCP port by port and UDP probe by probe on the known hosts and the ARP responders, in one random order for every phase. The scheduler records a scan through the correlator (an operator message on the bus: a `scans` row, `SCAN_STARTED`, `SCAN_COMPLETED` with counts), as the daemon does the kill switch (`runtime_state`, `ACTIVE_DISABLED`/`ACTIVE_ENABLED`); once the correlator has stopped, the bus is closed and such requests fail rather than wait. The planner (`probe.Compute`) computes `scan plan` and gates `scan run` identically. Its estimate replays the budget's pacing on a simulated clock (the first 20,000 addresses of a longer sweep, extrapolated at the pace reached) and gives two durations with the assumptions behind them: the estimated typical duration (known hosts answer at once; most swept addresses are empty, so only the sweep waits out its reply timeout) and the estimated no-response duration (every phase waits out its reply timeout). See §5.
 
 ### Correlator (`internal/correlate`) and state (`internal/state`)
 Single goroutine. Loads the current state (contexts, hosts, open bindings, services) at startup, applies the correlation rules (`DATA_MODEL.md` §5) to each bus message in order, derives `preferred_name`, and hands state changes to the store and events to the event engine. Time is data-driven: rules use the observation's time and timer transitions (presence, expiry) are stamped with the moment their threshold was crossed. A ticker re-evaluates them in live mode (every 15 s); replay has no ticker, so results are identical however fast it runs. The correlator assigns row ids itself, so it can refer to rows the writer has not committed yet. Observations that match no host are stored unbound and counted.
@@ -129,7 +133,7 @@ OUI lookup (longest prefix: MA-S, MA-M, MA-L) from an embedded table (`data/oui/
 REST over `/run/lan-sentinel/api.sock` (mode 0660, owner `lan-sentinel`), optional `127.0.0.1` listener that also serves `/metrics`; specified in `API.md`. The API answers from `store.Reader` on a read-only connection pool, the same queries `--offline` runs on the database file, so online and offline answers are identical; it sees what the writer has committed (at most one 5 s batch behind), and `/v1/events/stream` is fed live by the event engine. The CLI (`CLI.md`) is an API client by default and a read-only DB reader with `--offline`; both behind one interface, so every read command works both ways.
 
 ### Metrics (`internal/metrics`)
-`lan_sentinel_hosts{interface,presence}`, `lan_sentinel_events_total{type}`, `lan_sentinel_probe_total{interface,protocol,port,result}`, `lan_sentinel_scan_duration_seconds`, `lan_sentinel_observations_total{source}`, `lan_sentinel_bus_dropped_total`, `lan_sentinel_capture_drops_total{interface}`, `lan_sentinel_db_size_bytes`, `lan_sentinel_observations_unbound_total{source}`, `lan_sentinel_active_disabled` (0/1), `lan_sentinel_probe_throttled_total{protocol,reason}`, `lan_sentinel_collector_up{interface,collector}` (`API.md` lists their meaning; the probe metrics arrive in phase 4). A small writer for the Prometheus text format, gathered at scrape time; it refuses any label outside a fixed low-cardinality list, so no MAC, IP, hostname or host-ID label can appear.
+`lan_sentinel_hosts{interface,presence}`, `lan_sentinel_events_total{type}`, `lan_sentinel_probe_total{interface,protocol,port,result}`, `lan_sentinel_scan_duration_seconds`, `lan_sentinel_observations_total{source}`, `lan_sentinel_bus_dropped_total`, `lan_sentinel_capture_drops_total{interface}`, `lan_sentinel_db_size_bytes`, `lan_sentinel_observations_unbound_total{source}`, `lan_sentinel_active_disabled` (0/1), `lan_sentinel_probe_throttled_total{protocol,reason}`, `lan_sentinel_collector_up{interface,collector}` (`API.md` lists their meaning). A small writer for the Prometheus text format, gathered at scrape time; it refuses any label outside a fixed low-cardinality list, so no MAC, IP, hostname or host-ID label can appear.
 
 ## 4. Repository layout
 
@@ -147,9 +151,10 @@ lan-sentinel/
 │   │   ├── capture/             capture loop over platform.Capturer, BPF filter; decoders/: arp, ip, ndp, dhcp, dns (mDNS, DNS), lldp
 │   │   ├── neighbor/            snapshot + watch + resync over platform.NeighborSource
 │   │   └── replay/              pcap/pcapng and JSONL replay
-│   ├── probe/
-│   │   ├── scheduler/           intervals, jitter, startup delay, global rate limiter, excludes
-│   │   ├── arp/  icmp/  ndp/  tcp/  udp/   (transmit via platform.Transmitter)
+│   ├── netrange/                IPv4 range arithmetic: sweep sizes, excludes, a random walk without a list
+│   ├── probe/                   budget (rates, concurrency, spacing), policy and kill switch, targets, back-off, planner
+│   │   ├── scheduler/           periodic passes per interface and protocol, operator scans
+│   │   ├── arp/  icmp/  tcp/  udp/   engines (transmit via platform.Transmitter); udp: NTP, EtherNet/IP ListIdentity
 │   ├── correlate/               identity engine: match observation → host, conflicts
 │   ├── state/                   in-memory current state, presence state machine, name preference
 │   ├── events/                  event types, emitter, journald sink
@@ -184,22 +189,33 @@ Tooling: a `Makefile` (`make` lists every target) whose Go commands all run in t
 | Control | Default | Enforcement |
 | --- | --- | --- |
 | Active discovery | Disabled | Must be enabled per interface |
-| Scan scope | Configured `networks` only | Discovered subnets are never scanned automatically |
+| Scan scope | Configured `networks` only | ARP sweeps the configured networks; ICMP, TCP and UDP probe only known hosts inside them. Discovered subnets are never scanned automatically |
 | Max auto-scan prefix | /24 IPv4 | Wider prefixes refused at config validation unless `allow_wide_scan: true` |
-| IPv6 sweeping | Never | Only NDP to addresses already observed |
-| Packet rate | 20 pps total | Token bucket shared by all probe engines; a TCP connect costs 3 tokens |
-| Per-protocol rate | ARP 10 pps, ICMP 5, NDP 5, UDP 5, TCP 5 connects/s | One bucket per engine beneath the global one |
+| Sweep size | 65,536 targets per interface | With `allow_wide_scan`, the limit is a target count, not a prefix: an interface's networks, less excludes, may hold at most `max_sweep_targets` addresses (default 65,536: a /16, or 256 /24s). Above the default is an expert override: it needs `allow_wide_scan`, and the global and ARP rates and the concurrency cap may not exceed their defaults, so a wider sweep only takes longer, never sends faster. `config validate` shows each interface's sweep size and duration; an operator sweep of more than 65,536 addresses is refused until repeated with `--allow-wide` after its `scan plan` preview. Validation keeps the value at most 2^24 (a /8) |
+| IPv6 | No active probes | v1 is IPv4-first: no IPv6 sweeping, NDP probing deferred; IPv6 and NDP are still decoded passively |
+| Packet rate | 20 pps total | One budget shared by all engines and interfaces, paced and enforced over a sliding 1.02 s window; a TCP connect costs 3 packets. The ARP the kernel sends to resolve a probed known host is not counted: known hosts are usually in the neighbour cache, and back-off keeps probes to vanished hosts rare |
+| Per-protocol rate | ARP 10 pps, ICMP 5, UDP 5, TCP 5 connects/s | One budget per protocol beneath the global one (`budgets.ndp` is reserved for NDP probing) |
 | Concurrency | 10 probes | Semaphore across engines |
-| TCP concurrency | 4 per interface, 1 per target host | Extra semaphores in the TCP engine |
-| Per-target spacing | ≥ 1 s between any two probes to one IP | Checked before every send |
-| Dry run | `scan plan` | Same planner as `scan run`; refuses identically |
-| Startup delay | 30 s + jitter | Avoids ~1,000 boxes probing at once after a fleet update |
+| TCP concurrency | 4 per interface, 1 per target host | Extra semaphores in the shared budget, taken by TCP probes |
+| Per-target spacing | ≥ 1 s between any two probes to one IP on one interface | Booked with the send time |
+| Dry run | `scan plan` | Same planner as `scan run`; refuses identically; estimated typical and no-response durations with their assumptions |
+| Startup delay | 30 s + up to `jitter` × interval | Avoids ~1,000 boxes probing at once after a fleet update |
 | Interval jitter | ±10% | Desynchronises sites over time |
 | Target order | Randomised | Avoids sequential hammering |
 | Excludes | Empty list | IPs/CIDRs never probed, checked before every send |
-| TCP probe style | Full connect, immediate close | No SYN scans, no payload |
-| Back-off | On | A host returning TIMEOUT 3 times is probed at 4× interval |
-| Kill switch | `LAN_SENTINEL_ACTIVE_DISABLED=1`, API or `active disable` | Stops all probes within one tick without restart; API/CLI setting persists across restarts |
+| TCP probe style | Bare connect, immediate close with RST (`SO_LINGER` 0), SYN retransmissions capped at 2 | No SYN scans, no payload; at most 3 packets per connect (below). Protocol-specific TCP probes (none in v1) close with FIN after their exchange and are charged for what they send |
+| UDP probes | NTP and EtherNet/IP ListIdentity, off by default | Protocol-specific requests to known hosts only; no generic UDP port scanning; no reply means nothing |
+| Back-off | On | Per interface, address, probe type and port or UDP probe: 3 unanswered probes in a row (no reply, TIMEOUT, UNREACHABLE) and that probe goes at 4× interval; an answer ends it, fresh positive evidence for the address eases it (next probe at the normal interval, back at the next miss); other probes are not affected; ARP sweeps are exempt |
+| Kill switch | `LAN_SENTINEL_ACTIVE_DISABLED=1`, API or `active disable` | Checked before every send; running passes and scans are cancelled at once, without restart; the API/CLI setting persists across restarts |
+
+A bare TCP connect is charged 3 packets of the global budget before it is sent, whatever its outcome:
+
+| Outcome | Sent by the probe | Notes |
+| --- | --- | --- |
+| OPEN (connected) | SYN, ACK, RST: 3 | The handshake completes and the probe aborts at once; no data, no FIN exchange |
+| REFUSED | SYN: 1 | The target's RST ends it; the budget keeps the 2 unused packets |
+| TIMEOUT | SYN plus at most 2 retransmissions: up to 3 | Retransmissions at about 1 s and 3 s (`TCP_SYNCNT` 2), so a timeout of 1 s or less sends 1 SYN, up to 3 s sends 2, longer sends 3; the kernel gives up at about 7 s, which caps the wait |
+| UNREACHABLE | none, or the SYNs as for TIMEOUT | The kernel found no neighbour (its own ARP is not counted, see above) or got an ICMP unreachable |
 
 Passive capture opens sockets for receive only, never injects frames, and promiscuous mode is a per-interface opt-in.
 
@@ -239,6 +255,7 @@ active:
     udp:  { packets_per_second: 5 }
     tcp:  { connects_per_second: 5, max_concurrent_per_interface: 4, max_concurrent_per_host: 1 }
   max_auto_scan_prefix_v4: 24
+  max_sweep_targets: 65536         # addresses one interface's sweep may cover (with allow_wide_scan); above: expert override
   allow_wide_scan: false
   arp:  { enabled: true,  interval: 5m }
   icmp: { enabled: false, interval: 10m }
@@ -247,10 +264,16 @@ active:
     interval: 5m
     targets:
       - { port: 502, name: modbus, timeout: 750ms }
+  udp:                             # protocol-specific probes only; no reply means nothing
+    enabled: false
+    interval: 15m
+    probes: [ntp, enip]            # NTP (123), EtherNet/IP ListIdentity (44818)
 profiles:
   modbus:
     arp: true
     tcp: [502]
+  identify:
+    udp: [enip]
 presence: { active: 5m, recent: 30m, stale: 24h }
 identity:
   hostname_preference: [mdns, dhcp, dns_ptr, lldp]
@@ -388,6 +411,6 @@ The code base is Linux only. Every make target that runs Go runs in the Linux de
 | systemd unit, sandbox and privileges (systemd container) | `make test-systemd` |
 | Privilege check on real hardware | `tools/capcheck` on the target boards (§8) |
 
-`make test-net` builds the test binaries in the dev container (`build/test-bins.sh`, for the Docker host's architecture), then `test/net/run.sh` creates a bridge network with fixed subnets (`172.31.250.0/24`, `fd5e:5e:1::/64`) standing in for an OT LAN, plus a second network (`172.31.251.0/24`). Simulated hosts are `busybox` containers with fixed MACs: one with a TCP listener on port 502 (`.10`), one without (`.11`, REFUSED), one that is swapped for a host with another MAC on request (`.12`), one that is stopped on request (`.13`), a "PLC" with a real Siemens OUI MAC for vendor lookup (`.14`), and an unused address (`.99`). On the second network a host carries the same MAC as `.10`, so per-interface scoping is tested. Go tests ask for such changes by writing request files (`<action>@<id>.request`, holding the action's arguments) into a shared directory; `run.sh` performs them (swap, stop, connect or disconnect the second network, inject frames, add an administratively down interface to the runner's namespace from a helper container) and acknowledges with `<action>@<id>.done`. To inject, a test writes a pcap file of frames from other MACs (DHCP, mDNS, DNS, LLDP, ARP, NDP) and `run.sh` sends it from a separate container with `test/net/inject`; LLDP goes to the broadcast address in these tests because Linux bridges do not forward the 802.1D reserved group addresses. The capture tests check decoding of every protocol, that the box's own frames and VLAN frames are not captured (priority-tagged ones are), that a down interface is refused until it comes up, promiscuous mode with only `CAP_NET_RAW`, the kernel drop counter on an overflowing ring, and the daemon naming hosts from captured frames. The runner container starts with only `CAP_NET_RAW` (plus the capabilities `setpriv` needs to drop privileges) and runs the tests as uid 65534 with ambient `CAP_NET_RAW`, mirroring the systemd unit. It runs `capcheck` with and without the capability, then every Go test package under `test/net` built with the `nettest` tag; those read the network layout from `LS_TEST_*` environment variables.
+`make test-net` builds the test binaries in the dev container (`build/test-bins.sh`, for the Docker host's architecture), then `test/net/run.sh` creates a bridge network with fixed subnets (`172.31.250.0/24`, `fd5e:5e:1::/64`) standing in for an OT LAN, plus a second network (`172.31.251.0/24`). Simulated hosts are `busybox` containers with fixed MACs: one with a TCP listener on port 502 (`.10`), one without (`.11`, REFUSED), one that is swapped for a host with another MAC on request (`.12`), one that is stopped on request (`.13`), a "PLC" with a real Siemens OUI MAC for vendor lookup (`.14`), one that active discovery learns and that is then stopped (`.130`), and an unused address (`.99`). On the second network a host carries the same MAC as `.10`, so per-interface scoping is tested. Go tests ask for such changes by writing request files (`<action>@<id>.request`, holding the action's arguments) into a shared directory; `run.sh` performs them (swap, stop, connect or disconnect the second network, inject frames, add an administratively down interface to the runner's namespace from a helper container) and acknowledges with `<action>@<id>.done`. To inject, a test writes a pcap file of frames from other MACs (DHCP, mDNS, DNS, LLDP, ARP, NDP) and `run.sh` sends it from a separate container with `test/net/inject`; LLDP goes to the broadcast address in these tests because Linux bridges do not forward the 802.1D reserved group addresses. The capture tests check decoding of every protocol, that the box's own frames and VLAN frames are not captured (priority-tagged ones are), that a down interface is refused until it comes up, promiscuous mode with only `CAP_NET_RAW`, the kernel drop counter on an overflowing ring, and the daemon naming hosts from captured frames. The active-discovery test runs operator scans through the daemon while a counter (an unfiltered `AF_PACKET` ring in the runner) records every frame the runner sends with kernel timestamps: no one-second window exceeds the global or a protocol budget, excluded addresses and addresses outside the configured network see nothing, two probes to one target are a second apart, the measured scan's packets and duration are within 10% of `scan plan`, TCP results are classified (OPEN, REFUSED, and UNREACHABLE for a known host that is stopped on request, `.130`), the prefix guard refuses, and the kill switch stops a running sweep within one second and survives a restart. The runner container starts with only `CAP_NET_RAW` (plus the capabilities `setpriv` needs to drop privileges) and runs the tests as uid 65534 with ambient `CAP_NET_RAW`, mirroring the systemd unit. It runs `capcheck` with and without the capability, then every Go test package under `test/net` built with the `nettest` tag; those read the network layout from `LS_TEST_*` environment variables.
 
 Docker's kernel is not the target kernel, so the board check in §8 stays mandatory.

@@ -47,6 +47,7 @@ type Link struct {
 	Up       bool
 	MAC      net.HardwareAddr
 	Prefixes []netip.Prefix
+	Addrs    []netip.Prefix // own addresses with prefix length (probe sources, never probed)
 }
 
 // Links returns the last known state of every configured interface that
@@ -128,7 +129,7 @@ func (m *Manager) Run(ctx context.Context) error {
 
 // present publishes and remembers a link that exists.
 func (m *Manager) present(ctx context.Context, l platform.Link, t time.Time) {
-	m.remember(Link{Name: l.Name, Present: true, Up: l.Up, MAC: l.MAC, Prefixes: l.Prefixes})
+	m.remember(Link{Name: l.Name, Present: true, Up: l.Up, MAC: l.MAC, Prefixes: l.Prefixes, Addrs: l.Addrs})
 	m.publish(ctx, observation.LinkState{Time: t, Interface: l.Name, Present: true, Up: l.Up, Prefixes: l.Prefixes})
 }
 

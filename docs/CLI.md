@@ -58,7 +58,7 @@ The daemon runs with `UMask=0027` and the data directory is `0750 lan-sentinel:l
 | `active disable` | Kill switch: stop all active probing now; persists across restarts | `--reason TEXT` (required) | 4 |
 | `active enable` | Clear the kill switch | `--reason TEXT` | 4 |
 | `scan plan` | Dry run: what a scan would do, sending nothing | same as `scan run` | 4 |
-| `scan run` | Operator-triggered scan, bound by the same safety controls | `--interface`, `--network`, `--arp`, `--icmp`, `--tcp <port>` (repeatable), `--profile` | 4 |
+| `scan run` | Operator-triggered scan, bound by the same safety controls | `--interface`, `--network` (repeatable), `--arp`, `--icmp`, `--tcp <port>` (repeatable), `--udp <probe>` (`ntp`, `enip`; repeatable), `--profile`, `--allow-wide` | 4 |
 | `config show` | Effective config after merging defaults, file, env and flags | `--sources` | 0 |
 | `config validate` | Validate a config before rollout | `--config` | 0 |
 | `db info` | Path, schema version, journal mode, size, WAL size, row counts | | 3 |
@@ -103,23 +103,24 @@ Columns: time, interface, source, MAC, IP, hostname, service, host ID. The lates
 
 ### `active disable` / `active enable`
 
-`disable` stops all probe engines within one scheduler tick, cancels running scans, writes the persisted kill switch (`DATA_MODEL.md` §8) and emits `ACTIVE_DISABLED` with the reason and the calling Unix user (from `SO_PEERCRED`). `enable` clears it and emits `ACTIVE_ENABLED`; it fails with exit 2 if `LAN_SENTINEL_ACTIVE_DISABLED=1` is set. Enabling the switch does not override per-interface `active.enabled: false`.
+`disable` stops all probe engines at once (every probe checks the switch right before it is sent, and running passes and scans are cancelled), writes the persisted kill switch (`DATA_MODEL.md` §8) and emits `ACTIVE_DISABLED` with the reason and the calling Unix user (from `SO_PEERCRED`); it returns once that is committed. `enable` clears it and emits `ACTIVE_ENABLED` (a no-op when it is not set); probing resumes only once that is committed. It fails with exit 2 if `LAN_SENTINEL_ACTIVE_DISABLED=1` is set. Enabling the switch does not override per-interface `active.enabled: false`. Both need the daemon; `-o json` prints the resulting state.
 
 ### `scan plan`
 
 Accepts the same options as `scan run`, sends nothing, and prints:
 
 - interface, requested networks, profile and probes/ports
-- target count after excludes, and the excluded IPs/ranges that applied
-- per-protocol rate, effective packets/s against the global budget, concurrency caps
-- estimated packets, connections and duration
-- verdict: `ALLOWED` or `REFUSED` with every reason (kill switch set, active discovery disabled on the interface, network outside the interface's configured networks, prefix wider than `max_auto_scan_prefix_v4`, no targets left)
+- targets after excludes: the addresses the ARP sweep covers (without the interface's own) and the known hosts (open IPv4 bindings in the networks) that ICMP, TCP and UDP probe, and the excludes that applied
+- per-protocol rates, the TCP concurrency caps and the global budget
+- estimated packets (a TCP connect counts 3, its most) and two durations, labelled: the **estimated typical duration** and the **estimated no-response duration**
+- the assumptions behind the estimate: probes paced at the rates shown and at least the target spacing apart, sending and answering taking no time; for the typical duration, that known hosts answer at once while most swept addresses are empty, so only the ARP sweep waits out its reply timeout; for the no-response duration, that nothing answers, so every phase waits out its reply timeout (named per probe); and that hosts that first answer the sweep are probed too, which adds to a run
+- verdict: `ALLOWED` or `REFUSED` with every reason (kill switch set, active discovery disabled on the interface, interface not configured, network outside the interface's configured networks or not IPv4, prefix wider than `max_auto_scan_prefix_v4`, a sweep beyond `active.max_sweep_targets`, a sweep of more than 65,536 addresses without `--allow-wide`, unknown profile or UDP probe, no targets left)
 
-Exit 0 if allowed, 2 if refused. Online, the daemon computes the plan from its effective config. With `--offline`, the CLI computes it from the config file and the persisted kill switch.
+With no probe given (no `--arp`, `--icmp`, `--tcp`, `--udp` and no profile) the scan is an ARP sweep; probes given are added to the profile's. A sweep of more than 65,536 addresses (possible only with the expert override `active.max_sweep_targets`) is refused until the plan is repeated with `--allow-wide`: the refused plan is the preview, with the target count and both durations. Without `--interface` every interface with active discovery is planned. Exit 0 if allowed, 2 if refused. Online, the daemon computes the plan from its effective config, the kill switch, the live interface addresses and the known hosts. With `--offline`, the CLI computes it from the config file, the persisted kill switch and `LAN_SENTINEL_ACTIVE_DISABLED`, and the known hosts in the database; the interfaces' own addresses are unknown offline, so they count as sweep targets. The ARP responders of a run are probed as well, so a run can probe more hosts than its plan counts.
 
 ### `scan run`
 
-Computes the same plan, prints it, and refuses (exit 2) if `scan plan` would. Otherwise it runs through the daemon's scheduler and budgets, prints progress and a summary, and returns when the scan completes.
+Computes the same plan, prints it, and refuses (exit 2) if `scan plan` would. Otherwise it runs through the daemon's scheduler and budgets, interface by interface: the ARP sweep, then ICMP, TCP port by port and UDP probe by probe on the known hosts and the ARP responders. It prints the estimated typical duration while it runs and returns when the scan completes, with per interface the duration, how many hosts answered the sweep and the results per probe; exit 2 if the scan was aborted (the kill switch was set meanwhile), refused by the daemon, or done but not recorded. Only one operator scan runs at a time; interrupting `scan run` (Ctrl-C) aborts the scan, which is recorded as aborted. Each interface's scan is recorded as a `scans` row with `SCAN_STARTED` and `SCAN_COMPLETED` events; periodic passes are not. Needs the daemon.
 
 ### Time arguments
 
@@ -149,7 +150,7 @@ Online, the daemon answers from what its single writer has committed, at most on
 
 ### `config validate` output
 
-Prints interfaces with passive/active mode, active scan networks, enabled probes and ports, per-protocol budgets and the estimated maximum probe rate. Exit 0 if valid, 2 with per-key errors otherwise.
+Prints interfaces with passive/active mode, active scan networks with the number of addresses a sweep covers and how long one takes at the ARP rate, enabled probes and ports, per-protocol budgets, the expert override `active.max_sweep_targets` when it is above 65,536, and the estimated maximum probe rate. Exit 0 if valid, 2 with per-key errors otherwise.
 
 ### `config show --sources`
 
@@ -266,11 +267,25 @@ Events:
 ```bash
 $ lan-sentinel scan plan --interface eth1 --profile modbus
 Interface:  eth1    Profile: modbus    Networks: 192.168.110.0/24
-Targets:    253     (excluded: 192.168.110.1)
+Targets:    252 to sweep (excluded: 192.168.110.1), 14 known hosts
 Probes:     arp; tcp/502
 Rates:      arp 10 pps, tcp 5 connects/s (≤4 per interface, ≤1 per host); global cap 20 pps
-Estimate:   253 ARP requests, 253 TCP connects (3 packets each), ~1012 packets, ~51 s
+Estimate:   252 ARP requests, 14 TCP connects (at most 3 packets each), at most ~294 packets
+Duration:   estimated typical ~30 s, estimated no-response ~31 s
+Assumes:    probes leave paced at the rates above, at most 20 packets/s in all (a TCP connect counts 3), and at least 1s apart per target; sending, connecting and answering take no time
+            typical: known hosts answer at once; most swept addresses are empty, so the ARP sweep waits its 1s reply timeout once, after its last request
+            no-response: nothing answers, so every phase waits out its reply timeout once (ARP 1s, tcp/502 750ms)
+            ICMP, TCP and UDP counts use the hosts known now; hosts that first answer the sweep are probed too, which adds to a run
 Verdict:    ALLOWED
+```
+
+```bash
+$ lan-sentinel scan run --interface eth1 --profile modbus
+...                                   (the plan, as above)
+Scanning (estimated typical duration ~30 s) ...
+eth1: done in 30 s; 15 hosts answered ARP
+  arp      237 no_reply, 15 reply
+  tcp/502  3 OPEN, 12 REFUSED
 ```
 
 ```bash

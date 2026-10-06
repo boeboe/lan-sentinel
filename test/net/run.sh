@@ -22,12 +22,13 @@ CLOSED_IP=172.31.250.11 CLOSED_MAC=02:00:00:00:fa:0b                   # no list
 SWAP_IP=172.31.250.12 SWAP_MAC_A=02:00:00:00:fa:a1 SWAP_MAC_B=02:00:00:00:fa:b1 # host swapped on request
 GONE_IP=172.31.250.13 GONE_MAC=02:00:00:00:fa:0d                       # host stopped on request
 PLC_IP=172.31.250.14 PLC_MAC=00:1b:1b:00:fa:0e                         # real OUI (Siemens AG): vendor lookup
+VANISH_IP=172.31.250.130 VANISH_MAC=02:00:00:00:fa:82                  # known to active discovery, then stopped: UNREACHABLE
 TWIN_IP=172.31.251.10                                                  # on NET2, same MAC as OPEN: per-interface scoping
 ABSENT_IP=172.31.250.99                                                # nobody: TIMEOUT / FAILED
 RUNNER_IMAGE=${RUNNER_IMAGE:-debian:bookworm-slim}
 HOST_IMAGE=${HOST_IMAGE:-busybox:stable}
 BIN_DIR=$(cd "${BIN_DIR:-.build/test}" && pwd)
-HOSTS=(ls-open ls-closed ls-swap-a ls-swap-b ls-gone ls-plc ls-twin)
+HOSTS=(ls-open ls-closed ls-swap-a ls-swap-b ls-gone ls-plc ls-twin ls-vanish)
 
 work=$(mktemp -d)
 cleanup_docker() {
@@ -84,14 +85,18 @@ host ls-closed "$CLOSED_IP" "$CLOSED_MAC" "$HOST_IMAGE" sleep 3600
 host ls-swap-a "$SWAP_IP" "$SWAP_MAC_A" "$HOST_IMAGE" sleep 3600
 host ls-gone "$GONE_IP" "$GONE_MAC" "$HOST_IMAGE" sleep 3600
 host ls-plc "$PLC_IP" "$PLC_MAC" "$HOST_IMAGE" sleep 3600
+host ls-vanish "$VANISH_IP" "$VANISH_MAC" "$HOST_IMAGE" sleep 3600
 HOST_NET=$NET2 host ls-twin "$TWIN_IP" "$OPEN_MAC" "$HOST_IMAGE" sleep 3600
 
 # runner CAPS ARGS... runs ARGS as uid 65534 with exactly the ambient
-# capabilities in CAPS (e.g. "+net_raw" or "" for none).
+# capabilities in CAPS (e.g. "+net_raw" or "" for none). RUNNER_EXTRA holds
+# further docker run options.
+RUNNER_EXTRA=()
 runner() {
 	local caps=$1
 	shift
 	docker run --rm --name "$RUNNER" --network "$NET" --ip "$RUNNER_IP" -v "$work/t:/t:ro" -v "$work/sync:/sync" \
+		${RUNNER_EXTRA[@]+"${RUNNER_EXTRA[@]}"} \
 		-e LS_TEST_IFACE=eth0 -e LS_TEST_SYNC=/sync -e LS_TEST_IPV6="$ipv6" \
 		-e LS_TEST_OPEN="$OPEN_IP:502" -e LS_TEST_OPEN_MAC="$OPEN_MAC" \
 		-e LS_TEST_CLOSED="$CLOSED_IP:502" -e LS_TEST_CLOSED_MAC="$CLOSED_MAC" \
@@ -99,6 +104,7 @@ runner() {
 		-e LS_TEST_GONE="$GONE_IP" -e LS_TEST_GONE_MAC="$GONE_MAC" -e LS_TEST_ABSENT="$ABSENT_IP" \
 		-e LS_TEST_PLC="$PLC_IP" -e LS_TEST_PLC_MAC="$PLC_MAC" -e LS_TEST_TWIN="$TWIN_IP" \
 		-e LS_TEST_NET2_PREFIX="$SUBNET2" -e LS_TEST_PREFIX="$SUBNET4" \
+		-e LS_TEST_VANISH="$VANISH_IP" -e LS_TEST_VANISH_MAC="$VANISH_MAC" \
 		--cap-drop ALL --cap-add NET_RAW --cap-add SETUID --cap-add SETGID --cap-add SETPCAP \
 		"$RUNNER_IMAGE" setpriv --reuid=65534 --regid=65534 --clear-groups \
 		--bounding-set="-all${caps:+,$caps}" --inh-caps="-all${caps:+,$caps}" --ambient-caps="-all${caps:+,$caps}" \
@@ -115,6 +121,7 @@ act() {
 		docker rm -f ls-swap-a >/dev/null
 		host ls-swap-b "$SWAP_IP" "$SWAP_MAC_B" "$HOST_IMAGE" sh -c "arping -U -c 3 -I eth0 $SWAP_IP; sleep 3600" ;;
 	stop-gone) docker rm -f ls-gone >/dev/null ;;
+	stop-vanish) docker rm -f ls-vanish >/dev/null ;;
 	net-connect) docker network connect --ip "$RUNNER_IP2" "$NET2" "$RUNNER" ;;
 	down-iface-add) # an administratively down interface in the runner's namespace (needs CAP_NET_ADMIN there, not in the runner)
 		docker run --rm --network "container:$RUNNER" --cap-add NET_ADMIN "$HOST_IMAGE" ip link add "$2" type dummy ;;
@@ -181,6 +188,15 @@ for bin in ${tests[@]+"${tests[@]}"}; do
 	serve_requests "$pid"
 	wait "$pid" || fail=1
 done
+
+# Where net.ipv4.ping_group_range excludes the service group (common on
+# boards), ICMP falls back to a raw socket under CAP_NET_RAW.
+RUNNER_EXTRA=(--sysctl "net.ipv4.ping_group_range=1 0" -e LS_TEST_RAW_ICMP=1)
+for bin in ${tests[@]+"${tests[@]}"}; do
+	echo "== $bin (ping sockets not allowed)"
+	runner +net_raw "/t/$bin" -test.v -test.timeout 2m -test.run '^TestICMPRawSocket$' || fail=1
+done
+RUNNER_EXTRA=()
 
 if [ "$fail" = 0 ]; then
 	echo "== test-net: PASS"

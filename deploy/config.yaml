@@ -17,6 +17,18 @@ interfaces:
 passive:
   protocols: { arp: true, ipv4: true, ipv6: false, dhcp: true, mdns: true, dns: true, lldp: true }
 
+# Probes on interfaces with active.enabled (defaults shown; budgets and
+# limits: lan-sentinel config show --sources). Stop all probing at once:
+# lan-sentinel active disable --reason "..."
+# active:
+#   arp:  { enabled: true,  interval: 5m }     # ARP sweep of the configured networks
+#   icmp: { enabled: false, interval: 10m }    # known hosts only
+#   tcp:
+#     enabled: false
+#     interval: 5m
+#     targets: [{ port: 502, name: modbus, timeout: 750ms }]
+#   udp: { enabled: false, interval: 15m, probes: [ntp, enip] }   # NTP, EtherNet/IP ListIdentity
+
 storage:
   path: /data/lan-sentinel/hosts.db
 
