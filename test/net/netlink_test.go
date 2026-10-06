@@ -137,6 +137,25 @@ func awaitNeighbor(t *testing.T, ch <-chan platform.NeighborEvent, target netip.
 	}
 }
 
+// awaitResolved makes sure the kernel holds a resolved entry for target
+// with mac. An entry that is already REACHABLE (earlier tests, such as
+// active discovery, probed the host) gets no notification from a ping, so
+// the table is checked before waiting for one.
+func awaitResolved(t *testing.T, nbs platform.NeighborSource, ch <-chan platform.NeighborEvent, target netip.Addr, mac string) {
+	t.Helper()
+	if list, err := nbs.Snapshot(context.Background()); err == nil {
+		for _, n := range list {
+			if n.IP == target && n.MAC.String() == mac {
+				t.Logf("%s already in the neighbour table: %+v", target, n)
+				return
+			}
+		}
+	}
+	awaitNeighbor(t, ch, target, 20*time.Second, func(ev platform.NeighborEvent) bool {
+		return ev.Neighbor.MAC.String() == mac && ev.Neighbor.State == "REACHABLE"
+	})
+}
+
 func TestInterfaces(t *testing.T) {
 	iface, prefix := env(t, "LS_TEST_IFACE"), netip.MustParsePrefix(env(t, "LS_TEST_PREFIX"))
 	links, err := platform.New().Interfaces.List(context.Background())
@@ -224,19 +243,7 @@ func TestNeighborMACChange(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// An entry that is already REACHABLE (earlier tests probed the host)
-	// gets no notification from a ping: the table shows MAC A then.
-	known := false
-	if list, err := nbs.Snapshot(ctx); err == nil {
-		for _, n := range list {
-			known = known || n.IP == target && n.MAC.String() == macA
-		}
-	}
-	if !known {
-		awaitNeighbor(t, ch, target, 20*time.Second, func(ev platform.NeighborEvent) bool {
-			return ev.Neighbor.MAC.String() == macA
-		})
-	}
+	awaitResolved(t, nbs, ch, target, macA)
 	request(t, "swap")
 	awaitNeighbor(t, ch, target, 60*time.Second, func(ev platform.NeighborEvent) bool {
 		return ev.Neighbor.MAC.String() == macB
@@ -247,7 +254,8 @@ func TestNeighborExpiry(t *testing.T) {
 	absent, gone, goneMAC := ip(t, "LS_TEST_ABSENT"), ip(t, "LS_TEST_GONE"), env(t, "LS_TEST_GONE_MAC")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	ch, err := platform.New().Neighbors.Watch(ctx)
+	nbs := platform.New().Neighbors
+	ch, err := nbs.Watch(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -257,9 +265,7 @@ func TestNeighborExpiry(t *testing.T) {
 	awaitNeighbor(t, ch, absent, 20*time.Second, failedOrGone)
 
 	// A host that was there disappears: its entry goes stale and fails.
-	awaitNeighbor(t, ch, gone, 20*time.Second, func(ev platform.NeighborEvent) bool {
-		return ev.Neighbor.MAC.String() == goneMAC && ev.Neighbor.State == "REACHABLE"
-	})
+	awaitResolved(t, nbs, ch, gone, goneMAC)
 	request(t, "stop-gone")
 	awaitNeighbor(t, ch, gone, 120*time.Second, failedOrGone)
 }
