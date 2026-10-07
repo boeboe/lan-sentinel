@@ -23,7 +23,8 @@ type HostSummary struct {
 	PreferredName       string    `json:"preferred_name,omitempty"`
 	Manufacturer        string    `json:"manufacturer,omitempty"`
 	DeviceType          string    `json:"device_type,omitempty"`
-	IPs                 []string  `json:"ips"` // open address bindings
+	Description         string    `json:"description,omitempty"` // set by an operator (docs/DATA_MODEL.md §5.8)
+	IPs                 []string  `json:"ips"`                   // open address bindings
 	FirstSeen           time.Time `json:"first_seen"`
 	LastSeen            time.Time `json:"last_seen"`
 }
@@ -265,13 +266,15 @@ func Normalize(kind QueryKind, q string) (QueryKind, string, bool) {
 type HostFilter struct {
 	Interface string
 	// Query restricts to hosts that ever matched it (any kind).
-	Query     string
-	QueryKind QueryKind
-	Live      bool // ACTIVE or RECENT
-	NotLive   bool // STALE or MISSING
-	Vendor    string
-	Port      int // an OPEN service on this TCP or UDP port
-	SeenSince time.Time
+	Query       string
+	QueryKind   QueryKind
+	Live        bool // ACTIVE or RECENT
+	NotLive     bool // STALE or MISSING
+	Vendor      string
+	Device      string // device_type contains this text
+	Description string // the description contains this text
+	Port        int    // an OPEN service on this TCP or UDP port
+	SeenSince   time.Time
 }
 
 // FindQuery is a `hosts find` query.

@@ -136,6 +136,8 @@ func TestReadCommands(t *testing.T) {
 	}{
 		{"hosts list", []string{"hosts", "list"}, 0, []string{"MAC", a, "192.168.110.52", "Siemens AG", "STALE", "plc-b.local", "58m ago"}},
 		{"hosts list active", []string{"hosts", "list", "--active", "--interface", "eth1"}, 0, []string{b}},
+		{"hosts list by device type", []string{"hosts", "list", "--device", "PRINT"}, 0, []string{"DEVICE", a, "Printer"}},
+		{"hosts list device csv", []string{"-o", "csv", "hosts", "list", "--device", "printer"}, 0, []string{"MAC,IP,HOSTNAME,VENDOR,DEVICE,IFACE,STATE,LAST SEEN,DESCRIPTION\n" + a + ","}},
 		{"hosts list csv", []string{"hosts", "list", "-o", "csv", "--port", "502"}, 0, []string{"MAC,IP,HOSTNAME", b + ",192.168.110.50,plc-b.local"}},
 		{"hosts list jsonl", []string{"hosts", "list", "-o", "jsonl", "--vendor", "siemens", "--seen-within", "2h"}, 0, []string{`"mac":"` + a + `"`}},
 		{"find current", []string{"hosts", "find", "192.168.110.50"}, 0, []string{"Host ID:", b, "Names:", "plc-b.local", "mdns", "Services:", "tcp/502", "OPEN"}},
@@ -196,6 +198,10 @@ func TestReadCommands(t *testing.T) {
 	if code != 0 || !strings.Contains(out, "192.168.110.50   2026-10-01 10:00:00 → 2026-10-01 11:00:00") || !strings.Contains(out, "Identification:") {
 		t.Errorf("hosts show: %d\n%s", code, out)
 	}
+	// --device keeps only the hosts of that device type.
+	if _, out, _ := f.run(t, "hosts", "list", "--device", "printer"); strings.Contains(out, b) {
+		t.Errorf("--device printer lists %s:\n%s", b, out)
+	}
 	// hosts show has the current claims, hosts evidence all of them.
 	if !strings.Contains(out, "Device:      Printer\n") || !strings.Contains(out, "  device_type=Printer  mdns  confidence 0.70\n") ||
 		strings.Contains(out, "Media player") {
@@ -255,6 +261,7 @@ func TestOfflineAndUsage(t *testing.T) {
 		{"offline find", []string{"--offline", "hosts", "find", a}, 0, "192.168.110.52", ""},
 		{"offline interfaces", []string{"--offline", "interfaces", "list"}, 0, "eth1", ""},
 		{"offline dhcp servers", []string{"--offline", "dhcp", "servers", "--status", "allowed"}, 0, "192.168.110.1", ""},
+		{"offline hosts by device type", []string{"--offline", "hosts", "list", "--device", "printer"}, 0, "Printer", ""},
 		{"offline db check", []string{"--offline", "db", "check"}, 0, "ok", ""},
 		{"offline status refused", []string{"--offline", "daemon", "status"}, ExitUsage, "", "needs the running daemon"},
 		{"offline watch refused", []string{"--offline", "watch"}, ExitUsage, "", "needs the running daemon"},

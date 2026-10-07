@@ -97,13 +97,13 @@ A binding in effect at T with `T > last_seen` was **unconfirmed** at T: it was t
 
 `hosts` has `first_seen` and `last_seen` (no `ended_at`: hosts are never closed, only their presence changes).
 
-## 4. Schema (`migrations/0001_init.sql`, read-side indexes in `0002_read_indexes.sql`, probe details in `0003_probes.sql`, clock state of events in `0004_clock_sync.sql`, DHCP servers and their event types in `0005_dhcp_servers.sql`, current identifications in `0006_identification_current.sql`)
+## 4. Schema (`migrations/0001_init.sql`, read-side indexes in `0002_read_indexes.sql`, probe details in `0003_probes.sql`, clock state of events in `0004_clock_sync.sql`, DHCP servers and their event types in `0005_dhcp_servers.sql`, current identifications in `0006_identification_current.sql`, host descriptions in `0007_host_description.sql`)
 
 | Table | Columns | Purpose |
 | --- | --- | --- |
 | `network_contexts` | id, interface, first_seen, last_seen | One row per monitored interface name |
 | `context_prefixes` | id, context_id, prefix, first_seen, last_seen, ended_at | The interface's own addresses/subnets over time (CIDR text) |
-| `hosts` | host_id (UUID), context_id, mac, vendor, locally_administered, presence, preferred_name, manufacturer, device_type, first_seen, last_seen, tags | One row per (context, MAC) |
+| `hosts` | host_id (UUID), context_id, mac, vendor, locally_administered, presence, preferred_name, manufacturer, device_type, first_seen, last_seen, tags, description | One row per (context, MAC); `description` set by an operator (§5.8) |
 | `addresses` | id, context_id, host_id, ip, family, conflict, first_seen, last_seen, ended_at | IP bindings over time |
 | `address_sources` | address_id, source, first_seen, last_seen | Which sources confirmed a binding |
 | `names` | id, host_id, name, name_type, source, first_seen, last_seen, ended_at | Hostnames with provenance |
@@ -259,6 +259,10 @@ Identifications are claims about what a host is, each with a source, a confidenc
 
 Every claim upserts its row (raising `confidence` to the strongest evidence seen). A source's current value for a field changes only to a claim with higher confidence than the current one, so a device whose announcements differ settles on the most convincing value instead of flipping between them; the same value refreshes it, an equal or weaker other value is recorded but not adopted. Probes keep their rule: a new value replaces the old (§5.5). The adopted value is marked `current`, so a restart resumes from the same values. Adopting a value emits `VENDOR_IDENTIFIED` (`field=old` → `field=new`); nothing else does. `hosts.device_type` is the most confident current `device_type` claim of any source, between equals the source that sorts first, so a probe's statement outranks every passive guess. Switching an identifier off stops its claims and leaves its rows.
 
+### 5.8 Host descriptions
+
+An operator can describe a host with free text, such as "Solar panel rooftop" or "Mobile phone Bart": context the network cannot tell. `lan-sentinel hosts set <host> --description TEXT` sets or replaces it, `hosts unset <host> --description` removes it. The text is trimmed and must be one line of at most 200 characters without control characters. A description belongs to a host, a MAC on an interface: a device that changes its MAC becomes a new host without it. The CLI resolves the query to exactly one current host (with `--interface` or the host ID when several match), and the change goes through the API to the correlator as an operator action, like the kill switch, so the single writer holds: the correlator sets `hosts.description` (NULL when removed) and, when the text changes, emits `HOST_DESCRIBED` with the old and new text and the calling user (`SO_PEERCRED`). The same text again changes nothing. Descriptions are never pruned; they show in `hosts show`, `hosts find` and `hosts list` and are searched by `hosts list --description`.
+
 ## 6. Presence
 
 | State | Default threshold (time since `hosts.last_seen`) |
@@ -301,6 +305,7 @@ Thresholds are configurable (`presence:`). Transitions into MISSING emit `HOST_D
 | `DHCP_SERVER_UNEXPECTED` | `dhcp-server-unexpected` | warning | A DHCP server outside the interface's allowlist, or of unknown identity while an allowlist is set, replied |
 | `DHCP_SERVER_MAC_CHANGED` | `dhcp-server-mac-changed` | warning | A known DHCP server identity replied from another sender MAC |
 | `DHCP_CONFIG_CHANGED` | `dhcp-config-changed` | notice | A DHCP server advertised another router, DNS servers or subnet mask |
+| `HOST_DESCRIBED` | `described` | notice | An operator set, changed or removed a host's description (§5.8) |
 
 ### Values
 
@@ -327,6 +332,7 @@ Thresholds are configurable (`presence:`). Transitions into MISSING emit `HOST_D
 | `DHCP_SERVER_UNEXPECTED` | previous status (`allowed`, `unchecked`; — for a new server) | server identity | `host_id` = the sender |
 | `DHCP_SERVER_MAC_CHANGED` | previous sender MAC | new sender MAC | `host_id` = the new sender, `related_host_id` = the previous one |
 | `DHCP_CONFIG_CHANGED` | changed settings before (`dns=… router=…`) | the same settings now | `host_id` = the sender |
+| `HOST_DESCRIBED` | the previous description (— for a first one) | the new description (— when removed) | cause `operator`; evidence `{actor}` |
 
 ### Provenance
 

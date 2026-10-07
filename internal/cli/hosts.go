@@ -17,7 +17,8 @@ import (
 
 func (a *app) hostsCmd() *cobra.Command {
 	c := &cobra.Command{Use: "hosts", Short: "Query the host inventory and its history"}
-	c.AddCommand(a.hostsListCmd(), a.hostsShowCmd(), a.hostsFindCmd(), a.hostsHistoryCmd(), a.hostsEvidenceCmd())
+	c.AddCommand(a.hostsListCmd(), a.hostsShowCmd(), a.hostsFindCmd(), a.hostsHistoryCmd(), a.hostsEvidenceCmd(),
+		a.hostsSetCmd(), a.hostsUnsetCmd())
 	return c
 }
 
@@ -57,18 +58,20 @@ func (q queryFlags) resolve(args []string) (string, store.QueryKind, error) {
 }
 
 func (a *app) hostsListCmd() *cobra.Command {
-	var iface, vendor, seen string
+	var iface, vendor, device, description, seen string
 	var active, stale bool
 	var port int
 	c := &cobra.Command{
 		Use:   "list",
-		Short: "Inventory: MAC, IP, hostname, vendor, interface, presence, last seen",
+		Short: "Inventory: MAC, IP, hostname, vendor, device type, interface, presence, last seen, description",
 		Long: "List hosts. --active shows live hosts (ACTIVE or RECENT), --stale the others\n" +
-			"(STALE or MISSING); --port hosts with that port OPEN.",
+			"(STALE or MISSING); --port hosts with that port OPEN; --device hosts whose\n" +
+			"device type (the most confident identification) contains the text;\n" +
+			"--description hosts whose description contains it.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			tf := &timeFlags{a: a}
-			f := store.HostFilter{Interface: iface, Live: active, NotLive: stale, Vendor: vendor, Port: port, SeenSince: tf.ago("seen-within", seen)}
+			f := store.HostFilter{Interface: iface, Live: active, NotLive: stale, Vendor: vendor, Device: device, Description: description, Port: port, SeenSince: tf.ago("seen-within", seen)}
 			if tf.err != nil {
 				return tf.err
 			}
@@ -86,6 +89,8 @@ func (a *app) hostsListCmd() *cobra.Command {
 	fl.BoolVar(&active, "active", false, "only live hosts (ACTIVE or RECENT)")
 	fl.BoolVar(&stale, "stale", false, "only hosts that are not live (STALE or MISSING)")
 	fl.StringVar(&vendor, "vendor", "", "vendor or manufacturer contains this text")
+	fl.StringVar(&device, "device", "", "device type contains this text (e.g. printer, plc)")
+	fl.StringVar(&description, "description", "", "the description contains this text")
 	fl.IntVar(&port, "port", 0, "an OPEN service on this port")
 	fl.StringVar(&seen, "seen-within", "", "last seen within this duration (24h, 7d) or since this time")
 	return c
@@ -106,12 +111,12 @@ func (a *app) hostsTable(hosts []store.HostSummary) error {
 	case "jsonl":
 		return writeJSONL(w, hosts)
 	}
-	header := []string{"MAC", "IP", "HOSTNAME", "VENDOR", "IFACE", "STATE", "LAST SEEN"}
+	header := []string{"MAC", "IP", "HOSTNAME", "VENDOR", "DEVICE", "IFACE", "STATE", "LAST SEEN", "DESCRIPTION"}
 	rows := make([][]string, 0, len(hosts))
 	for _, h := range hosts {
 		if a.g.output == "csv" {
-			rows = append(rows, []string{h.MAC, strings.Join(h.IPs, " "), h.PreferredName, vendorOf(h), h.Interface, h.Presence,
-				h.LastSeen.UTC().Format(time.RFC3339)})
+			rows = append(rows, []string{h.MAC, strings.Join(h.IPs, " "), h.PreferredName, vendorOf(h), h.DeviceType, h.Interface, h.Presence,
+				h.LastSeen.UTC().Format(time.RFC3339), h.Description})
 			continue
 		}
 		ip := "-"
@@ -121,7 +126,8 @@ func (a *app) hostsTable(hosts []store.HostSummary) error {
 				ip += fmt.Sprintf(" (+%d)", len(h.IPs)-1)
 			}
 		}
-		rows = append(rows, []string{h.MAC, ip, dash(h.PreferredName), dash(vendorOf(h)), h.Interface, h.Presence, a.ago(h.LastSeen)})
+		rows = append(rows, []string{h.MAC, ip, dash(h.PreferredName), dash(vendorOf(h)), dash(h.DeviceType), h.Interface, h.Presence, a.ago(h.LastSeen),
+			h.Description})
 	}
 	if a.g.output == "csv" {
 		return writeCSV(w, header, rows)
@@ -176,6 +182,9 @@ func (a *app) hostRecord(w io.Writer, h store.Host, at *time.Time) {
 	}
 	if h.DeviceType != "" {
 		fmt.Fprintf(w, "Device:      %s\n", h.DeviceType)
+	}
+	if h.Description != "" {
+		fmt.Fprintf(w, "Description: %s\n", h.Description)
 	}
 	fmt.Fprintf(w, "First seen:  %s\nLast seen:   %s\n", a.stamp(h.FirstSeen), a.stamp(h.LastSeen))
 	if len(h.Addresses) > 0 {
@@ -328,6 +337,9 @@ func (a *app) findResult(w io.Writer, res store.FindResult) {
 		fmt.Fprintf(w, "Host ID:     %s\nInterface:   %s\nMAC:         %s\n", h.HostID, h.Interface, mac)
 		if h.PreferredName != "" {
 			fmt.Fprintf(w, "Name:        %s\n", h.PreferredName)
+		}
+		if h.Description != "" {
+			fmt.Fprintf(w, "Description: %s\n", h.Description)
 		}
 		b := *h.Binding
 		b.Conflict = h.Conflict // in conflict at the time asked about

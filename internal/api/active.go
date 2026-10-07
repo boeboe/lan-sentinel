@@ -17,14 +17,23 @@ import (
 )
 
 // Control is what the daemon does on operator requests: the kill switch,
-// operator scans and configuration reloads (docs/API.md, Operator
-// endpoints).
+// operator scans, configuration reloads and host descriptions (docs/API.md,
+// Operator endpoints).
 type Control interface {
 	DisableActive(ctx context.Context, actor, reason string) (store.ActiveState, error)
 	EnableActive(ctx context.Context, actor, reason string) (store.ActiveState, error)
 	PlanScan(ctx context.Context, req probe.Request) (probe.Plan, error)
 	Scan(ctx context.Context, req probe.Request, actor string) (scheduler.ScanResult, error)
 	ReloadConfig(ctx context.Context, actor string) (ReloadResult, error)
+	// DescribeHost sets a host's description ("" removes it) and returns
+	// the host once the change is committed; store.ErrNotFound for an
+	// unknown host.
+	DescribeHost(ctx context.Context, actor, hostID, description string) (store.HostSummary, error)
+}
+
+// DescriptionRequest is the body of /v1/hosts/{id}/description.
+type DescriptionRequest struct {
+	Description *string `json:"description"` // "" removes the description
 }
 
 // ReloadResult is what a configuration reload changed.
@@ -214,4 +223,32 @@ func (s *Server) configReload(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeJSON(w, http.StatusOK, res)
 	}
+}
+
+// hostDescription sets or removes a host's description: 200 with the
+// host, 400 for a missing or invalid description, 404 for an unknown host.
+func (s *Server) hostDescription(w http.ResponseWriter, r *http.Request) {
+	if !s.control(w) {
+		return
+	}
+	var req DescriptionRequest
+	if err := decode(r, &req); err != nil {
+		s.fail(w, err)
+		return
+	}
+	if req.Description == nil {
+		s.fail(w, badParam{`description is required ("" removes it)`})
+		return
+	}
+	text, err := store.CleanDescription(*req.Description)
+	if err != nil {
+		s.fail(w, badParam{err.Error()})
+		return
+	}
+	h, err := s.o.Control.DescribeHost(r.Context(), actor(r), r.PathValue("id"), text)
+	if err != nil {
+		s.controlFail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, h)
 }

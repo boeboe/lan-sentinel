@@ -61,6 +61,11 @@ func (c *control) Scan(_ context.Context, req probe.Request, actor string) (sche
 	return c.scan, c.scanErr
 }
 
+func (c *control) DescribeHost(_ context.Context, actor, hostID, description string) (store.HostSummary, error) {
+	c.note(actor, hostID+"="+description)
+	return store.HostSummary{HostID: hostID, Description: description}, c.err
+}
+
 func (c *control) ReloadConfig(_ context.Context, actor string) (api.ReloadResult, error) {
 	c.note(actor, "reload")
 	return c.reload, c.err
@@ -202,6 +207,41 @@ func TestConfigReloadEndpoint(t *testing.T) {
 	}
 }
 
+func TestHostDescriptionEndpoint(t *testing.T) {
+	ctl := &control{}
+	c, _, listen := startControl(t, ctl)
+	ctx := context.Background()
+
+	h, err := c.SetDescription(ctx, "host-1", "  Solar panel rooftop ")
+	if err != nil || h.Description != "Solar panel rooftop" || ctl.reasons[0] != "host-1=Solar panel rooftop" || ctl.actors[0] != currentUser() {
+		t.Fatalf("set = %+v, %v (calls %v by %v)", h, err, ctl.reasons, ctl.actors)
+	}
+	if _, err := c.SetDescription(ctx, "host-1", ""); err != nil || ctl.reasons[1] != "host-1=" {
+		t.Errorf("remove: %v %v", err, ctl.reasons)
+	}
+	for name, text := range map[string]string{"newline": "line one\nline two", "too long": strings.Repeat("x", store.MaxDescription+1)} {
+		if _, err := c.SetDescription(ctx, "host-1", text); status(err) != http.StatusBadRequest || !strings.Contains(err.Error(), "invalid description") {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	ctl.err = fmt.Errorf("host x: %w", store.ErrNotFound)
+	if _, err := c.SetDescription(ctx, "x", "y"); status(err) != http.StatusNotFound {
+		t.Errorf("unknown host: %v", err)
+	}
+	if len(ctl.reasons) != 3 {
+		t.Errorf("invalid descriptions reached the daemon: %v", ctl.reasons)
+	}
+	// Writes are refused on the TCP listener.
+	resp, err := http.Post("http://"+listen+"/v1/hosts/host-1/description", "application/json", strings.NewReader(`{"description":"x"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusMethodNotAllowed {
+		t.Errorf("POST on TCP: %d", resp.StatusCode)
+	}
+}
+
 func TestOperatorRequestsAreChecked(t *testing.T) {
 	ctl := &control{}
 	_, socket, listen := startControl(t, ctl)
@@ -225,6 +265,9 @@ func TestOperatorRequestsAreChecked(t *testing.T) {
 		{"get reload is not allowed", http.MethodGet, "/v1/config/reload", "", http.StatusMethodNotAllowed},
 		{"reload takes no fields", http.MethodPost, "/v1/config/reload", `{"path":"/tmp/x.yaml"}`, http.StatusBadRequest},
 		{"empty body reloads", http.MethodPost, "/v1/config/reload", ``, http.StatusOK},
+		{"description is required", http.MethodPost, "/v1/hosts/h1/description", `{}`, http.StatusBadRequest},
+		{"description takes no other fields", http.MethodPost, "/v1/hosts/h1/description", `{"description":"x","tags":[]}`, http.StatusBadRequest},
+		{"get description is not allowed", http.MethodGet, "/v1/hosts/h1/description", "", http.StatusMethodNotAllowed},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -268,7 +311,7 @@ func TestOperatorWithoutControlOrPeer(t *testing.T) {
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Errorf("without control: %d", rec.Code)
 	}
-	for _, path := range []string{"/v1/active/disable", "/v1/active/enable", "/v1/scans/plan", "/v1/config/reload"} {
+	for _, path := range []string{"/v1/active/disable", "/v1/active/enable", "/v1/scans/plan", "/v1/config/reload", "/v1/hosts/h1/description"} {
 		rec := httptest.NewRecorder()
 		srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{"reason":"x"}`)))
 		if rec.Code != http.StatusServiceUnavailable {

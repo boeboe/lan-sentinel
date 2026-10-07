@@ -64,6 +64,8 @@ type host struct {
 	identConf  map[string]float64
 	deviceType string
 
+	description string // set by an operator (§5.8)
+
 	// Proxy-ARP detection (docs/DATA_MODEL.md §5.2): when this MAC last
 	// answered ARP for each address, and for those held by another live host.
 	proxyARP    bool
@@ -241,11 +243,11 @@ func (s *state) load(ctx context.Context, tx *sql.Tx) error {
 	})
 	byID := map[string]*host{}
 	q(`SELECT host_id, context_id, mac, coalesce(vendor, ''), presence, coalesce(preferred_name, ''), coalesce(device_type, ''),
-		first_seen, last_seen FROM hosts ORDER BY first_seen, host_id`, func(r *sql.Rows) error {
+		coalesce(description, ''), first_seen, last_seen FROM hosts ORDER BY first_seen, host_id`, func(r *sql.Rows) error {
 		h := newHost()
 		var cid, first, last int64
 		var mac, presence string
-		if err := r.Scan(&h.id, &cid, &mac, &h.vendor, &presence, &h.preferred, &h.deviceType, &first, &last); err != nil {
+		if err := r.Scan(&h.id, &cid, &mac, &h.vendor, &presence, &h.preferred, &h.deviceType, &h.description, &first, &last); err != nil {
 			return err
 		}
 		var err error

@@ -138,6 +138,13 @@ func (c *Client) EnableActive(ctx context.Context, reason string) (store.ActiveS
 	return st, err
 }
 
+// SetDescription sets a host's description; "" removes it.
+func (c *Client) SetDescription(ctx context.Context, hostID, description string) (store.HostSummary, error) {
+	var h store.HostSummary
+	err := c.post(ctx, c.http, "/v1/hosts/"+url.PathEscape(hostID)+"/description", DescriptionRequest{Description: &description}, &h)
+	return h, err
+}
+
 // ReloadConfig makes the daemon re-read its configuration file. A rejected
 // file is an *Error that wraps ErrConfigRejected.
 func (c *Client) ReloadConfig(ctx context.Context) (ReloadResult, error) {
@@ -231,7 +238,7 @@ func (c *Client) Hosts(ctx context.Context, f store.HostFilter) ([]store.HostSum
 		presence = "notlive"
 	}
 	q := values{}.str("interface", f.Interface).str("q", f.Query).str("kind", string(f.QueryKind)).str("presence", presence).
-		str("vendor", f.Vendor).int("port", f.Port).time("seen_since", f.SeenSince)
+		str("vendor", f.Vendor).str("device", f.Device).int("port", f.Port).time("seen_since", f.SeenSince)
 	var out []store.HostSummary
 	return out, c.get(ctx, "/v1/hosts", url.Values(q), &out)
 }

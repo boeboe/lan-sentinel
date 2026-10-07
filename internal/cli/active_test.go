@@ -34,12 +34,25 @@ logging: { format: text }
 
 // control answers operator requests from a real plan over scanConfig.
 type control struct {
-	cfg     *config.Config
-	active  store.ActiveState
-	err     error
-	scan    *scheduler.ScanResult
-	scanErr error
-	reload  api.ReloadResult
+	cfg       *config.Config
+	active    store.ActiveState
+	err       error
+	scan      *scheduler.ScanResult
+	scanErr   error
+	reload    api.ReloadResult
+	described map[string]string
+}
+
+// DescribeHost records the call; described maps host IDs to descriptions.
+func (c *control) DescribeHost(_ context.Context, _, hostID, description string) (store.HostSummary, error) {
+	if c.err != nil {
+		return store.HostSummary{}, c.err
+	}
+	if c.described == nil {
+		c.described = map[string]string{}
+	}
+	c.described[hostID] = description
+	return store.HostSummary{HostID: hostID, MAC: "00:1b:1b:aa:bb:01", Interface: "eth1", Description: description}, nil
 }
 
 func (c *control) ReloadConfig(context.Context, string) (api.ReloadResult, error) {

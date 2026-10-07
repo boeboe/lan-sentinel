@@ -14,7 +14,7 @@ Six phases, each ending in a shippable build. Passive discovery lands before any
 
 ## Open hardware and field checks
 
-Deferred checks that need real hardware or data from real sites. Each closes a phase task or exit criterion; the Docker or replay equivalent already passes on every change, so development continues meanwhile. Record results where noted and tick here.
+Deferred checks that need real hardware or data from real sites. Each closes a phase task or exit criterion; the Docker or replay equivalent already passes on every change, so development continues meanwhile. `TEST_PLAN.md` is the procedure for the RevPi Connect and the amd64 edge box, with a results table per test; record results where noted and tick here.
 
 | | Check | Closes | Docker equivalent (passing) | Record results in |
 | --- | --- | --- | --- | --- |
@@ -45,7 +45,7 @@ Deferred checks that need real hardware or data from real sites. Each closes a p
 - [x] Golden reconstruction scenario (`DATA_MODEL.md` §10) committed under `test/golden/reconstruction/` as observation stream + expected bindings, events and query answers; a harness that validates the fixture (including that the expected answers follow from the expected bindings) and runs it through the correlator (skipped until phase 1, so CI stays green)
 - [x] `deploy/`: reference unit, `sysusers.d`, `tmpfiles.d`, default config, replay `config.dev.yaml` — *since 6 Oct 2026 the daemon runs as root with a `CAP_NET_RAW` bounding set, so `sysusers.d` and `tmpfiles.d` are gone (`REQUIREMENTS.md` decisions)*
 
-**Exit:** daemon starts under systemd as `lan-sentinel` with only `CAP_NET_RAW`, creates `hosts.db`, reloads config on SIGHUP, shuts down cleanly; capability check passed in Docker and on every target board; golden scenario committed.
+**Exit:** daemon starts under systemd as `lan-sentinel` (as root with a `CAP_NET_RAW` bounding set since 6 Oct 2026) with only `CAP_NET_RAW`, creates `hosts.db`, reloads config on SIGHUP, shuts down cleanly; capability check passed in Docker and on every target board; golden scenario committed.
 
 ## Phase 1 — Observation pipeline, interfaces, neighbours (2–3 weeks)
 
@@ -112,6 +112,8 @@ Deferred checks that need real hardware or data from real sites. Each closes a p
 - [x] Clock-jump handling: mark events written before NTP sync — *a read-only `adjtimex` of the kernel's `STA_UNSYNC` (works with chrony, needs no capability); each event records `synced`, `unsynced` or `unknown` (migration 0004); `daemon status` shows the clock; the unit allows `adjtimex` alone of the `@clock` calls (`ProtectClock=` off)*
 - [x] `lan-sentinel config reload` (requested 6 Oct 2026): the daemon re-reads its file on request and answers what took effect and what needs a restart; each interface's `active` settings are reloadable, so active discovery is enabled per site without a restart (`CLI.md`, `API.md`, FR-CFG-3)
 - [x] Passive DHCP server monitoring (requested 6 Oct 2026, FR-PA-3, FR-PA-7): server identities (option 54) per interface with sender, relay and advertised configuration in `dhcp_servers`, an optional per-interface allowlist, `DHCP_SERVER_DISCOVERED`/`UNEXPECTED`/`MAC_CHANGED` and `DHCP_CONFIG_CHANGED`, server-confirmed leases (`passive_dhcp_lease`) kept apart from client claims, `dhcp servers` (CLI, API), `lan_sentinel_dhcp_servers`; covered by the capture scenario (a rogue server, a configuration change) and `make test-net`
+- [x] Host descriptions (requested 7 Oct 2026, FR-MD-1): `hosts set <host> --description`, `hosts unset <host> --description`, through the daemon as an operator action, `HOST_DESCRIBED` per change with the caller (migration 0007), shown in `hosts show`, `hosts find` and `hosts list` (`--description` filter)
+- [x] Device type in `hosts list`: a `DEVICE` column and `--device` filter (7 Oct 2026)
 - [ ] Staged fleet rollout (below) — *runbook with checks, upgrade, rollback and what to watch per stage in `deploy/README.md`; the rollout itself is a field task*
 
 **Exit:** v1.0 on the full fleet with active discovery enabled per site.
@@ -132,13 +134,15 @@ Plugin interface in `internal/identify` taking a host's evidence and returning (
 | Replay | Site pcaps replayed through the daemon with a simulated clock, compared with expected inventories | End-to-end behaviour on any machine, reproducible field issues |
 | Toolchain | Dev container for every make target, locally and in CI | Identical Go, lint and test environment on every machine |
 | Correlator | Golden tests: observation sequence in → expected bindings and events out, starting with the reconstruction scenario (`DATA_MODEL.md` §10) | IP change, takeover, duplicate IP and resolution, MAC move, NIC swap (new host), same IP on two interfaces, routed source IPs ignored, unbound probe results |
-| Store | Migrations on empty and previous-version DBs; compaction; kill -9 during write | Crash safety and upgrade path |
+| Store | Migrations on empty and previous-version DBs; compaction; kill -9 during write (`test/crash`: the daemon killed five times while it writes, then the integrity check, no quarantine, every committed row kept) | Crash safety and upgrade path |
 | Platform backends and probes | Docker test network with simulated hosts (`make test-net`), runner as uid 65534 with only `CAP_NET_RAW`; in CI | Capture, netlink and transmit code under the real privilege model; rate limits, excludes, scope guards, result classification |
 | Fuzzing | `go test -fuzz` on every decoder | No panics on hostile input |
-| Soak | 7 days on a lab rig with real PLC, inverter and HMI | Memory stable, no device faults, DB growth within budget |
+| Soak | Simulated first (`make soak`: 90 days of a 50-host LAN through the correlator and store on a simulated clock, hourly compaction at the default retention, the size cap off), then 7 days on a lab rig with real PLC, inverter and HMI | Memory stable, no device faults, DB growth within budget |
 | Acceptance | Scripted: change an IP, swap a device, inject a duplicate, then `hosts find --at` and `hosts history` | The reconstruction requirement |
 
 Performance budgets on a RevPi Connect: < 5% average CPU, < 50 MB RSS, DB < 200 MB after 90 days on a 50-host LAN.
+
+*Simulated (`make soak`, 7 Oct 2026, dev container on Apple silicon):* a worst-case 50-host LAN, a mirror port with every host's traffic seen and the ARP sweep every 5 minutes (35 always-on OT devices, 12 weekday laptops, 3 phones with a new MAC every day, router, switch): 5.3 million observations in 90 days, 77.6 µs of CPU each (about 5 s of CPU a day here, well under a minute on a RevPi). The database reached 158.8 MB on day 90 with the size cap off (raw observations steady at about 80 MB from day 7, roll-ups growing to 90 days), within the 200 MB budget; heap 2.0 → 3.4 MB and RSS 25 → 27 MB while the hosts grew from 52 to 244. The 7-day board run (`TEST_PLAN.md` E1) confirms CPU and RSS on the hardware.
 
 ## Rollout (each release)
 

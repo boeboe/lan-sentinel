@@ -53,6 +53,8 @@ const (
 	DHCPServerUnexpected Type = "DHCP_SERVER_UNEXPECTED"
 	DHCPServerMACChanged Type = "DHCP_SERVER_MAC_CHANGED"
 	DHCPConfigChanged    Type = "DHCP_CONFIG_CHANGED"
+
+	HostDescribed Type = "HOST_DESCRIBED"
 )
 
 // Severity is an event's severity.
@@ -103,6 +105,7 @@ func init() {
 		{DHCPServerUnexpected, "dhcp-server-unexpected", Warning},
 		{DHCPServerMACChanged, "dhcp-server-mac-changed", Warning},
 		{DHCPConfigChanged, "dhcp-config-changed", Notice},
+		{HostDescribed, "described", Notice},
 	} {
 		catalogue[s.Type] = s
 	}

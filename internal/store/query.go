@@ -50,14 +50,15 @@ func (w *where) sql() string {
 }
 
 const summaryColumns = `h.host_id, c.interface, h.mac, coalesce(h.vendor, ''), h.locally_administered, h.presence,
-	coalesce(h.preferred_name, ''), coalesce(h.manufacturer, ''), coalesce(h.device_type, ''), h.first_seen, h.last_seen`
+	coalesce(h.preferred_name, ''), coalesce(h.manufacturer, ''), coalesce(h.device_type, ''), coalesce(h.description, ''),
+	h.first_seen, h.last_seen`
 
 func scanSummary(rows interface{ Scan(...any) error }) (HostSummary, error) {
 	var h HostSummary
 	var la int
 	var first, last int64
 	err := rows.Scan(&h.HostID, &h.Interface, &h.MAC, &h.Vendor, &la, &h.Presence, &h.PreferredName, &h.Manufacturer,
-		&h.DeviceType, &first, &last)
+		&h.DeviceType, &h.Description, &first, &last)
 	h.LocallyAdministered, h.FirstSeen, h.LastSeen, h.IPs = la == 1, timeOf(first), timeOf(last), []string{}
 	return h, err
 }
@@ -152,6 +153,12 @@ func hostWhere(f HostFilter) (where, error) {
 	if f.Vendor != "" {
 		w.add(`(instr(lower(coalesce(h.vendor, '')), lower(?)) > 0 OR instr(lower(coalesce(h.manufacturer, '')), lower(?)) > 0)`,
 			f.Vendor, f.Vendor)
+	}
+	if f.Device != "" {
+		w.add(`instr(lower(coalesce(h.device_type, '')), lower(?)) > 0`, f.Device)
+	}
+	if f.Description != "" {
+		w.add(`instr(lower(coalesce(h.description, '')), lower(?)) > 0`, f.Description)
 	}
 	if f.Port > 0 {
 		w.add(`EXISTS (SELECT 1 FROM services s WHERE s.host_id = h.host_id AND s.port = ? AND s.state = 'OPEN')`, f.Port)

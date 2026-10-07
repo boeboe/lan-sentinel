@@ -136,6 +136,8 @@ func New(o Options) *Server {
 		"/v1/scans/plan":     s.scanPlan,
 		"/v1/scans":          s.scan,
 		"/v1/config/reload":  s.configReload,
+
+		"/v1/hosts/{id}/description": s.hostDescription,
 	} {
 		s.mux.HandleFunc(path, postOnly(h))
 	}
@@ -421,7 +423,7 @@ func (s *Server) interfaces(w http.ResponseWriter, r *http.Request) {
 func (s *Server) hosts(w http.ResponseWriter, r *http.Request) {
 	p := &params{r: r}
 	f := store.HostFilter{Interface: p.str("interface"), Query: p.str("q"), QueryKind: p.kind(), Vendor: p.str("vendor"),
-		Port: p.int("port"), SeenSince: p.time("seen_since")}
+		Device: p.str("device"), Port: p.int("port"), SeenSince: p.time("seen_since")}
 	switch pr := p.str("presence"); pr {
 	case "", "any":
 	case "live":

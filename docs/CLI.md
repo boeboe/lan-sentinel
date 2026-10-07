@@ -45,10 +45,12 @@ The daemon runs as root with `UMask=0027` and the data directory is `0750 root:r
 | --- | --- | --- | --- |
 | `daemon run` | Run the service in the foreground | `--config`, `--log-level` | 0 |
 | `daemon status` | Version, platform, PID, uptime, DB health, interfaces, host counts, kill-switch state, clock synchronisation, last scan, and per-interface collector state (`running`/`disabled`/`unsupported`/`failed`, backend or error); for each probe its last periodic pass, e.g. `arp running afpacket last pass 2m ago: 253 swept, 14 replied (26 s)` (blocked probes and `cut short` when they apply). Passes are shown here only, never logged | `-o json`; `--quiet` exit codes | 3 |
-| `hosts list` | Inventory: MAC, IP, hostname, vendor, interface, presence, last seen. `--active`: live hosts (ACTIVE or RECENT); `--stale`: the others (STALE or MISSING); `--port`: an OPEN service on that port; `--vendor`: substring of vendor or manufacturer | `--interface`, `--active`, `--stale`, `--vendor`, `--port`, `--seen-within` | 3 |
-| `hosts show <host-id>` | Full record of one host: the device type and the current identifications (most confident first per field) | | 3 (identification from 6) |
+| `hosts list` | Inventory: MAC, IP, hostname, vendor, device type, interface, presence, last seen, description. `--active`: live hosts (ACTIVE or RECENT); `--stale`: the others (STALE or MISSING); `--port`: an OPEN service on that port; `--vendor`: substring of vendor or manufacturer; `--device`: substring of the device type (the most confident identification, `DATA_MODEL.md` §5.7); `--description`: substring of the description | `--interface`, `--active`, `--stale`, `--vendor`, `--device`, `--description`, `--port`, `--seen-within` | 3 (device type from 6) |
+| `hosts show <host-id>` | Full record of one host: the device type, the description and the current identifications (most confident first per field) | | 3 (identification from 6) |
 | `hosts find <query>` | Current or point-in-time holder(s) with addresses, names and services and their sources; exit 1 when nothing matches | `--interface`, `--at <time>`, `--ip`/`--mac`/`--hostname`/`--id` | 3 |
 | `hosts history <query>` | Event timeline for a host, MAC, IP or name | `--interface`, `--since`, `--until`, `--ip`/`--mac`/`--hostname`/`--id` | 3 |
+| `hosts set <host> --description TEXT` | Set or replace a host's description (one line, at most 200 characters); the host resolved like `hosts find` to exactly one current host | `--interface`, `--ip`/`--mac`/`--hostname`/`--id`, `-o json` | 5 |
+| `hosts unset <host> --description` | Remove a host's description | `--interface`, `--ip`/`--mac`/`--hostname`/`--id`, `-o json` | 5 |
 | `hosts evidence <query>` | Why we believe what we believe about a host: per attribute, the sources, first/last seen and counts, plus the evidence snapshots of its events; every host that ever matched the query; exit 1 when none | `--interface`, `--since`, `--ip`/`--mac`/`--hostname`/`--id` | 3 |
 | `observations list` | Raw observations within retention; hourly roll-ups with `--rollups` | `--host`, `--interface`, `--mac`, `--ip`, `--source`, `--unbound`, `--since`, `--until`, `--limit`, `--rollups` | 3 |
 | `events list` | Events on this box, the latest `--limit` (default 1000) in time order | `--since`, `--until`, `--type`, `--interface`, `--mac`, `--ip`, `--limit` | 3 |
@@ -102,6 +104,10 @@ For each attribute (each address, name, service, identification) the sources tha
 ### `observations list`
 
 Columns: time, interface, source, MAC, IP, hostname, service, host ID. The latest `--limit` rows, in time order. `--unbound` shows observations that matched no host. Observations older than raw retention are only available with `--rollups` (one row per host, source, MAC, IP and hour, with count). Default `--limit` 1000.
+
+### `hosts set` / `hosts unset`
+
+`hosts set <host> --description TEXT` sets or replaces a host's description; `hosts unset <host> --description` removes it (`DATA_MODEL.md` §5.8). The host is a query as for `hosts find` (host ID, MAC, IP or hostname, or an explicit `--ip`/`--mac`/`--hostname`/`--id`) that must match exactly one current host: when it matches several (the same MAC on two interfaces, a duplicate IP) the command lists them with their host IDs and exits 64, and `--interface` or `--id` picks one; no match is exit 1. The text is trimmed and must be one line of at most 200 characters (exit 64 otherwise; an empty `--description` is refused, use `unset`). The change goes through the daemon, which records `HOST_DESCRIBED` with the old and new text and the calling user and answers once it is committed; the same text again records nothing. Both need the daemon (exit 64 with `--offline`); `-o json` prints the host summary.
 
 ### `active disable` / `active enable`
 

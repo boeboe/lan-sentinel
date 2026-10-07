@@ -106,7 +106,33 @@ func (c *Correlator) operator(ctx context.Context, op observation.Operator) {
 		c.emit(ctx, events.Event{TS: op.Time, Type: events.ActiveEnabled, New: switchText("enabled", op), Cause: causeOperator, Evidence: ev})
 	case observation.OpScanStarted, observation.OpScanCompleted:
 		c.scan(ctx, op, ev)
+	case observation.OpHostDescribed:
+		c.describe(ctx, op, ev)
 	}
+}
+
+// describe sets or removes a host's description (§5.8). A change emits
+// HOST_DESCRIBED with the old and new text and the operator; the same text
+// again changes nothing. An unknown host is ignored: the API checks that it
+// exists before asking.
+func (c *Correlator) describe(ctx context.Context, op observation.Operator, ev events.Evidence) {
+	var h *host
+	for _, x := range c.st.order {
+		if x.id == op.HostID {
+			h = x
+			break
+		}
+	}
+	if h == nil || h.description == op.Description {
+		return
+	}
+	old := h.description
+	h.description = op.Description
+	c.exec(ctx, "host description", `UPDATE hosts SET description = ? WHERE host_id = ?`, nullString(op.Description), h.id)
+	ev.Interface, ev.MAC = h.ctx.iface, h.mac.String()
+	e := hostEvent(events.HostDescribed, op.Time, h, causeOperator, ev)
+	e.Old, e.New = old, op.Description
+	c.emit(ctx, e)
 }
 
 func switchText(what string, op observation.Operator) string {

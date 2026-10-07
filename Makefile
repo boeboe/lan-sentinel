@@ -32,7 +32,7 @@ RUN       := docker run --rm -v "$(CURDIR)":/src -w /src -v $(CACHE_VOL):/cache 
 
 .DEFAULT_GOAL := help
 .PHONY: help all dev-image shell build release tools package oui fixtures fmt fmt-check tidy tidy-check mod-verify vet lint vuln \
-	test coverage cover fuzz test-net test-systemd check check-all run-dev clean clean-cache
+	test coverage cover fuzz soak test-net test-systemd check check-all run-dev clean clean-cache
 
 help: ## This help
 	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z0-9_-]+:.*?## / {printf "\033[36m%-30s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -126,6 +126,9 @@ cover: coverage ## Write coverage.html and open it in a browser
 
 fuzz: dev-image ## Run every Fuzz* target back to back for FUZZTIME each (default 30s)
 	@$(RUN) build/fuzz.sh
+
+soak: dev-image ## 90 simulated days of a 50-host LAN: database size, retention, heap and CPU (several minutes)
+	@$(RUN) go test -tags soak -run TestNinetyDays -v -timeout 60m ./test/soak/
 
 test-net: dev-image ## Network integration tests in Docker on a test network (CAP_NET_RAW only)
 	@$(RUN) build/test-bins.sh $(TEST_BIN)

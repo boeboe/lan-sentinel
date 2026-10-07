@@ -72,6 +72,7 @@ make package      # release tarballs per target into dist/release/ (VERSION=vX.Y
 make test         # unit and golden tests with -race
 make coverage     # tests with coverage of internal/ (coverage.out), fails below 90%; make cover opens the report
 make fuzz         # every Fuzz* target, FUZZTIME each (default 30s)
+make soak         # 90 simulated days of a 50-host LAN: DB size, retention, heap, CPU (minutes)
 make test-net     # network integration tests in Docker (CAP_NET_RAW only)
 make test-systemd # daemon under systemd in a container with the deploy/ unit
 make run-dev      # daemon in the dev container on deploy/config.dev.yaml (replay)

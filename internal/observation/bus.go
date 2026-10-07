@@ -42,11 +42,13 @@ const (
 	OpActiveEnabled  OperatorKind = "active_enabled"
 	OpScanStarted    OperatorKind = "scan_started"
 	OpScanCompleted  OperatorKind = "scan_completed"
+	OpHostDescribed  OperatorKind = "host_described"
 )
 
-// Operator is an operator action: the kill switch set or cleared, or an
-// operator scan started or completed on one interface. Probes and the API
-// never write state; the correlator persists these and emits their events.
+// Operator is an operator action: the kill switch set or cleared, an
+// operator scan started or completed on one interface, or a host's
+// description set or removed. Probes and the API never write state; the
+// correlator persists these and emits their events.
 type Operator struct {
 	Time   time.Time
 	Kind   OperatorKind
@@ -58,6 +60,9 @@ type Operator struct {
 	// Scan is the operator scan; the start and the completion each carry
 	// their own copy, linked by the scan's Handle.
 	Scan *Scan
+	// HostID and Description: a host's new description ("" removes it).
+	HostID      string
+	Description string
 }
 
 // Scan is an operator scan on one interface (a scans row).

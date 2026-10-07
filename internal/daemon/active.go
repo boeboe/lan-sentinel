@@ -109,7 +109,7 @@ func (d *Daemon) DisableActive(ctx context.Context, actor, reason string) (store
 	now := d.clock.Now().UTC()
 	st := store.ActiveState{Disabled: true, Reason: reason, By: actor, At: &now, Forced: d.envForced()}
 	d.sw.Set(st)
-	return st, d.persistSwitch(ctx, observation.Operator{
+	return st, d.record(ctx, observation.Operator{
 		Time: now, Kind: observation.OpActiveDisabled, Actor: actor, Reason: reason, Persist: true,
 	})
 }
@@ -126,7 +126,7 @@ func (d *Daemon) EnableActive(ctx context.Context, actor, reason string) (store.
 	if !d.sw.Disabled() {
 		return d.sw.State(), nil
 	}
-	if err := d.persistSwitch(ctx, observation.Operator{
+	if err := d.record(ctx, observation.Operator{
 		Time: d.clock.Now(), Kind: observation.OpActiveEnabled, Actor: actor, Reason: reason, Persist: true,
 	}); err != nil {
 		return d.sw.State(), err
@@ -135,7 +135,9 @@ func (d *Daemon) EnableActive(ctx context.Context, actor, reason string) (store.
 	return store.ActiveState{}, nil
 }
 
-func (d *Daemon) persistSwitch(ctx context.Context, op observation.Operator) error {
+// record hands an operator action to the correlator and returns once it is
+// committed.
+func (d *Daemon) record(ctx context.Context, op observation.Operator) error {
 	pctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), persistTimeout)
 	defer cancel()
 	if err := d.bus.PublishOperator(pctx, op); err != nil {
@@ -162,6 +164,23 @@ func (d *Daemon) Scan(ctx context.Context, req probe.Request, actor string) (sch
 		err = ferr
 	}
 	return res, err
+}
+
+// DescribeHost implements api.Control: the correlator records the change
+// (HOST_DESCRIBED) and it is committed before the answer. A host must be
+// committed to be found: one discovered in the last few seconds may not be
+// yet.
+func (d *Daemon) DescribeHost(ctx context.Context, actor, hostID, description string) (store.HostSummary, error) {
+	if _, err := d.reader.Host(ctx, hostID); err != nil {
+		return store.HostSummary{}, err
+	}
+	if err := d.record(ctx, observation.Operator{
+		Time: d.clock.Now(), Kind: observation.OpHostDescribed, Actor: actor, HostID: hostID, Description: description,
+	}); err != nil {
+		return store.HostSummary{}, err
+	}
+	h, err := d.reader.Host(ctx, hostID)
+	return h.HostSummary, err
 }
 
 var _ api.Control = (*Daemon)(nil)

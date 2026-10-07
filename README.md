@@ -23,7 +23,7 @@ Every source only emits observations. A single correlator turns them into hosts 
 
 ## Status
 
-Phases 0–4 are done (passive and active discovery, read side, OT safety limits); phase 5 (releases, hardening, pilot rollout) is in progress. See `docs/IMPLEMENTATION_PLAN.md`.
+Phases 0–4 are done (passive and active discovery, read side, OT safety limits). Phase 5 (releases, hardening, pilot rollout) is in progress: releases, hardening and DHCP server monitoring are in, the board audits and pilot runs follow `docs/TEST_PLAN.md`. Phase 6 has started with passive identification (mDNS, DHCP, hostname, LLDP). See `docs/IMPLEMENTATION_PLAN.md`.
 
 ## Releases
 
@@ -37,6 +37,7 @@ Each release on the [Releases page](https://github.com/boeboe/lan-sentinel/relea
 - [CLI](docs/CLI.md)
 - [Local API and metrics](docs/API.md)
 - [Implementation plan](docs/IMPLEMENTATION_PLAN.md)
+- [Hardware test plan](docs/TEST_PLAN.md)
 - [Deployment and releases](deploy/README.md)
 
 ## Build and test
@@ -48,6 +49,7 @@ make release     # dist/lan-sentinel-linux-{amd64,arm64}, SHA256SUMS
 make package     # dist/release/lan-sentinel-<version>-linux-{amd64,arm64}.tar.gz, SHA256SUMS
 make test-net    # network integration tests in Docker
 make test-systemd # the daemon under systemd in a container
+make soak         # 90 simulated days of a 50-host LAN: database size, memory, CPU
 ```
 
 Binaries are static (`CGO_ENABLED=0`) and need no runtime dependencies; minimum kernel 5.10. The code base is Linux only. Every make target that runs Go runs in a Linux dev container (`build/dev.Dockerfile`), so the only requirements on a development machine (Linux or macOS) are Docker, make and git. On macOS, point your editor's gopls at Linux (`GOOS=linux`). The reference systemd unit and default config are in `deploy/`.
