@@ -97,7 +97,7 @@ A binding in effect at T with `T > last_seen` was **unconfirmed** at T: it was t
 
 `hosts` has `first_seen` and `last_seen` (no `ended_at`: hosts are never closed, only their presence changes).
 
-## 4. Schema (`migrations/0001_init.sql`, read-side indexes in `0002_read_indexes.sql`, probe details in `0003_probes.sql`, clock state of events in `0004_clock_sync.sql`, DHCP servers and their event types in `0005_dhcp_servers.sql`)
+## 4. Schema (`migrations/0001_init.sql`, read-side indexes in `0002_read_indexes.sql`, probe details in `0003_probes.sql`, clock state of events in `0004_clock_sync.sql`, DHCP servers and their event types in `0005_dhcp_servers.sql`, current identifications in `0006_identification_current.sql`)
 
 | Table | Columns | Purpose |
 | --- | --- | --- |
@@ -108,7 +108,7 @@ A binding in effect at T with `T > last_seen` was **unconfirmed** at T: it was t
 | `address_sources` | address_id, source, first_seen, last_seen | Which sources confirmed a binding |
 | `names` | id, host_id, name, name_type, source, first_seen, last_seen, ended_at | Hostnames with provenance |
 | `services` | id, host_id, proto, port, state, first_seen, last_seen, last_result_at, detail_json | Current probe result per host/port; `detail_json`: what a protocol-specific probe learnt (§5.5) |
-| `identifications` | id, host_id, field, value, confidence, source, evidence_json, first_seen, last_seen | Device identification evidence |
+| `identifications` | id, host_id, field, value, confidence, source, evidence_json, first_seen, last_seen, current | Device identification evidence, one row per host, field, value and source: `confidence` the strongest evidence seen for the value, `current` = 1 for the value the source holds now (§5.7) |
 | `observations` | id, ts, context_id, source, mac, ip, hostname, name_type, service_json, meta_json, host_id | Raw evidence, compacted; `host_id` NULL if unbound |
 | `observation_rollups` | id, hour, context_id, host_id, source, mac, ip, count, first_ts, last_ts | Hourly roll-ups of observations |
 | `events` | id, ts, type, severity, context_id, host_id, related_host_id, old_value, new_value, cause, observation_id, evidence_json, clock_sync | Permanent history |
@@ -245,6 +245,19 @@ Every server reply (OFFER, ACK, NAK) is also a `passive_dhcp_server` observation
 - An observation older than the row's `last_seen` changes nothing.
 
 Visibility limits what this can prove. On a switched port the box sees broadcast replies and its own exchanges, but replies unicast to other clients (common for renewals) only on a mirror port; promiscuous mode cannot make a switch forward them. Not seeing a server is never evidence that there is none. Only DHCPv4 is decoded; LAN Sentinel never sends DHCP messages.
+
+### 5.7 Identification
+
+Identifications are claims about what a host is, each with a source, a confidence and its evidence: the OUI manufacturer (`oui`, 0.7, set at discovery), proxy-ARP detection (§5.2), the protocol-specific probes (§5.5, 0.9: the device's own statement) and the passive identifiers. The passive identifiers (`internal/identify`, each switchable under `identity.identifiers`) read evidence already captured and send nothing:
+
+| Source | Reads | Claims |
+| --- | --- | --- |
+| `mdns` | `passive_mdns` service types and the `_device-info` TXT `model=` | `device_type` from distinctive services (IPP, LPD, PDL printing 0.7; Google Cast 0.6; HomeKit 0.6; avahi `_workstation` 0.5, with `os` Linux); `model` (0.7) and, for Apple models, `device_type` and `os` (0.7) |
+| `dhcp` | the client's own `passive_dhcp` vendor class (option 60) and parameter request list (55) | `os`: `MSFT 5.0` Windows 0.6, `android-dhcp-` Android 0.7, `dhcpcd-` Linux 0.6, `udhcp` Linux 0.5; the iOS/macOS request list 0.5 |
+| `hostname` | names devices choose (mDNS, DHCP, LLDP; a PTR name is an administrator's, not read) | `device_type`/`os` from patterns (`Android_…`, `iPhone`, `MacBook`, `DESKTOP-…`, `raspberrypi`, HP and Brother printer names), 0.4: people choose names |
+| `lldp` | `passive_lldp` enabled capabilities | `device_type`: IP phone, Access point, Router, Cable modem, Switch, most specific first, 0.8 |
+
+Every claim upserts its row (raising `confidence` to the strongest evidence seen). A source's current value for a field changes only to a claim with higher confidence than the current one, so a device whose announcements differ settles on the most convincing value instead of flipping between them; the same value refreshes it, an equal or weaker other value is recorded but not adopted. Probes keep their rule: a new value replaces the old (§5.5). The adopted value is marked `current`, so a restart resumes from the same values. Adopting a value emits `VENDOR_IDENTIFIED` (`field=old` → `field=new`); nothing else does. `hosts.device_type` is the most confident current `device_type` claim of any source, between equals the source that sorts first, so a probe's statement outranks every passive guess. Switching an identifier off stops its claims and leaves its rows.
 
 ## 6. Presence
 

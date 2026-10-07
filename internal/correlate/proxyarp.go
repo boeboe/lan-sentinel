@@ -86,6 +86,7 @@ func (c *Correlator) flagProxyARP(ctx context.Context, h *host, o observation.Ob
 	h.arpClaims, h.arpOverlaps = nil, nil
 	c.dbIdentification(ctx, h, "proxy_arp", "true", proxyARPConfidence, string(o.Source),
 		map[string]any{"reason": reason, "contested": overlaps}, o.Time)
+	c.dbCurrent(ctx, h, "proxy_arp", string(o.Source), "true")
 
 	cause := string(o.Source)
 	ev.Reason = reason
@@ -110,6 +111,14 @@ func (c *Correlator) dbIdentification(ctx context.Context, h *host, field, value
 	b, _ := json.Marshal(evidence)
 	c.exec(ctx, "identification", `INSERT INTO identifications (host_id, field, value, confidence, source, evidence_json, first_seen, last_seen)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT (host_id, field, value, source) DO UPDATE SET last_seen = max(last_seen, excluded.last_seen), evidence_json = excluded.evidence_json`,
+		ON CONFLICT (host_id, field, value, source) DO UPDATE SET last_seen = max(last_seen, excluded.last_seen),
+			evidence_json = excluded.evidence_json, confidence = max(confidence, excluded.confidence)`,
 		h.id, field, value, confidence, source, string(b), ms(t), ms(t))
+}
+
+// dbCurrent marks value as the current identification of h's field from
+// source (§5.7).
+func (c *Correlator) dbCurrent(ctx context.Context, h *host, field, source, value string) {
+	c.exec(ctx, "current identification", `UPDATE identifications SET current = (value = ?) WHERE host_id = ? AND field = ? AND source = ?`,
+		value, h.id, field, source)
 }

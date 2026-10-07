@@ -369,7 +369,7 @@ func scanService(rows interface{ Scan(...any) error }, extra ...any) (Service, e
 }
 
 func identifications(ctx context.Context, tx *sql.Tx, hostID string) ([]Identification, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT field, value, confidence, source, evidence_json, first_seen, last_seen
+	rows, err := tx.QueryContext(ctx, `SELECT field, value, confidence, source, evidence_json, first_seen, last_seen, current
 		FROM identifications WHERE host_id = ? ORDER BY first_seen, id`, hostID)
 	if err != nil {
 		return nil, err
@@ -380,7 +380,7 @@ func identifications(ctx context.Context, tx *sql.Tx, hostID string) ([]Identifi
 		var i Identification
 		var ev string
 		var first, last int64
-		if err := rows.Scan(&i.Field, &i.Value, &i.Confidence, &i.Source, &ev, &first, &last); err != nil {
+		if err := rows.Scan(&i.Field, &i.Value, &i.Confidence, &i.Source, &ev, &first, &last, &i.Current); err != nil {
 			return nil, err
 		}
 		i.Evidence, i.FirstSeen, i.LastSeen = []byte(ev), timeOf(first), timeOf(last)

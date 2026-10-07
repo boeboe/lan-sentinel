@@ -70,6 +70,7 @@ type Correlator struct {
 	clock   clock.Clock
 	log     *slog.Logger
 	cfg     atomic.Pointer[config.Config]
+	ids     atomic.Pointer[[]identify.Identifier] // the passive identifiers cfg enables
 	data    bool
 	tick    time.Duration
 	newID   func() string
@@ -111,7 +112,7 @@ func New(ctx context.Context, o Options) (*Correlator, error) {
 	for _, src := range observation.Sources {
 		c.bySource[src], c.unboundBySource[src] = new(atomic.Uint64), new(atomic.Uint64)
 	}
-	c.cfg.Store(o.Config)
+	c.SetConfig(o.Config)
 	if err := o.Store.View(ctx, func(ctx context.Context, tx *sql.Tx) error { return c.st.load(ctx, tx) }); err != nil {
 		return nil, err
 	}
@@ -133,10 +134,14 @@ func New(ctx context.Context, o Options) (*Correlator, error) {
 	return c, nil
 }
 
-// SetConfig applies a reloaded configuration: thresholds, and DHCP
-// allowlists at each server's next reply (the set of interfaces is
-// restart-only).
-func (c *Correlator) SetConfig(cfg *config.Config) { c.cfg.Store(cfg) }
+// SetConfig applies a reloaded configuration: thresholds, the passive
+// identifiers, and DHCP allowlists at each server's next reply (the set of
+// interfaces is restart-only).
+func (c *Correlator) SetConfig(cfg *config.Config) {
+	ids := identify.Identifiers(cfg.Identity.Identifiers)
+	c.ids.Store(&ids)
+	c.cfg.Store(cfg)
+}
 
 // Unbound is how many observations matched no host
 // (lan_sentinel_observations_unbound_total).

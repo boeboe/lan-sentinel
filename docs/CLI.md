@@ -46,7 +46,7 @@ The daemon runs as root with `UMask=0027` and the data directory is `0750 root:r
 | `daemon run` | Run the service in the foreground | `--config`, `--log-level` | 0 |
 | `daemon status` | Version, platform, PID, uptime, DB health, interfaces, host counts, kill-switch state, clock synchronisation, last scan, and per-interface collector state (`running`/`disabled`/`unsupported`/`failed`, backend or error); for each probe its last periodic pass, e.g. `arp running afpacket last pass 2m ago: 253 swept, 14 replied (26 s)` (blocked probes and `cut short` when they apply). Passes are shown here only, never logged | `-o json`; `--quiet` exit codes | 3 |
 | `hosts list` | Inventory: MAC, IP, hostname, vendor, interface, presence, last seen. `--active`: live hosts (ACTIVE or RECENT); `--stale`: the others (STALE or MISSING); `--port`: an OPEN service on that port; `--vendor`: substring of vendor or manufacturer | `--interface`, `--active`, `--stale`, `--vendor`, `--port`, `--seen-within` | 3 |
-| `hosts show <host-id>` | Full record of one host | | 3 |
+| `hosts show <host-id>` | Full record of one host: the device type and the current identifications (most confident first per field) | | 3 (identification from 6) |
 | `hosts find <query>` | Current or point-in-time holder(s) with addresses, names and services and their sources; exit 1 when nothing matches | `--interface`, `--at <time>`, `--ip`/`--mac`/`--hostname`/`--id` | 3 |
 | `hosts history <query>` | Event timeline for a host, MAC, IP or name | `--interface`, `--since`, `--until`, `--ip`/`--mac`/`--hostname`/`--id` | 3 |
 | `hosts evidence <query>` | Why we believe what we believe about a host: per attribute, the sources, first/last seen and counts, plus the evidence snapshots of its events; every host that ever matched the query; exit 1 when none | `--interface`, `--since`, `--ip`/`--mac`/`--hostname`/`--id` | 3 |
@@ -97,7 +97,7 @@ For a MAC or name query, `--at` shows the host and the addresses and names in ef
 
 ### `hosts evidence`
 
-For each attribute (each address, name, service, identification) the sources that confirmed it, with first/last seen per source (from `address_sources` and roll-ups) and observation counts within roll-up retention. Then the host's events with their `evidence_json` snapshots, which remain after raw observations are pruned.
+For each attribute (each address, name, service, identification) the sources that confirmed it, with first/last seen per source (from `address_sources` and roll-ups) and observation counts within roll-up retention. Identifications are all listed, weaker and earlier claims included, each with its confidence and evidence; `*` marks the value each source holds now (`hosts show` lists only those, `DATA_MODEL.md` §5.7). Then the host's events with their `evidence_json` snapshots, which remain after raw observations are pruned.
 
 ### `observations list`
 

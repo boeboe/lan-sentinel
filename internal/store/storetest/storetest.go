@@ -147,3 +147,28 @@ func AddDHCPServers(t testing.TB, st *store.Store) {
 		t.Fatalf("dhcp servers: %v, %d op errors", err, st.OpErrors())
 	}
 }
+
+// AddIdentifications gives host A (00:1b:1b:aa:bb:01) passive claims: a
+// current device type from mDNS, a weaker one it did not adopt, and the
+// device type chosen from them.
+func AddIdentifications(t testing.TB, st *store.Store) {
+	t.Helper()
+	ctx := context.Background()
+	err := st.Submit(ctx, func(ctx context.Context, tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO identifications (host_id, field, value, confidence, source, evidence_json, first_seen, last_seen, current)
+			SELECT host_id, 'device_type', 'Printer', 0.7, 'mdns', '{"service":"_ipp._tcp"}', ?, ?, 1 FROM hosts WHERE mac = '00:1b:1b:aa:bb:01'
+			UNION ALL
+			SELECT host_id, 'device_type', 'Media player', 0.6, 'mdns', '{"service":"_googlecast._tcp"}', ?, ?, 0 FROM hosts WHERE mac = '00:1b:1b:aa:bb:01'`,
+			T0.UnixMilli(), T0.UnixMilli(), T0.UnixMilli(), T0.UnixMilli()); err != nil {
+			return err
+		}
+		_, err := tx.ExecContext(ctx, `UPDATE hosts SET device_type = 'Printer' WHERE mac = '00:1b:1b:aa:bb:01'`)
+		return err
+	})
+	if err == nil {
+		err = st.Flush(ctx)
+	}
+	if err != nil || st.OpErrors() != 0 {
+		t.Fatalf("identifications: %v, %d op errors", err, st.OpErrors())
+	}
+}

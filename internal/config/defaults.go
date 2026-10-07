@@ -52,6 +52,7 @@ func Defaults() *Config {
 			AddressExpiry:      Duration(24 * time.Hour),
 			NameExpiry:         Duration(168 * time.Hour),
 			ProxyARPThreshold:  16,
+			Identifiers:        IdentifierToggles{MDNS: true, DHCP: true, Hostname: true, LLDP: true},
 		},
 		Storage: StorageConfig{
 			Path: DefaultDBPath,

@@ -74,6 +74,7 @@ func serve(t *testing.T) *readFixture {
 	t.Helper()
 	st, db, exp := storetest.Seed(t, golden)
 	storetest.AddDHCPServers(t, st)
+	storetest.AddIdentifications(t, st)
 	r, err := st.Reader(time.Hour)
 	if err != nil {
 		t.Fatal(err)
@@ -194,6 +195,16 @@ func TestReadCommands(t *testing.T) {
 	code, out, _ := f.run(t, "hosts", "show", hosts[a])
 	if code != 0 || !strings.Contains(out, "192.168.110.50   2026-10-01 10:00:00 → 2026-10-01 11:00:00") || !strings.Contains(out, "Identification:") {
 		t.Errorf("hosts show: %d\n%s", code, out)
+	}
+	// hosts show has the current claims, hosts evidence all of them.
+	if !strings.Contains(out, "Device:      Printer\n") || !strings.Contains(out, "  device_type=Printer  mdns  confidence 0.70\n") ||
+		strings.Contains(out, "Media player") {
+		t.Errorf("hosts show identification:\n%s", out)
+	}
+	_, out, _ = f.run(t, "hosts", "evidence", hosts[a], "--since", "30d")
+	if !strings.Contains(out, " *device_type=Printer  mdns  confidence 0.70") || !strings.Contains(out, "  device_type=Media player  mdns  confidence 0.60") ||
+		!strings.Contains(out, "(* current: the value each source holds now)") {
+		t.Errorf("hosts evidence identification:\n%s", out)
 	}
 }
 

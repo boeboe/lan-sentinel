@@ -74,11 +74,14 @@ type Service struct {
 type Identification struct {
 	Field      string          `json:"field"`
 	Value      string          `json:"value"`
-	Confidence float64         `json:"confidence"`
+	Confidence float64         `json:"confidence"` // the strongest evidence seen for the value
 	Source     string          `json:"source"`
 	Evidence   json.RawMessage `json:"evidence"`
 	FirstSeen  time.Time       `json:"first_seen"`
 	LastSeen   time.Time       `json:"last_seen"`
+	// Current marks the source's current value for the field; the others
+	// are history or weaker claims (docs/DATA_MODEL.md §5.7).
+	Current bool `json:"current"`
 }
 
 // Host is a full host record.

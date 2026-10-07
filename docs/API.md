@@ -25,7 +25,7 @@ The read endpoints are `GET`. Time parameters are RFC 3339; the CLI turns its lo
 | `/v1/interfaces` | | `[]InterfaceInfo`: name, state (`up`, `down`, `absent`, `unknown`), MAC, open prefixes, passive/active/replay, host count |
 | `/v1/hosts` | `interface`, `q` + optional `kind` (hosts that ever matched), `presence` (`live` = ACTIVE/RECENT, `notlive` = STALE/MISSING), `vendor` (substring of vendor or manufacturer), `port` (an OPEN service), `seen_since` | `[]HostSummary` with open IPs |
 | `/v1/hosts/find` | `q` (required), `kind`, `interface`, `at` | `FindResult` (below) |
-| `/v1/hosts/{id}` | | `Host`: summary plus every address and name binding (closed ones too) with sources, services, identifications |
+| `/v1/hosts/{id}` | | `Host`: summary plus every address and name binding (closed ones too) with sources, services, identifications (field, value, confidence, source, evidence, first/last seen, `current`: the value the source holds now) |
 | `/v1/hosts/{id}/history` | `since`, `until` | `[]Event` of the host (404 for an unknown host) |
 | `/v1/hosts/{id}/evidence` | `since` | `Evidence`: the host, observation counts per source and IP (raw and roll-ups), the host's events with evidence snapshots |
 | `/v1/evidence` | `q` (required), `kind`, `interface`, `since` | `[]Evidence` for every host that ever matched `q`, from one snapshot (`hosts evidence`) |

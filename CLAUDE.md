@@ -44,7 +44,7 @@ Read these before changing anything. If code and docs disagree, stop and ask.
 8. **No journal spam.** Observations are never logged. Only state transitions (events) go to journald.
 9. **No high-cardinality metrics.** Never put MAC, IP, hostname or host ID in Prometheus labels.
 10. **Least privilege.** The reference unit runs the daemon as root (decided 6 Oct 2026) with `CapabilityBoundingSet=CAP_NET_RAW`, so it holds that capability alone. The code must keep working as an unprivileged user with only `CAP_NET_RAW`: `make test-net` runs it that way in Docker. Do not introduce anything needing `CAP_NET_ADMIN`, another capability or root's file access.
-11. **Out of scope for v1:** VLAN tagging, web UI, any data leaving the box (fleet aggregation, remote API), identification plugins beyond OUI (phase 6+). Do not build these without an explicit request.
+11. **Out of scope for v1:** VLAN tagging, web UI, any data leaving the box (fleet aggregation, remote API), and identification by active probes that send payloads (Modbus FC 43/14, HTTP, TLS, SNMP; they also need rule 7 changed). Do not build these without an explicit request. The passive identifiers (mDNS, DHCP, hostname, LLDP; phase 6) are in.
 12. **IPv4-first.** v1 active discovery is IPv4: ARP is the primary LAN discovery mechanism. IPv6 active probing (NDP solicitation) is deferred; do not implement it until it is requested. Passive IPv6/NDP decoding stays.
 
 ## Conventions

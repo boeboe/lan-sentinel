@@ -10,6 +10,7 @@ import (
 
 	"lan-sentinel/internal/config"
 	"lan-sentinel/internal/events"
+	"lan-sentinel/internal/identify"
 	"lan-sentinel/internal/observation"
 )
 
@@ -71,9 +72,10 @@ func (c *Correlator) probeDetails(ctx context.Context, h *host, o observation.Ob
 		if known && old == v {
 			continue
 		}
-		h.idents[key] = v
-		if f == "device_type" {
-			c.exec(ctx, "device type", `UPDATE hosts SET device_type = ? WHERE host_id = ?`, v, h.id)
+		h.idents[key], h.identConf[key] = v, probeConfidence
+		c.dbCurrent(ctx, h, f, src, v)
+		if f == identify.FieldDeviceType {
+			c.updateDeviceType(ctx, h)
 		}
 		e := hostEvent(events.VendorIdentified, o.Time, h, string(o.Source), ev)
 		e.New, e.ObservationID = f+"="+v, obsID

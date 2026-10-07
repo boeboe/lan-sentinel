@@ -57,9 +57,12 @@ type host struct {
 	nameChange map[observation.NameType]time.Time
 	preferred  string
 
-	// Latest identification per field and probe source ("field\x00source"),
-	// for VENDOR_IDENTIFIED on a change (§5.5).
-	idents map[string]string
+	// Current identification per field and source ("field\x00source") and
+	// its confidence, for VENDOR_IDENTIFIED on a change (§5.5, §5.7), and
+	// the device type chosen from them (hosts.device_type).
+	idents     map[string]string
+	identConf  map[string]float64
+	deviceType string
 
 	// Proxy-ARP detection (docs/DATA_MODEL.md §5.2): when this MAC last
 	// answered ARP for each address, and for those held by another live host.
@@ -82,6 +85,7 @@ func newHost() *host {
 		bindings: map[netip.Addr]*binding{}, services: map[string]*serviceRow{},
 		names: map[observation.NameType]*nameRow{}, nameChange: map[observation.NameType]time.Time{},
 		arpClaims: map[netip.Addr]time.Time{}, arpOverlaps: map[netip.Addr]time.Time{}, idents: map[string]string{},
+		identConf: map[string]float64{},
 	}
 }
 
@@ -236,12 +240,12 @@ func (s *state) load(ctx context.Context, tx *sql.Tx) error {
 		return nil
 	})
 	byID := map[string]*host{}
-	q(`SELECT host_id, context_id, mac, coalesce(vendor, ''), presence, coalesce(preferred_name, ''), first_seen, last_seen
-		FROM hosts ORDER BY first_seen, host_id`, func(r *sql.Rows) error {
+	q(`SELECT host_id, context_id, mac, coalesce(vendor, ''), presence, coalesce(preferred_name, ''), coalesce(device_type, ''),
+		first_seen, last_seen FROM hosts ORDER BY first_seen, host_id`, func(r *sql.Rows) error {
 		h := newHost()
 		var cid, first, last int64
 		var mac, presence string
-		if err := r.Scan(&h.id, &cid, &mac, &h.vendor, &presence, &h.preferred, &first, &last); err != nil {
+		if err := r.Scan(&h.id, &cid, &mac, &h.vendor, &presence, &h.preferred, &h.deviceType, &first, &last); err != nil {
 			return err
 		}
 		var err error
@@ -329,13 +333,17 @@ func (s *state) load(ctx context.Context, tx *sql.Tx) error {
 		}
 		return nil
 	})
-	q(`SELECT host_id, field, source, value FROM identifications WHERE source IN (`+probeSources+`) ORDER BY last_seen, id`, func(r *sql.Rows) error {
+	// The current identification of each field from the probes and the
+	// passive identifiers (§5.5, §5.7).
+	q(`SELECT host_id, field, source, value, confidence FROM identifications
+		WHERE current = 1 AND source IN (`+probeSources+`, `+identifierSources+`)`, func(r *sql.Rows) error {
 		var hid, field, src, value string
-		if err := r.Scan(&hid, &field, &src, &value); err != nil {
+		var conf float64
+		if err := r.Scan(&hid, &field, &src, &value, &conf); err != nil {
 			return err
 		}
 		if h := byID[hid]; h != nil {
-			h.idents[identKey(field, src)] = value
+			h.idents[identKey(field, src)], h.identConf[identKey(field, src)] = value, conf
 		}
 		return nil
 	})

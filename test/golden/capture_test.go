@@ -115,9 +115,11 @@ func TestCaptureScenario(t *testing.T) {
 		"1s HOSTNAME_ADDED A >mdns:plc-a.local",
 		"2s HOST_DISCOVERED SW >mac",
 		"2s HOSTNAME_ADDED SW >lldp:plant-sw-01",
+		"2s VENDOR_IDENTIFIED SW >device_type=Switch",
 		"10m0s HOST_DISCOVERED SRV >mac",
 		"10m1s HOST_DISCOVERED HMI >mac",
 		"10m1s HOSTNAME_ADDED HMI >dhcp:HMI-LINE3",
+		"10m1s VENDOR_IDENTIFIED HMI >os=Windows",
 		"10m2s IP_ADDED HMI >192.168.110.20",
 		"10m2s DHCP_SERVER_DISCOVERED SRV >192.168.110.2",
 		"10m3s HOSTNAME_ADDED HMI >dns_ptr:hmi-line3.plant.example",
@@ -148,6 +150,25 @@ func TestCaptureScenario(t *testing.T) {
 		`192.168.110.2 "" SRV 192.168.110.2 allowed {"dns":"192.168.110.2,192.168.110.4","router":"192.168.110.1","subnet_mask":"255.255.255.0"} 10m2s..3h30m0s`,
 		`192.168.110.66 "" ROGUE 192.168.110.66 unexpected {"router":"192.168.110.66","subnet_mask":"255.255.255.0"} 2h30m0s..2h30m0s`,
 	})
+	// Passive identification (§5.7): the switch from its LLDP capabilities,
+	// the HMI's OS from its DHCP vendor class.
+	idents := rows(`SELECT h.mac, i.field, i.value, i.source, i.confidence FROM identifications i JOIN hosts h ON h.host_id = i.host_id
+		WHERE i.source NOT IN ('oui') ORDER BY h.mac, i.field`, func(r *sql.Rows) string {
+		var mac, field, value, source string
+		var conf float64
+		if err := r.Scan(&mac, &field, &value, &source, &conf); err != nil {
+			t.Fatal(err)
+		}
+		return fmt.Sprintf("%s %s=%s (%s %.1f)", label[mac], field, value, source, conf)
+	})
+	expect(t, "identifications", idents, []string{"HMI os=Windows (dhcp 0.6)", "SW device_type=Switch (lldp 0.8)"})
+	types := rows(`SELECT mac, device_type FROM hosts WHERE device_type IS NOT NULL ORDER BY mac`, func(r *sql.Rows) string {
+		var mac, typ string
+		_ = r.Scan(&mac, &typ)
+		return label[mac] + " " + typ
+	})
+	expect(t, "device types", types, []string{"SW Switch"})
+
 	// Server-confirmed leases keep their own provenance; the servers'
 	// addresses come from their replies.
 	leases := rows(`SELECT a.ip || ' ' || s.source FROM address_sources s JOIN addresses a ON a.id = s.address_id

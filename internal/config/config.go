@@ -218,6 +218,19 @@ type IdentityConfig struct {
 	NameExpiry        Duration `yaml:"name_expiry" json:"name_expiry"`
 	ProxyARPThreshold int      `yaml:"proxy_arp_threshold" json:"proxy_arp_threshold"`
 	OUIOverride       string   `yaml:"oui_override" json:"oui_override"`
+	// Identifiers enables the passive identification plugins
+	// (docs/DATA_MODEL.md §5.7).
+	Identifiers IdentifierToggles `yaml:"identifiers" json:"identifiers"`
+}
+
+// IdentifierToggles enables each passive identifier: device type, OS and
+// model from mDNS services, DHCP vendor class and request list, hostname
+// patterns and LLDP capabilities.
+type IdentifierToggles struct {
+	MDNS     bool `yaml:"mdns" json:"mdns"`
+	DHCP     bool `yaml:"dhcp" json:"dhcp"`
+	Hostname bool `yaml:"hostname" json:"hostname"`
+	LLDP     bool `yaml:"lldp" json:"lldp"`
 }
 
 // StorageConfig configures the SQLite database.

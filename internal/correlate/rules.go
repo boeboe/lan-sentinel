@@ -81,6 +81,9 @@ func (c *Correlator) observe(ctx context.Context, o observation.Observation) {
 	if o.Source == observation.PassiveDHCPServer && mac != nil { // the sender's own MAC, not an IP holder's
 		c.dhcpServerReply(ctx, h, o, obsID, ev)
 	}
+	if present {
+		c.identify(ctx, h, o, obsID, ev)
+	}
 }
 
 // bindMAC returns the host for (context, MAC), creating it if needed.

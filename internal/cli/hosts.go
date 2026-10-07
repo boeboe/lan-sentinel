@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -173,6 +174,9 @@ func (a *app) hostRecord(w io.Writer, h store.Host, at *time.Time) {
 	if h.PreferredName != "" {
 		fmt.Fprintf(w, "Name:        %s\n", h.PreferredName)
 	}
+	if h.DeviceType != "" {
+		fmt.Fprintf(w, "Device:      %s\n", h.DeviceType)
+	}
 	fmt.Fprintf(w, "First seen:  %s\nLast seen:   %s\n", a.stamp(h.FirstSeen), a.stamp(h.LastSeen))
 	if len(h.Addresses) > 0 {
 		fmt.Fprintln(w, "\nAddresses:")
@@ -199,9 +203,22 @@ func (a *app) hostRecord(w io.Writer, h store.Host, at *time.Time) {
 			fmt.Fprintf(w, "  %-8s %-11s %s\n", s.Proto+"/"+strconv.Itoa(s.Port), s.State, a.ago(s.LastResultAt))
 		}
 	}
-	if len(h.Identifications) > 0 {
+	// The current claims, most confident first; hosts evidence has them all.
+	var current []store.Identification
+	for _, i := range h.Identifications {
+		if i.Current {
+			current = append(current, i)
+		}
+	}
+	sort.SliceStable(current, func(x, y int) bool {
+		if current[x].Field != current[y].Field {
+			return current[x].Field < current[y].Field
+		}
+		return current[x].Confidence > current[y].Confidence
+	})
+	if len(current) > 0 {
 		fmt.Fprintln(w, "\nIdentification:")
-		for _, i := range h.Identifications {
+		for _, i := range current {
 			fmt.Fprintf(w, "  %s=%s  %s  confidence %.2f\n", i.Field, i.Value, i.Source, i.Confidence)
 		}
 	}
@@ -508,8 +525,13 @@ func (a *app) evidenceTable(w io.Writer, all []store.Evidence) {
 		if len(h.Identifications) > 0 {
 			fmt.Fprintln(w, "\nIdentification:")
 			for _, id := range h.Identifications {
-				fmt.Fprintf(w, "  %s=%s  %s  confidence %.2f  %s\n", id.Field, id.Value, id.Source, id.Confidence, compact(id.Evidence))
+				mark := " "
+				if id.Current {
+					mark = "*"
+				}
+				fmt.Fprintf(w, " %s%s=%s  %s  confidence %.2f  %s\n", mark, id.Field, id.Value, id.Source, id.Confidence, compact(id.Evidence))
 			}
+			fmt.Fprintln(w, "  (* current: the value each source holds now)")
 		}
 		if len(ev.Counts) > 0 {
 			fmt.Fprintln(w, "\nObservations (raw and roll-ups):")

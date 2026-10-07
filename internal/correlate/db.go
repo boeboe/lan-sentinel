@@ -55,8 +55,8 @@ func (c *Correlator) dbInsertHost(ctx context.Context, h *host, la bool) {
 	if h.vendor != "" {
 		evidence, _ := json.Marshal(map[string]string{"mac": h.mac.String(), "registry": "IEEE"})
 		c.exec(ctx, "insert identification", `INSERT INTO identifications
-			(host_id, field, value, confidence, source, evidence_json, first_seen, last_seen)
-			VALUES (?, 'manufacturer', ?, ?, 'oui', ?, ?, ?)`,
+			(host_id, field, value, confidence, source, evidence_json, first_seen, last_seen, current)
+			VALUES (?, 'manufacturer', ?, ?, 'oui', ?, ?, ?, 1)`,
 			h.id, h.vendor, ouiConfidence, string(evidence), ms(h.firstSeen), ms(h.firstSeen))
 	}
 }
