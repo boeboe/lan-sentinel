@@ -1,7 +1,7 @@
 // Package metrics writes Prometheus metrics in the text exposition format
 // (docs/ARCHITECTURE.md §3). Values are gathered at scrape time by the
 // daemon. Labels are low-cardinality only: never a MAC, IP, hostname or host
-// ID (CLAUDE.md rule 9), which AllowedLabels enforces.
+// ID (AGENTS.md rule 9), which AllowedLabels enforces.
 package metrics
 
 import (

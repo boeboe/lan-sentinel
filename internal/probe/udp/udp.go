@@ -1,9 +1,10 @@
 // Package udp is the protocol-specific UDP probe engine (FR-AC-6). Each
 // probe sends one well-formed request of its protocol to a known host and
-// parses the reply; there is no generic UDP port scanning (CLAUDE.md rule
+// parses the reply; there is no generic UDP port scanning (AGENTS.md rule
 // 7). A reply becomes a udp_probe observation carrying the service state
 // OPEN and the probe's details; no reply means nothing at all, never that
-// the host is offline. A new probe is a new Prober in Probers.
+// the host is offline. A new probe is a new Prober in Probers, once its
+// protocol is agreed (AGENTS.md rule 7 names the UDP probes).
 package udp
 
 import (

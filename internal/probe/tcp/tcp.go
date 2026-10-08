@@ -1,6 +1,6 @@
 // Package tcp is the bare TCP connect engine (FR-AC-4): a plain connect()
 // to each configured port of each known host, closed at once with a reset
-// without sending anything. Never SYN scanning (CLAUDE.md rule 7). Every
+// without sending anything. Never SYN scanning (AGENTS.md rule 7). Every
 // result becomes a tcp_connect observation: OPEN, REFUSED, TIMEOUT or
 // UNREACHABLE.
 //

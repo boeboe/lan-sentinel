@@ -66,7 +66,7 @@ The read endpoints are `GET`. Time parameters are RFC 3339; the CLI turns its lo
 
 ## Metrics
 
-`GET /metrics` on the TCP listener, Prometheus text format, gathered at scrape time. Labels are `interface`, `presence`, `type`, `source`, `protocol`, `port`, `result`, `reason` and `collector` only; never a MAC, IP, hostname or host ID (CLAUDE.md rule 9, enforced by `internal/metrics`).
+`GET /metrics` on the TCP listener, Prometheus text format, gathered at scrape time. Labels are `interface`, `presence`, `type`, `source`, `protocol`, `port`, `result`, `reason` and `collector` only; never a MAC, IP, hostname or host ID (AGENTS.md rule 9, enforced by `internal/metrics`).
 
 | Metric | Type | Labels | Meaning |
 | --- | --- | --- | --- |

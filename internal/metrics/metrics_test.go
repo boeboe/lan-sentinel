@@ -39,7 +39,7 @@ lan_sentinel_special NaN
 	}
 }
 
-// High-cardinality labels and bad names are refused (CLAUDE.md rule 9).
+// High-cardinality labels and bad names are refused (AGENTS.md rule 9).
 func TestValidateRefusesHighCardinality(t *testing.T) {
 	for _, f := range []Family{
 		{Name: "lan_sentinel_x", Type: Gauge, Samples: []Sample{{Labels: L("mac", "00:1b:1b:00:00:01")}}},

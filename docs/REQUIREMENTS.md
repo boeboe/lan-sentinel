@@ -162,7 +162,7 @@ SYN scanning; generic UDP port scanning; IPv6 sweeping; running on or building f
 | VLAN tagging | Out of scope; no VLAN sites today |
 | Promiscuous mode | Configurable per interface, default off; useful only on mirror/SPAN ports or hubs |
 | Deliverables | Static binaries only, no packages |
-| Naming | `lan-sentinel` for repo, binary, unit, user, paths |
+| Naming | `lan-sentinel` for repo, binary, unit and paths (there is no `lan-sentinel` user since 6 Oct 2026, see Service identity) |
 | Packet capture | Pure-Go `AF_PACKET` (no libpcap, no cgo) |
 | Host identity | Within an interface, host = MAC. No merge/split. Multi-NIC devices are several hosts (decided 5 Oct 2026) |
 | Network context | The interface only; subnet changes are history (`context_prefixes`), not new contexts |

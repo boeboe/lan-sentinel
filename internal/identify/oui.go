@@ -1,6 +1,7 @@
-// Package identify derives facts about hosts from their evidence. In v1 that
-// is the manufacturer from the MAC's IEEE assignment (MA-L, MA-M, MA-S) and
-// the locally-administered flag; identification plugins arrive in phase 6.
+// Package identify derives facts about hosts from their evidence: the
+// manufacturer from the MAC's IEEE assignment (MA-L, MA-M, MA-S), the
+// locally-administered flag, and the passive identifiers (plugins.go), which
+// read evidence already captured and send nothing (AGENTS.md rule 11).
 package identify
 
 import (

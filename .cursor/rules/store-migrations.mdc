@@ -1,0 +1,13 @@
+---
+description: SQLite store, read model and schema migrations
+globs: internal/store/**, migrations/**
+alwaysApply: false
+---
+
+Before editing, read `docs/DATA_MODEL.md` §4 (schema) and §9 (retention), `docs/CLI.md` §1 (offline access), and `AGENTS.md` §10 (Change the schema) and §13.
+
+- One writer goroutine, WAL, batched commits (target 5 s). `--offline` opens read-only.
+- New reads go into `store.Reader`, which serves both the API and `--offline`.
+- Migrations are append-only `NNNN_description.sql`. Never edit or renumber one that is on `main`. An older binary refuses a newer schema.
+- Changing event types means rebuilding `events`: copy `0007_host_description.sql`, name the table `events_rebuilt` (`events_new` is an index name), and recreate all nine indexes.
+- Update `DATA_MODEL.md` §4, including the heading that lists every migration, in the same change.

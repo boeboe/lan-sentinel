@@ -39,7 +39,7 @@ Deferred checks that need real hardware or data from real sites. Each closes a p
 - [x] `slog` logging with journald handler and text/JSON fallback
 - [x] SQLite store (`modernc.org/sqlite`) with embedded migrations, WAL, single writer goroutine, batched commits
 - [x] Daemon lifecycle: context cancellation, `sd_notify` READY/WATCHDOG, graceful shutdown, SIGHUP reload — *verified under systemd in a container (`make test-systemd`)*
-- [x] systemd container test (`make test-systemd`): reference unit unchanged, `Type=notify`, identity and capabilities, reload, clean stop, capcheck under the unit's sandbox, `systemd-analyze security` ≤ 2.5 (now 1.6)
+- [x] systemd container test (`make test-systemd`): reference unit unchanged, `Type=notify`, identity and capabilities, reload, clean stop, capcheck under the unit's sandbox, `systemd-analyze security` ≤ 2.5 (1.6 then; 2.3 since the daemon runs as root, 6 Oct 2026)
 - [x] Docker network test harness (`make test-net`, `ARCHITECTURE.md` §9): test network with simulated hosts, runner as uid 65534 with only `CAP_NET_RAW`, `tools/capcheck` with and without the capability
 - [ ] Capability check under the reference unit with only `CAP_NET_RAW`: every row of `ARCHITECTURE.md` §8, in Docker and on each target board; record results there. Any failure stops the project for a decision. — *Docker and systemd container: passed; boards deferred, tracked under Open hardware and field checks*
 - [x] Golden reconstruction scenario (`DATA_MODEL.md` §10) committed under `test/golden/reconstruction/` as observation stream + expected bindings, events and query answers; a harness that validates the fixture (including that the expected answers follow from the expected bindings) and runs it through the correlator (skipped until phase 1, so CI stays green)
@@ -79,7 +79,7 @@ Deferred checks that need real hardware or data from real sites. Each closes a p
 
 ## Phase 3 — Read side: API, CLI, metrics (2–3 weeks)
 
-- [x] REST API over `/run/lan-sentinel/api.sock` (0660, `lan-sentinel`), optional `127.0.0.1` listener; `/v1/status` includes per-collector state (`API.md`)
+- [x] REST API over `/run/lan-sentinel/api.sock` (0660; owner root since 6 Oct 2026), optional `127.0.0.1` listener; `/v1/status` includes per-collector state (`API.md`)
 - [x] Endpoints: `/v1/status`, `/v1/interfaces`, `/v1/hosts`, `/v1/hosts/{id}`, `/v1/hosts/{id}/history`, `/v1/hosts/{id}/evidence`, `/v1/hosts/find?q=&interface=&at=`, `/v1/history?q=&interface=&since=&until=` (IP/MAC/name timelines), `/v1/observations?host=&interface=&mac=&ip=&source=&unbound=&since=&until=&rollups=`, `/v1/events`, `/v1/events/stream` (JSON lines, backs `watch`), `/v1/services`, `/v1/config`, `/v1/db`, `/v1/db/check` (scan and kill-switch endpoints in phase 4)
 - [x] CLI per `CLI.md`: subcommand tree, query auto-detection, `find --at` result cases (0 / 1 / ≥2 holders, unconfirmed, replaced-by), IP history, `hosts evidence`, `observations list`, `table`/`json`/`jsonl`/`csv` output, exit codes; online and offline behind one interface over the same queries
 - [x] `--offline` per the contract in `CLI.md` §1, tested for: live DB beside the writer, no `-wal` (immutable open), unreadable `-wal`, `-shm` missing in a read-only directory, busy timeout
@@ -124,7 +124,7 @@ Plugin interface in `internal/identify` taking a host's evidence and returning (
 
 - [x] Plugin interface (`identify.Identifier`: a name and `Identify(observation) []Claim`) applied by the correlator to every observation of a present host, each identifier switchable on reload (`identity.identifiers`); a source's value changes only to a more confident claim, the adopted one is marked `current` (migration 0006) and `hosts.device_type` is the most confident claim of any source (`DATA_MODEL.md` §5.7) — *started 7 Oct 2026*
 - [x] Passive identifiers, sending nothing: mDNS service types and `_device-info` model, DHCP fingerprint (vendor class, the iOS/macOS request list), hostname patterns, LLDP capabilities; `hosts show` shows the device type and current claims, `hosts evidence` every claim
-- [ ] Active identifiers: Modbus Device Identification (FC 43/14), HTTP `Server` and title, TLS certificate subject, SNMP `sysDescr`. Each sends a payload, which the OT safety rules (CLAUDE.md rule 7) forbid: needs a decision on the safety contract (opt-in per site and probe, known hosts only, budgets, what each may send) before it is built
+- [ ] Active identifiers: Modbus Device Identification (FC 43/14), HTTP `Server` and title, TLS certificate subject, SNMP `sysDescr`. Each sends a payload, which the OT safety rules (AGENTS.md rule 7) forbid: needs a decision on the safety contract (opt-in per site and probe, known hosts only, budgets, what each may send) before it is built
 
 ## Testing strategy
 
@@ -166,5 +166,5 @@ Each collector has a config flag so a misbehaving decoder can be switched off fl
 | Capture drops on busy mirrored ports | Missed observations | BPF filter to discovery protocols only, ring sizing, drop metric |
 | SD card wear from SQLite writes | Storage failure | Batched commits every 5 s, compaction, `synchronous=NORMAL` in WAL |
 | Clock jumps on boxes without RTC | Broken timelines | Mark events written before NTP sync |
-| Kernel access spreads outside the platform layer | Code becomes hard to test without a network | Platform interfaces with fakes; review rule in `CLAUDE.md` |
+| Kernel access spreads outside the platform layer | Code becomes hard to test without a network | Platform interfaces with fakes; `AGENTS.md` rule 2 |
 | OUI data goes stale | Unknown vendors | Regenerate each release; optional override file |

@@ -9,7 +9,7 @@ import (
 	"lan-sentinel/test/frames"
 )
 
-// Every decoder has a fuzz target (CLAUDE.md conventions). Each feeds a
+// Every decoder has a fuzz target (AGENTS.md §7). Each feeds a
 // protocol payload to its decoder with every protocol enabled and checks the
 // invariants every observation must meet. make fuzz runs them all.
 

@@ -1,0 +1,13 @@
+---
+description: Active probes and the OT safety envelope
+globs: internal/probe/**
+alwaysApply: false
+---
+
+Before editing, read `docs/ARCHITECTURE.md` §3 (Active probes) and §5 (OT safety controls), and `AGENTS.md` rules 7, 11 and 12.
+
+- Every send acquires `probe.Budget`, which checks the policy, kill switch, excludes, budgets and per-target spacing. Never bypass it, and never send outside `platform.Transmitter`.
+- Engines emit observations only (`arp_scan`, `icmp_scan`, `tcp_connect`, `udp_probe`). No reply means nothing, never offline.
+- `scan plan` (`probe.Compute`) and `scan run` must agree on scope and refusals.
+- A new probe protocol, or any probe that sends a payload to identify a device, changes the safety contract: stop and ask. Do not write code, interfaces or stubs for it first.
+- Verify with `make check-all`; `TestActiveDiscovery` in `test/net` measures the budgets on the wire.

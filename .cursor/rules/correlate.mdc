@@ -1,0 +1,13 @@
+---
+description: Correlator, identity rules and events
+globs: internal/correlate/**, internal/events/**, test/golden/**
+alwaysApply: false
+---
+
+Before editing, read `docs/DATA_MODEL.md` §3 (interval semantics), §5 (correlation rules), §6 (presence), §7 (events) and §10 (the reconstruction scenario), and `AGENTS.md` §6.
+
+- The correlator is the only writer of state and events, in one goroutine. Collectors, the API and the CLI never write.
+- A host is one MAC per interface. Never merge or split; never match on IP or name.
+- Time comes from the observation or the `clock.Clock`, never `time.Now()`.
+- Events are state transitions with an evidence snapshot, never one per observation. The catalogue in `internal/events` must match the newest migration's CHECK.
+- The golden reconstruction scenario (`test/golden/reconstruction`) must always pass. Do not edit expected outputs to make a test pass without a doc-backed reason.

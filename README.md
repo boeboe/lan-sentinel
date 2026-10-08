@@ -38,7 +38,9 @@ Each release on the [Releases page](https://github.com/boeboe/lan-sentinel/relea
 - [Local API and metrics](docs/API.md)
 - [Implementation plan](docs/IMPLEMENTATION_PLAN.md)
 - [Hardware test plan](docs/TEST_PLAN.md)
+- [Status](docs/STATUS.md) and [architecture decision records](docs/adr/README.md)
 - [Deployment and releases](deploy/README.md)
+- For coding agents: [AGENTS.md](AGENTS.md) and the [repository map](docs/AI_REPO_MAP.md)
 
 ## Build and test
 

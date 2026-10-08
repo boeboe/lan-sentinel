@@ -245,7 +245,7 @@ func (s *Scheduler) LastPasses() map[string]map[string]PassSummary {
 	return out
 }
 
-// portLabel keeps the port label's values few (CLAUDE.md rule 9): the UDP
+// portLabel keeps the port label's values few (AGENTS.md rule 9): the UDP
 // probes' ports and the TCP ports of the configuration (active.tcp.targets
 // and profiles); a TCP port given only to `scan run` is "other".
 func portLabel(cfg *config.Config, p probe.Protocol, port int) string {

@@ -1,0 +1,14 @@
+---
+description: LAN Sentinel project rules; read AGENTS.md first
+alwaysApply: true
+---
+
+Read `AGENTS.md` at the repository root before changing anything. It holds the hard rules (§4), the source-of-truth order (§2), the package map, what to run (§8) and the common tasks (§10). This rule only restates what must never be missed.
+
+- Linux-only, static `CGO_ENABLED=0` Go; never add a cgo dependency.
+- Run Go only through `make` (Linux dev container); `make check` is the gate.
+- Collectors and probes only emit observations; only `internal/correlate` mutates state and writes events; one SQLite writer.
+- A host is one MAC per interface (UUID `host_id`); never merge or split.
+- Kernel access only in `internal/platform`.
+- OT safety rules 7, 11 and 12 are not negotiable without a recorded decision.
+- If code and docs disagree, or a decision is missing, ask.
