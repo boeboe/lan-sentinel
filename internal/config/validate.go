@@ -194,6 +194,9 @@ func (v *validator) identifyList(key string, list []InterfaceIdentify, defaults 
 		if e.Name != "snmp" && e.Community != "" {
 			v.add(k+".community", "does not apply to %s", e.Name)
 		}
+		if e.Name != "tls" && e.SNI != "" {
+			v.add(k+".sni", "does not apply to %s", e.Name)
+		}
 		if e.Name == "modbus" {
 			id := defaults.UnitIDOf(e)
 			if id < 1 || id > 255 {
@@ -207,6 +210,11 @@ func (v *validator) identifyList(key string, list []InterfaceIdentify, defaults 
 				v.add(k+".community", "is required")
 			case len(c) > maxSNMPCommunity:
 				v.add(k+".community", "must be at most %d characters, got %d", maxSNMPCommunity, len(c))
+			}
+		}
+		if e.Name == "tls" {
+			if mode := defaults.SNIModeOf(e); mode != "" && mode != SNIModeAuto {
+				v.add(k+".sni", "must be empty or %q, got %q", SNIModeAuto, mode)
 			}
 		}
 	}
@@ -338,6 +346,9 @@ func (v *validator) active(cfg *Config) {
 	}
 	if c := a.Identify.Probes.SNMP.Community; len(c) > maxSNMPCommunity {
 		v.add("active.identify.probes.snmp.community", "must be at most %d characters, got %d", maxSNMPCommunity, len(c))
+	}
+	if s := a.Identify.Probes.TLS.SNI; s != "" && s != SNIModeAuto {
+		v.add("active.identify.probes.tls.sni", "must be empty or %q, got %q", SNIModeAuto, s)
 	}
 	v.udpProbes("active.udp.probes", a.UDP.Probes)
 	if a.UDP.Enabled && len(a.UDP.Probes) == 0 {

@@ -10,9 +10,10 @@ import (
 
 func (a *app) versionCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "version",
-		Short: "Print version, commit, commit date, Go version and platform",
-		Args:  cobra.NoArgs,
+		Use:     "version",
+		Short:   "Print version, commit, commit date, Go version and platform",
+		Example: "  lan-sentinel version",
+		Args:    cobra.NoArgs,
 		RunE: func(*cobra.Command, []string) error {
 			bi := buildinfo.Get()
 			if err := onlyFormats(a.g.output, "table", "json"); err != nil {

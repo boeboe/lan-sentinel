@@ -14,10 +14,13 @@ import (
 )
 
 // TLS records the peer certificate from one crypto/tls handshake on
-// tcp/443 (ADR 0011). TLS 1.2 and 1.3, no SNI, no trust validation.
+// tcp/443 (ADR 0011). TLS 1.2 and 1.3, no trust validation. ServerName
+// is SNI when set (opt-in auto or identify run --sni); empty sends none.
 // The engine closes the TCP socket; this probe must not Close the
 // tls.Conn (close_notify would be a write past MaxWrites).
-type TLS struct{}
+type TLS struct {
+	ServerName string
+}
 
 const (
 	tlsPort = 443
@@ -59,7 +62,7 @@ func (TLS) BudgetCost() int { return tlsBudgetCost }
 func (TLS) Limits() Limits { return Limits{MaxWrites: tlsMaxWrites, MaxRead: tlsMaxRead} }
 
 // Exchange implements Probe.
-func (TLS) Exchange(ctx context.Context, s Session) (Response, error) {
+func (p TLS) Exchange(ctx context.Context, s Session) (Response, error) {
 	if err := ctx.Err(); err != nil {
 		return Response{}, err
 	}
@@ -72,6 +75,7 @@ func (TLS) Exchange(ctx context.Context, s Session) (Response, error) {
 		MinVersion:         tls.VersionTLS12,
 		MaxVersion:         tls.VersionTLS13,
 		CurvePreferences:   tlsCurves,
+		ServerName:         p.ServerName,
 	})
 	if err := c.HandshakeContext(ctx); err != nil {
 		if isTimeout(err) {
@@ -83,7 +87,17 @@ func (TLS) Exchange(ctx context.Context, s Session) (Response, error) {
 	if len(state.PeerCertificates) == 0 {
 		return Response{}, fmt.Errorf("%w: no certificate", errTLS)
 	}
-	return certFromX509(state.PeerCertificates[0], tlsVersionLabel(state.Version))
+	r, err := certFromX509(state.PeerCertificates[0], tlsVersionLabel(state.Version))
+	if err != nil {
+		return Response{}, err
+	}
+	if p.ServerName != "" {
+		if r.Details == nil {
+			r.Details = map[string]string{}
+		}
+		r.Details["sni"] = p.ServerName
+	}
+	return r, nil
 }
 
 func certFromX509(cert *x509.Certificate, version string) (Response, error) {

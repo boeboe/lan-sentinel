@@ -66,8 +66,12 @@ func (c *control) DescribeHost(_ context.Context, actor, hostID, description str
 	return store.HostSummary{HostID: hostID, Description: description}, c.err
 }
 
-func (c *control) IdentifyRun(_ context.Context, actor, hostID, probe string) (store.IdentifyAttempt, error) {
-	c.note(actor, hostID+"="+probe)
+func (c *control) IdentifyRun(_ context.Context, actor, hostID, probe, sni string) (store.IdentifyAttempt, error) {
+	note := hostID + "=" + probe
+	if sni != "" {
+		note += " sni=" + sni
+	}
+	c.note(actor, note)
 	return store.IdentifyAttempt{Probe: probe, Result: "ok", Trigger: "operator"}, c.err
 }
 
@@ -188,17 +192,23 @@ func TestIdentifyEndpoint(t *testing.T) {
 	ctl := &control{}
 	c, _, _ := startControl(t, ctl)
 	ctx := context.Background()
-	a, err := c.IdentifyRun(ctx, "host-1", "modbus")
+	a, err := c.IdentifyRun(ctx, "host-1", "modbus", "")
 	if err != nil || a.Probe != "modbus" || a.Result != "ok" || a.Trigger != "operator" || ctl.reasons[0] != "host-1=modbus" {
 		t.Fatalf("identify = %+v, %v (calls %v)", a, err, ctl.reasons)
 	}
 	ctl.err = fmt.Errorf("%w: stale", api.ErrIdentifyRefused)
-	if _, err := c.IdentifyRun(ctx, "host-1", "modbus"); status(err) != http.StatusConflict {
+	_, err = c.IdentifyRun(ctx, "host-1", "modbus", "")
+	var ae *api.Error
+	if status(err) != http.StatusConflict || !errors.As(err, &ae) || ae.Code != api.CodeIdentifyRefused || !errors.Is(err, api.ErrIdentifyRefused) {
 		t.Errorf("refused: %v", err)
 	}
 	ctl.err = fmt.Errorf("host x: %w", store.ErrNotFound)
-	if _, err := c.IdentifyRun(ctx, "x", "modbus"); status(err) != http.StatusNotFound {
+	if _, err := c.IdentifyRun(ctx, "x", "modbus", ""); status(err) != http.StatusNotFound {
 		t.Errorf("unknown host: %v", err)
+	}
+	ctl.err = nil
+	if _, err := c.IdentifyRun(ctx, "host-1", "tls", "plc.local"); err != nil || ctl.reasons[len(ctl.reasons)-1] != "host-1=tls sni=plc.local" {
+		t.Errorf("sni: %v (calls %v)", err, ctl.reasons)
 	}
 }
 
@@ -293,6 +303,8 @@ func TestOperatorRequestsAreChecked(t *testing.T) {
 		{"get description is not allowed", http.MethodGet, "/v1/hosts/h1/description", "", http.StatusMethodNotAllowed},
 		{"identify probe required", http.MethodPost, "/v1/hosts/h1/identify", `{}`, http.StatusBadRequest},
 		{"identify unknown probe", http.MethodPost, "/v1/hosts/h1/identify", `{"probe":"ssh-kex"}`, http.StatusBadRequest},
+		{"identify sni on http", http.MethodPost, "/v1/hosts/h1/identify", `{"probe":"http","sni":"plc.local"}`, http.StatusBadRequest},
+		{"identify bad sni", http.MethodPost, "/v1/hosts/h1/identify", `{"probe":"tls","sni":"HMI1"}`, http.StatusBadRequest},
 		{"get identify is not allowed", http.MethodGet, "/v1/hosts/h1/identify", "", http.StatusMethodNotAllowed},
 	}
 	for _, tt := range tests {
@@ -351,5 +363,16 @@ func TestOperatorWithoutControlOrPeer(t *testing.T) {
 	srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/active/disable", strings.NewReader(`{"reason":"x"}`)))
 	if rec.Code != http.StatusOK || ctl.actors[0] != "unknown" {
 		t.Errorf("actor without peer = %q (%d)", ctl.actors, rec.Code)
+	}
+}
+
+// A refusal is recognised by its code, not its wording; another 409 (a scan
+// already running, say) is not a refusal.
+func TestIdentifyRefusedByCode(t *testing.T) {
+	if err := error(&api.Error{Status: http.StatusConflict, Message: "worded differently", Code: api.CodeIdentifyRefused}); !errors.Is(err, api.ErrIdentifyRefused) {
+		t.Errorf("coded 409 = %v", err)
+	}
+	if err := error(&api.Error{Status: http.StatusConflict, Message: api.ErrIdentifyRefused.Error()}); errors.Is(err, api.ErrIdentifyRefused) {
+		t.Errorf("uncoded 409 taken as a refusal: %v", err)
 	}
 }

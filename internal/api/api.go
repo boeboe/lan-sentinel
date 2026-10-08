@@ -143,7 +143,7 @@ func New(o Options) *Server {
 		s.mux.HandleFunc(path, postOnly(h))
 	}
 	s.mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, http.StatusNotFound, errorBody{"no such endpoint: " + r.URL.Path})
+		writeJSON(w, http.StatusNotFound, errorBody{Error: "no such endpoint: " + r.URL.Path})
 	})
 	return s
 }
@@ -154,7 +154,7 @@ func readOnly(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
 			w.Header().Set("Allow", "GET, HEAD")
-			writeJSON(w, http.StatusMethodNotAllowed, errorBody{r.Method + " is not allowed"})
+			writeJSON(w, http.StatusMethodNotAllowed, errorBody{Error: r.Method + " is not allowed"})
 			return
 		}
 		h(w, r)
@@ -174,12 +174,12 @@ func loopbackOnly(h http.Handler) http.Handler {
 		}
 		ip := net.ParseIP(host)
 		if host != "localhost" && (ip == nil || !ip.IsLoopback()) {
-			writeJSON(w, http.StatusForbidden, errorBody{"Host must be a loopback address"})
+			writeJSON(w, http.StatusForbidden, errorBody{Error: "Host must be a loopback address"})
 			return
 		}
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
 			w.Header().Set("Allow", "GET, HEAD")
-			writeJSON(w, http.StatusMethodNotAllowed, errorBody{"the TCP listener only serves reads"})
+			writeJSON(w, http.StatusMethodNotAllowed, errorBody{Error: "the TCP listener only serves reads"})
 			return
 		}
 		h.ServeHTTP(w, r)
@@ -286,10 +286,16 @@ func listenUnix(path string) (net.Listener, error) {
 	return l, nil
 }
 
-// errorBody is every error response.
+// errorBody is every error response. Code is set where a client must tell
+// one error from another without reading the message.
 type errorBody struct {
 	Error string `json:"error"`
+	Code  string `json:"code,omitempty"`
 }
+
+// CodeIdentifyRefused is the code of a 409 from /v1/hosts/{id}/identify:
+// the policy refused the probe and nothing was sent (ErrIdentifyRefused).
+const CodeIdentifyRefused = "identify_refused"
 
 // badParam is an invalid query parameter.
 type badParam struct{ msg string }
@@ -317,7 +323,7 @@ func (s *Server) fail(w http.ResponseWriter, err error) {
 	default:
 		s.o.Logger.Warn("api request failed", "err", err)
 	}
-	writeJSON(w, status, errorBody{err.Error()})
+	writeJSON(w, status, errorBody{Error: err.Error()})
 }
 
 func (s *Server) reply(w http.ResponseWriter, v any, err error) {

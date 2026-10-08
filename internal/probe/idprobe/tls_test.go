@@ -51,6 +51,10 @@ func (c *sizedConn) Write(p []byte) (int, error) {
 // exchangeTLS runs the probe against a crypto/tls server configured by
 // server and returns the claims and each write the probe made.
 func exchangeTLS(t *testing.T, server func(*tls.Config)) (Response, []int, error) {
+	return exchangeTLSProbe(t, TLS{}, server)
+}
+
+func exchangeTLSProbe(t *testing.T, pr TLS, server func(*tls.Config)) (Response, []int, error) {
 	t.Helper()
 	cert := testTLSCertificate(t)
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -80,7 +84,7 @@ func exchangeTLS(t *testing.T, server func(*tls.Config)) (Response, []int, error
 	sized := &sizedConn{Conn: conn}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	r, xerr := (TLS{}).Exchange(ctx, newSession(sized, TLS{}.Limits()))
+	r, xerr := pr.Exchange(ctx, newSession(sized, pr.Limits()))
 	_ = conn.Close()
 	<-errc
 	return r, sized.sizes, xerr
@@ -163,6 +167,32 @@ func TestTLSRejects(t *testing.T) {
 	}
 	if _, err := certFromX509(nil, "1.2"); !errors.Is(err, errTLS) {
 		t.Errorf("nil cert = %v", err)
+	}
+}
+
+func TestTLSSNI(t *testing.T) {
+	var seen string
+	r, _, err := exchangeTLSProbe(t, TLS{ServerName: "plc.local"}, func(c *tls.Config) {
+		c.GetConfigForClient = func(chi *tls.ClientHelloInfo) (*tls.Config, error) {
+			seen = chi.ServerName
+			return nil, nil
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if seen != "plc.local" {
+		t.Errorf("server saw SNI %q", seen)
+	}
+	if r.Details["sni"] != "plc.local" {
+		t.Errorf("details = %v", r.Details)
+	}
+	r, _, err = exchangeTLS(t, func(*tls.Config) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Details["sni"] != "" {
+		t.Errorf("no SNI details = %v", r.Details)
 	}
 }
 

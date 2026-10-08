@@ -99,6 +99,9 @@ func TestIdentifyTargets(t *testing.T) {
 	if eligible.HostID == "" {
 		t.Fatal("no eligible host")
 	}
+	if eligible.PreferredName == "" {
+		t.Errorf("preferred_name empty on %+v", eligible)
+	}
 	exec(t, st, `INSERT INTO identify_attempts (host_id, probe, result, attempted_at, trigger) VALUES (?, 'modbus', 'timeout', ?, 'scheduled')`,
 		eligible.HostID, t0.UnixMilli())
 	again, err := r.IdentifyTargets(ctx, "eth1", "modbus", time.Time{})

@@ -39,8 +39,9 @@ func (a *app) load() (*config.Loaded, error) {
 
 func (a *app) configValidateCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "validate",
-		Short: "Validate a config before rollout",
+		Use:     "validate",
+		Short:   "Validate a config before rollout",
+		Example: "  sudo lan-sentinel config validate",
 		Long: "Validate the configuration file, environment and flags. Prints the interfaces,\n" +
 			"active scan networks, enabled probes, budgets and the estimated maximum probe\n" +
 			"rate. Exit 0 if valid, 2 with per-key errors otherwise.",
@@ -136,9 +137,10 @@ func sweepTime(seconds float64) string {
 func (a *app) configShowCmd() *cobra.Command {
 	var sources bool
 	c := &cobra.Command{
-		Use:   "show",
-		Short: "Show the effective configuration after merging defaults, file, env and flags",
-		Args:  cobra.NoArgs,
+		Use:     "show",
+		Short:   "Show the effective configuration after merging defaults, file, env and flags",
+		Example: "  sudo lan-sentinel config show --sources",
+		Args:    cobra.NoArgs,
 		RunE: func(*cobra.Command, []string) error {
 			l, loadErr := a.load()
 			if l == nil {
@@ -198,8 +200,9 @@ func (a *app) showSources(l *config.Loaded) error {
 
 func (a *app) configReloadCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "reload",
-		Short: "Make the running daemon re-read its configuration file",
+		Use:     "reload",
+		Short:   "Make the running daemon re-read its configuration file",
+		Example: "  sudo lan-sentinel config reload",
 		Long: "Makes the daemon re-read the configuration file it was started with (--config\n" +
 			"does not change which), as systemctl reload does, and prints what took effect.\n" +
 			"Probes, each interface's active settings, intervals, thresholds and the log\n" +

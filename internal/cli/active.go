@@ -24,9 +24,10 @@ func (a *app) activeCmd() *cobra.Command {
 	c := &cobra.Command{Use: "active", Short: "Active-discovery kill switch"}
 	var reason string
 	disable := &cobra.Command{
-		Use:   "disable",
-		Short: "Kill switch: stop all active probing now; persists across restarts",
-		Args:  cobra.NoArgs,
+		Use:     "disable",
+		Short:   "Kill switch: stop all active probing now; persists across restarts",
+		Example: "  sudo lan-sentinel active disable --reason maintenance",
+		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if a.g.offline {
 				return failf(ExitUsage, "%s needs the running daemon; it does not work with --offline", cmd.CommandPath())
@@ -47,8 +48,9 @@ func (a *app) activeCmd() *cobra.Command {
 
 	var enableReason string
 	enable := &cobra.Command{
-		Use:   "enable",
-		Short: "Clear the kill switch",
+		Use:     "enable",
+		Short:   "Clear the kill switch",
+		Example: "  sudo lan-sentinel active enable",
 		Long: "Clears the kill switch. It fails (exit 2) while LAN_SENTINEL_ACTIVE_DISABLED=1\n" +
 			"is set, and does not override per-interface active.enabled: false.",
 		Args: cobra.NoArgs,
@@ -110,8 +112,9 @@ func (a *app) scanCmd() *cobra.Command {
 	c := &cobra.Command{Use: "scan", Short: "Operator scans, bound by the active-discovery safety controls"}
 	var pf scanFlags
 	plan := &cobra.Command{
-		Use:   "plan",
-		Short: "Dry run: what a scan would do, sending nothing",
+		Use:     "plan",
+		Short:   "Dry run: what a scan would do, sending nothing",
+		Example: "  sudo lan-sentinel scan plan --interface eth0",
 		Long: "Prints targets, probes, rates, the estimate and the verdict. Exit 0 if the\n" +
 			"scan is allowed, 2 if refused. Online the daemon computes the plan; with\n" +
 			"--offline it comes from the config file, the persisted kill switch and the\n" +
@@ -142,8 +145,9 @@ func (a *app) scanCmd() *cobra.Command {
 
 	var rf scanFlags
 	run := &cobra.Command{
-		Use:   "run",
-		Short: "Operator-triggered scan, bound by the same safety controls",
+		Use:     "run",
+		Short:   "Operator-triggered scan, bound by the same safety controls",
+		Example: "  sudo lan-sentinel scan run --interface eth0 --arp",
 		Long: "Computes the same plan as scan plan, prints it and refuses (exit 2) if the\n" +
 			"plan does. Otherwise the daemon runs it through its budgets: per interface\n" +
 			"the ARP sweep first, then ICMP, TCP and UDP on the known hosts and the ARP\n" +

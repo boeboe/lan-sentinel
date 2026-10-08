@@ -19,7 +19,7 @@ interfaces:
   #     # identify:                                  # name only the probes this interface may send (once per MAC)
   #     #   - { name: modbus }                       # FC 43/14 on tcp/502; unit_id from active.identify.probes
   #     #   - { name: http }                         # GET / on tcp/80
-  #     #   - { name: tls }                          # certificate on tcp/443, no SNI
+  #     #   - { name: tls }                          # certificate on tcp/443; add sni: auto to send preferred_name when it is a DNS name
   #     #   - { name: snmp, community: public }      # one GetRequest on udp/161; community is required (no compiled default)
   #     #   - { name: ssh-banner }                   # one server line on tcp/22; no client banner, no KEX
   #     #   - { name: telnet }                       # IAC refuse only on tcp/23
@@ -45,6 +45,7 @@ passive:
 #     host_max_age: 30m                                          # open binding must be this fresh
 #     probes:
 #       modbus: { unit_id: 1 }                                   # 1–255; 0 is rejected
+#       tls: { sni: auto }                                       # off unless set; auto sends preferred_name when it is a DNS name
 #       snmp: { community: public }                              # required when an interface names snmp; sent in the clear; no compiled default
 
 storage:

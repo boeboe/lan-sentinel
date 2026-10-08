@@ -36,7 +36,7 @@ func validationErrors(t *testing.T, yml string) []FieldError {
 }
 
 func TestIdentifyNamesAllowed(t *testing.T) {
-	yml := minimal + "    active: { identify: [{name: http}, {name: tls}, {name: snmp, community: public}, {name: ssh-banner}, {name: telnet}, {name: ftp}] }\n"
+	yml := minimal + "    active: { identify: [{name: http}, {name: tls, sni: auto}, {name: snmp, community: public}, {name: ssh-banner}, {name: telnet}, {name: ftp}] }\n"
 	l := mustLoad(t, yml, LoadOptions{})
 	if n := len(l.Config.Interfaces[0].Active.Identify); n != 6 {
 		t.Fatalf("identify = %d", n)
@@ -46,6 +46,12 @@ func TestIdentifyNamesAllowed(t *testing.T) {
 	}
 	if got := Defaults().Active.Identify.CommunityOf(InterfaceIdentify{Name: "snmp"}); got != "" {
 		t.Errorf("compiled community = %q, want empty", got)
+	}
+	if got := l.Config.Active.Identify.SNIModeOf(l.Config.Interfaces[0].Active.Identify[1]); got != SNIModeAuto {
+		t.Errorf("tls sni = %q", got)
+	}
+	if got := Defaults().Active.Identify.SNIModeOf(InterfaceIdentify{Name: "tls"}); got != "" {
+		t.Errorf("compiled sni = %q, want empty", got)
 	}
 }
 

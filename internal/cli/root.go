@@ -135,6 +135,7 @@ func (a *app) newRoot() *cobra.Command {
 		Use:           "lan-sentinel",
 		Short:         "Persistent, interface-aware host inventory for OT networks",
 		Long:          "LAN Sentinel keeps a historical inventory of the hosts on local networks.\nThe same binary is the daemon, the CLI client, the database inspector and the scanner.",
+		Example:       "  sudo lan-sentinel hosts list --active\n  sudo lan-sentinel hosts show 192.168.0.99",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		PersistentPreRunE: func(*cobra.Command, []string) error {

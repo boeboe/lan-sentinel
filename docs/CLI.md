@@ -47,7 +47,7 @@ The daemon runs as root with `UMask=0027` and the data directory is `0750 root:r
 | `daemon status` | Version, platform, PID, uptime, DB health, interfaces, host counts, kill-switch state, clock synchronisation, last scan, and per-interface collector state (`running`/`disabled`/`unsupported`/`failed`, backend or error); for each probe its last periodic pass, e.g. `arp running afpacket last pass 2m ago: 253 swept, 14 replied (26 s)` (blocked probes and `cut short` when they apply). Passes are shown here only, never logged | `-o json`; `--quiet` exit codes | 3 |
 | `hosts list` | Inventory: MAC, IP, hostname, vendor, device type, interface, presence, last seen, description. `--active`: live hosts (ACTIVE or RECENT); `--stale`: the others (STALE or MISSING); `--port`: an OPEN service on that port; `--vendor`: substring of vendor or manufacturer; `--device`: substring of the device type (the most confident identification, `DATA_MODEL.md` §5.7); `--description`: substring of the description | `--interface`, `--active`, `--stale`, `--vendor`, `--device`, `--description`, `--port`, `--seen-within` | 3 (device type from 6) |
 | `hosts show <query>` | Full record of one current host: the device type, the description and the current identifications (most confident first per field, with last seen). The query is the same as `hosts find` and must match exactly one current host | `--interface`, `--ip`/`--mac`/`--hostname`/`--id` | 3 (identification from 6) |
-| `identify run <host> --probe NAME` | Force one more identification probe on a host (bypasses only the once-per-MAC latch; the kill switch, budget and freshness rule still apply). Names: `modbus`, `http`, `tls`, `snmp`, `ssh-banner`, `telnet`, `ftp` | `--interface`, `--ip`/`--mac`/`--hostname`/`--id`, `--probe` (required) | 6 |
+| `identify run <host> --probe NAME` | Force identification probes on a host (bypasses only the once-per-MAC latch; the kill switch, budget and freshness rule still apply). `--probe` is `all` (the probes enabled on the host's interface), one name, or a comma-separated list: `modbus`, `http`, `tls`, `snmp`, `ssh-banner`, `telnet`, `ftp` | `--interface`, `--ip`/`--mac`/`--hostname`/`--id`, `--probe` (required), `--sni NAME` (when tls is in the list) | 6 |
 | `hosts find <query>` | Current or point-in-time holder(s) with addresses, names and services and their sources; exit 1 when nothing matches | `--interface`, `--at <time>`, `--ip`/`--mac`/`--hostname`/`--id` | 3 |
 | `hosts history <query>` | Event timeline for a host, MAC, IP or name | `--interface`, `--since`, `--until`, `--ip`/`--mac`/`--hostname`/`--id` | 3 |
 | `hosts set <host> --description TEXT` | Set or replace a host's description (one line, at most 200 characters); the host resolved like `hosts find` to exactly one current host | `--interface`, `--ip`/`--mac`/`--hostname`/`--id`, `-o json` | 5 |
@@ -104,7 +104,7 @@ For a MAC or name query, `--at` shows the host and the addresses and names in ef
 
 ### `hosts evidence`
 
-For each attribute (each address, name, service, identification) the sources that confirmed it, with first/last seen per source (from `address_sources` and roll-ups) and observation counts within roll-up retention. Identifications are all listed, weaker and earlier claims included, each with its confidence and evidence; `*` marks the value each source holds now (`hosts show` lists only those, `DATA_MODEL.md` §5.7). Then the host's events with their `evidence_json` snapshots, which remain after raw observations are pruned.
+For each attribute (each address, name, service, identification) the sources that confirmed it, with first/last seen per source (from `address_sources` and roll-ups) and observation counts within roll-up retention. Identifications are grouped by source; weaker and earlier claims are included, with `*` on the value each source holds now (`hosts show` lists only those, `DATA_MODEL.md` §5.7). Then the host's events with their `evidence_json` snapshots, which remain after raw observations are pruned.
 
 ### `observations list`
 
@@ -137,7 +137,7 @@ Computes the same plan, prints it, and refuses (exit 2) if `scan plan` would. Ot
 
 ### `identify run`
 
-`identify run <host> --probe NAME` sends one identification probe to a host that has already been attempted, or that the scheduled look has not reached yet (ADR 0011). The host is resolved as for `hosts set` (exactly one current host). `--probe` is one of `modbus`, `http`, `tls`, `snmp`, `ssh-banner`, `telnet`, `ftp`. The command goes through the daemon and bypasses only the once-per-MAC latch; the kill switch, budget, excludes, configured networks and the fresh unambiguous-binding rule still apply. If those refuse, nothing is sent and the existing attempt row stays (exit 2). A send is recorded as `IDENTIFY_RAN` with the calling user. Offline is exit 64. `-o json` prints the attempt (`probe`, `result`, `trigger`, `actor`).
+`identify run <host> --probe NAME` sends identification probes to a host that has already been attempted, or that the scheduled look has not reached yet (ADR 0011). The host is resolved as for `hosts set` (exactly one current host). `--probe` is `all` (the probes the running configuration enables on the host's interface, `interfaces[].active.identify`, in catalogue order; none enabled is exit 2), one of `modbus`, `http`, `tls`, `snmp`, `ssh-banner`, `telnet`, `ftp`, or a comma-separated list of those names (`http,tls,telnet`; spaces around commas are allowed; duplicates keep the first; `all` cannot be mixed with other names). `--sni NAME` is valid when `tls` is in the list (with `all`, when `tls` is enabled on the interface) and sends that DNS name on the tls exchange even when config is empty (ADR 0011: SNI is off by default). A name that is not a DNS name (has a dot, RFC 1123 labels, not an IP) is exit 64. Without `--sni`, `sni: auto` sends `preferred_name` when it is a DNS name. Each name is sent as its own exchange. A listed name that is not enabled on the interface, or that the kill switch, budget, excludes, configured networks or the fresh unambiguous-binding rule refuse, prints `not sent` and the others still run; exit 2 only when none were sent. Any other failure (the daemon unreachable, say) stops the run with its exit code, after printing the attempts already made, in JSON too. A send is recorded as `IDENTIFY_RAN` with the calling user. Offline is exit 64. `-o json` prints an array of attempts (`probe`, `result`, `trigger`, `actor`; `error` when that name was not sent).
 
 ### Time arguments
 
@@ -214,7 +214,8 @@ Services:
   tcp/502  OPEN        1h ago
 
 Identification:
-  manufacturer=Siemens AG  oui  confidence 0.70
+  oui  (0.70)  2h ago
+    manufacturer  Siemens AG
 ```
 
 ```bash
@@ -275,7 +276,9 @@ Addresses:
       passive_arp      first 2026-10-01 13:00:00  last 2026-10-01 13:00:00
 
 Identification:
-  manufacturer=Weintek Labs. Inc.  oui  confidence 0.70  {"mac":"00:0c:26:aa:bb:03","registry":"IEEE"}
+  oui  (0.70)  3h ago
+    *manufacturer  Weintek Labs. Inc.  {"mac":"00:0c:26:aa:bb:03","registry":"IEEE"}
+  (* current: the value each source holds now)
 
 Observations (raw and roll-ups):
   passive_arp      192.168.110.51        1  first 2026-10-01 13:00:00  last 2026-10-01 13:00:00

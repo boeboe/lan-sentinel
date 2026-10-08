@@ -27,13 +27,14 @@ var ErrUnreachable = errors.New("daemon unreachable")
 type Error struct {
 	Status  int
 	Message string
+	Code    string // the body's code, when the server sets one
 	Body    []byte // the raw answer
 }
 
 func (e *Error) Error() string { return e.Message }
 
-// Unwrap maps 404 and 400 to the store's errors and 422 to
-// ErrConfigRejected.
+// Unwrap maps 404 and 400 to the store's errors, 422 to
+// ErrConfigRejected, and a 409 identify refusal to ErrIdentifyRefused.
 func (e *Error) Unwrap() error {
 	switch e.Status {
 	case http.StatusNotFound:
@@ -42,6 +43,10 @@ func (e *Error) Unwrap() error {
 		return store.ErrBadQuery
 	case http.StatusUnprocessableEntity:
 		return ErrConfigRejected
+	case http.StatusConflict:
+		if e.Code == CodeIdentifyRefused {
+			return ErrIdentifyRefused
+		}
 	}
 	return nil
 }
@@ -102,7 +107,7 @@ func (c *Client) send(ctx context.Context, hc *http.Client, method, path string,
 		if json.Unmarshal(raw, &body) != nil || body.Error == "" {
 			body.Error = resp.Status
 		}
-		return nil, &Error{Status: resp.StatusCode, Message: body.Error, Body: raw}
+		return nil, &Error{Status: resp.StatusCode, Message: body.Error, Code: body.Code, Body: raw}
 	}
 	return resp, nil
 }
@@ -139,9 +144,9 @@ func (c *Client) EnableActive(ctx context.Context, reason string) (store.ActiveS
 }
 
 // IdentifyRun sends one identification probe through the daemon.
-func (c *Client) IdentifyRun(ctx context.Context, hostID, probe string) (store.IdentifyAttempt, error) {
+func (c *Client) IdentifyRun(ctx context.Context, hostID, probe, sni string) (store.IdentifyAttempt, error) {
 	var a store.IdentifyAttempt
-	err := c.post(ctx, c.http, "/v1/hosts/"+url.PathEscape(hostID)+"/identify", IdentifyRequest{Probe: probe}, &a)
+	err := c.post(ctx, c.http, "/v1/hosts/"+url.PathEscape(hostID)+"/identify", IdentifyRequest{Probe: probe, SNI: sni}, &a)
 	return a, err
 }
 

@@ -20,8 +20,9 @@ import (
 
 func (a *app) daemonStatusCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "status",
-		Short: "Daemon health, interfaces and per-interface collector state",
+		Use:     "status",
+		Short:   "Daemon health, interfaces and per-interface collector state",
+		Example: "  sudo lan-sentinel daemon status",
 		Long: "Exit 0 when healthy, 1 when degraded (a configured collector is not running),\n" +
 			"2 when unhealthy (the database does not answer), 3 when the daemon is\n" +
 			"unreachable. --quiet prints nothing.",
@@ -137,9 +138,10 @@ func (a *app) watchCmd() *cobra.Command {
 	var types []string
 	var port int
 	c := &cobra.Command{
-		Use:   "watch",
-		Short: "Live event stream (Ctrl-C to stop)",
-		Args:  cobra.NoArgs,
+		Use:     "watch",
+		Short:   "Live event stream (Ctrl-C to stop)",
+		Example: "  sudo lan-sentinel watch --interface eth0",
+		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if err := onlyFormats(a.g.output, "table", "jsonl", "json"); err != nil {
 				return err
@@ -174,9 +176,10 @@ func (a *app) watchCmd() *cobra.Command {
 func (a *app) dbCmd() *cobra.Command {
 	c := &cobra.Command{Use: "db", Short: "Inspect the database"}
 	c.AddCommand(&cobra.Command{
-		Use:   "info",
-		Short: "Path, schema version, journal mode, size, WAL size, row counts",
-		Args:  cobra.NoArgs,
+		Use:     "info",
+		Short:   "Path, schema version, journal mode, size, WAL size, row counts",
+		Example: "  sudo lan-sentinel db info",
+		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if err := onlyFormats(a.g.output, "table", "json"); err != nil {
 				return err
@@ -205,9 +208,10 @@ func (a *app) dbCmd() *cobra.Command {
 			})
 		},
 	}, &cobra.Command{
-		Use:   "check",
-		Short: "SQLite integrity check (exit 2 if it fails)",
-		Args:  cobra.NoArgs,
+		Use:     "check",
+		Short:   "SQLite integrity check (exit 2 if it fails)",
+		Example: "  sudo lan-sentinel db check",
+		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if err := onlyFormats(a.g.output, "table", "json"); err != nil {
 				return err

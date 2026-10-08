@@ -41,6 +41,8 @@ type control struct {
 	scanErr   error
 	reload    api.ReloadResult
 	described map[string]string
+	refuse    map[string]bool  // identify run: probes refused (api.ErrIdentifyRefused)
+	fail      map[string]error // identify run: probes that fail otherwise
 }
 
 // DescribeHost records the call; described maps host IDs to descriptions.
@@ -55,9 +57,14 @@ func (c *control) DescribeHost(_ context.Context, _, hostID, description string)
 	return store.HostSummary{HostID: hostID, MAC: "00:1b:1b:aa:bb:01", Interface: "eth1", Description: description}, nil
 }
 
-func (c *control) IdentifyRun(_ context.Context, _, _, probe string) (store.IdentifyAttempt, error) {
-	if c.err != nil {
+func (c *control) IdentifyRun(_ context.Context, _, _, probe, _ string) (store.IdentifyAttempt, error) {
+	switch {
+	case c.err != nil:
 		return store.IdentifyAttempt{}, c.err
+	case c.refuse[probe]:
+		return store.IdentifyAttempt{}, fmt.Errorf("%w: %s is not enabled on eth1", api.ErrIdentifyRefused, probe)
+	case c.fail[probe] != nil:
+		return store.IdentifyAttempt{}, c.fail[probe]
 	}
 	return store.IdentifyAttempt{Probe: probe, Result: "ok", Trigger: "operator"}, nil
 }

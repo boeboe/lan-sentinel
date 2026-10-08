@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -9,6 +10,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"lan-sentinel/internal/api"
+	"lan-sentinel/internal/events"
 	"lan-sentinel/internal/store"
 )
 
@@ -18,8 +20,9 @@ func (a *app) observationsCmd() *cobra.Command {
 	var since, until string
 	var rollups bool
 	list := &cobra.Command{
-		Use:   "list",
-		Short: "Raw observations within retention; hourly roll-ups with --rollups",
+		Use:     "list",
+		Short:   "Raw observations within retention; hourly roll-ups with --rollups",
+		Example: "  sudo lan-sentinel observations list --since 1h",
 		Long: "List the latest observations (default 1000) in time order. Observations older\n" +
 			"than raw retention exist only as hourly roll-ups (--rollups): one row per host,\n" +
 			"source, MAC, IP and hour, with a count.",
@@ -103,6 +106,17 @@ func (a *app) rollupsTable(rs []store.Rollup) error {
 	return a.listOut(header, rows, rs, func() error { return writeJSONL(a.output(), rs) })
 }
 
+// eventNames are the CLI names of every event type, sorted, for errors:
+// operators have no docs on the box.
+func eventNames() []string {
+	var names []string
+	for _, s := range events.All() {
+		names = append(names, s.CLIName)
+	}
+	slices.Sort(names)
+	return names
+}
+
 // eventTypes resolves --type values (CLI or spec names) to spec names.
 func eventTypes(names []string) ([]string, error) {
 	var out []string
@@ -110,7 +124,7 @@ func eventTypes(names []string) ([]string, error) {
 		for _, n := range strings.Split(v, ",") {
 			t, ok := api.EventType(n)
 			if !ok {
-				return nil, failf(ExitUsage, "--type: unknown event type %q (see docs/DATA_MODEL.md §7)", n)
+				return nil, failf(ExitUsage, "--type: unknown event type %q; one of: %s", n, strings.Join(eventNames(), ", "))
 			}
 			out = append(out, string(t))
 		}
@@ -124,9 +138,10 @@ func (a *app) eventsCmd() *cobra.Command {
 	var since, until string
 	var types []string
 	list := &cobra.Command{
-		Use:   "list",
-		Short: "All events on this box",
-		Args:  cobra.NoArgs,
+		Use:     "list",
+		Short:   "All events on this box",
+		Example: "  sudo lan-sentinel events list --type ip-changed --since 24h",
+		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			tf := &timeFlags{a: a}
 			f.Since, f.Until = tf.ago("since", since), tf.at("until", until)
@@ -162,9 +177,10 @@ func (a *app) servicesCmd() *cobra.Command {
 	c := &cobra.Command{Use: "services", Short: "Probe results"}
 	var f store.ServiceFilter
 	list := &cobra.Command{
-		Use:   "list",
-		Short: "Probe results per host and port",
-		Args:  cobra.NoArgs,
+		Use:     "list",
+		Short:   "Probe results per host and port",
+		Example: "  sudo lan-sentinel services list --interface eth0",
+		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return a.run(cmd, false, func(ctx context.Context, b backend) error {
 				svc, err := b.Services(ctx, f)
@@ -196,8 +212,9 @@ func (a *app) dhcpCmd() *cobra.Command {
 	c := &cobra.Command{Use: "dhcp", Short: "DHCP servers seen on the interfaces"}
 	var f store.DHCPServerFilter
 	servers := &cobra.Command{
-		Use:   "servers",
-		Short: "DHCP servers: identity, relay, sender, allowlist verdict and what they advertise",
+		Use:     "servers",
+		Short:   "DHCP servers: identity, relay, sender, allowlist verdict and what they advertise",
+		Example: "  sudo lan-sentinel dhcp servers",
 		Long: "Lists every DHCP server identity (option 54) seen in a reply, per interface, relay\n" +
 			"and sender MAC (the server's, or the relay's). STATUS is the allowlist verdict at the\n" +
 			"last reply: allowed, unexpected, or unchecked when the interface has no allowlist\n" +
@@ -244,9 +261,10 @@ func (a *app) dhcpCmd() *cobra.Command {
 func (a *app) interfacesCmd() *cobra.Command {
 	c := &cobra.Command{Use: "interfaces", Short: "Monitored interfaces"}
 	c.AddCommand(&cobra.Command{
-		Use:   "list",
-		Short: "State, MAC, current prefixes, passive/active per interface",
-		Args:  cobra.NoArgs,
+		Use:     "list",
+		Short:   "State, MAC, current prefixes, passive/active per interface",
+		Example: "  sudo lan-sentinel interfaces list",
+		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return a.run(cmd, false, func(ctx context.Context, b backend) error {
 				ifs, err := b.Interfaces(ctx)

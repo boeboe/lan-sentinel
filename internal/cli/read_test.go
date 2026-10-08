@@ -203,8 +203,8 @@ func TestReadCommands(t *testing.T) {
 		t.Errorf("--device printer lists %s:\n%s", b, out)
 	}
 	// hosts show has the current claims, hosts evidence all of them.
-	if !strings.Contains(out, "Device:      Printer\n") || !strings.Contains(out, "  device_type=Printer  mdns  confidence 0.70  5h ago\n") ||
-		strings.Contains(out, "Media player") {
+	if !strings.Contains(out, "Device:      Printer\n") || !strings.Contains(out, "  mdns  (0.70)  5h ago\n") ||
+		!strings.Contains(out, "device_type   Printer\n") || strings.Contains(out, "Media player") {
 		t.Errorf("hosts show identification:\n%s", out)
 	}
 	// The query is the same as hosts find: IP, MAC, or an explicit --ip.
@@ -222,7 +222,7 @@ func TestReadCommands(t *testing.T) {
 		t.Errorf("hosts show miss: %d %s", code, stderr)
 	}
 	_, out, _ = f.run(t, "hosts", "evidence", hosts[a], "--since", "30d")
-	if !strings.Contains(out, " *device_type=Printer  mdns  confidence 0.70") || !strings.Contains(out, "  device_type=Media player  mdns  confidence 0.60") ||
+	if !strings.Contains(out, "*device_type   Printer") || !strings.Contains(out, "device_type   Media player") ||
 		!strings.Contains(out, "(* current: the value each source holds now)") {
 		t.Errorf("hosts evidence identification:\n%s", out)
 	}
@@ -287,8 +287,8 @@ func TestOfflineAndUsage(t *testing.T) {
 		{"bad since", []string{"events", "list", "--since", "soon"}, ExitUsage, "", "--since"},
 		{"bad until", []string{"observations", "list", "--until", "later"}, ExitUsage, "", "--until"},
 		{"bad seen-within", []string{"hosts", "list", "--seen-within", "x"}, ExitUsage, "", "--seen-within"},
-		{"bad type", []string{"events", "list", "--type", "nonsense"}, ExitUsage, "", "unknown event type"},
-		{"bad watch type", []string{"watch", "--type", "nonsense"}, ExitUsage, "", "unknown event type"},
+		{"bad type", []string{"events", "list", "--type", "nonsense"}, ExitUsage, "", `unknown event type "nonsense"; one of: `},
+		{"bad watch type", []string{"watch", "--type", "nonsense"}, ExitUsage, "", ", ip-changed, "},
 		{"record csv", []string{"-o", "csv", "hosts", "find", "x"}, ExitUsage, "", "not supported"},
 		{"status csv", []string{"-o", "csv", "daemon", "status"}, ExitUsage, "", "not supported"},
 		{"db csv", []string{"-o", "csv", "db", "info"}, ExitUsage, "", "not supported"},

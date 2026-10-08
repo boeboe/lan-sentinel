@@ -47,6 +47,7 @@ active:
     host_max_age: 30m
     probes:
       modbus: { unit_id: 1 }
+      tls: { sni: auto }            # off unless set; auto sends preferred_name when it is a DNS name
       snmp: { community: public }   # required when an interface names snmp; no compiled default
 profiles:
   modbus:

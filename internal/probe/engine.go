@@ -74,6 +74,7 @@ type IdentifyJob struct {
 	Probe     string
 	UnitID    uint8
 	Community string
+	SNI       string // resolved ClientHello name; empty sends none
 	Force     bool
 	Trigger   string // scheduled or operator
 	Actor     string // SO_PEERCRED caller of identify run; empty when scheduled

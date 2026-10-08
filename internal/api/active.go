@@ -33,12 +33,13 @@ type Control interface {
 	// IdentifyRun sends one identification probe. It bypasses only the
 	// once-per-MAC latch (ADR 0011). ErrIdentifyRefused when nothing was
 	// sent; store.ErrNotFound for an unknown host.
-	IdentifyRun(ctx context.Context, actor, hostID, probe string) (store.IdentifyAttempt, error)
+	IdentifyRun(ctx context.Context, actor, hostID, probe, sni string) (store.IdentifyAttempt, error)
 }
 
 // IdentifyRequest is the body of /v1/hosts/{id}/identify.
 type IdentifyRequest struct {
 	Probe string `json:"probe"`
+	SNI   string `json:"sni,omitempty"`
 }
 
 // DescriptionRequest is the body of /v1/hosts/{id}/description.
@@ -98,7 +99,7 @@ func postOnly(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			w.Header().Set("Allow", "POST")
-			writeJSON(w, http.StatusMethodNotAllowed, errorBody{r.Method + " is not allowed"})
+			writeJSON(w, http.StatusMethodNotAllowed, errorBody{Error: r.Method + " is not allowed"})
 			return
 		}
 		h(w, r)
@@ -116,16 +117,19 @@ func decode(r *http.Request, v any) error {
 
 func (s *Server) control(w http.ResponseWriter) bool {
 	if s.o.Control == nil {
-		writeJSON(w, http.StatusServiceUnavailable, errorBody{"operator requests are not available"})
+		writeJSON(w, http.StatusServiceUnavailable, errorBody{Error: "operator requests are not available"})
 		return false
 	}
 	return true
 }
 
 func (s *Server) controlFail(w http.ResponseWriter, err error) {
-	if errors.Is(err, ErrForced) || errors.Is(err, ErrNoScanner) || errors.Is(err, scheduler.ErrScanRunning) ||
-		errors.Is(err, ErrIdentifyRefused) {
-		writeJSON(w, http.StatusConflict, errorBody{err.Error()})
+	if errors.Is(err, ErrIdentifyRefused) {
+		writeJSON(w, http.StatusConflict, errorBody{Error: err.Error(), Code: CodeIdentifyRefused})
+		return
+	}
+	if errors.Is(err, ErrForced) || errors.Is(err, ErrNoScanner) || errors.Is(err, scheduler.ErrScanRunning) {
+		writeJSON(w, http.StatusConflict, errorBody{Error: err.Error()})
 		return
 	}
 	s.fail(w, err)
@@ -230,7 +234,7 @@ func (s *Server) configReload(w http.ResponseWriter, r *http.Request) {
 	res, err := s.o.Control.ReloadConfig(r.Context(), actor(r))
 	switch {
 	case errors.Is(err, ErrConfigRejected):
-		writeJSON(w, http.StatusUnprocessableEntity, errorBody{err.Error()})
+		writeJSON(w, http.StatusUnprocessableEntity, errorBody{Error: err.Error()})
 	case err != nil:
 		s.controlFail(w, err)
 	default:
@@ -286,7 +290,19 @@ func (s *Server) hostIdentify(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, badParam{fmt.Sprintf("probe must be one of %v, got %q", config.IdentifyProbeNames, req.Probe)})
 		return
 	}
-	a, err := s.o.Control.IdentifyRun(r.Context(), actor(r), r.PathValue("id"), req.Probe)
+	if req.SNI != "" {
+		if req.Probe != "tls" {
+			s.fail(w, badParam{"sni applies only to probe tls"})
+			return
+		}
+		n, ok := config.SNIName(req.SNI)
+		if !ok {
+			s.fail(w, badParam{fmt.Sprintf("sni must be a DNS name (has a dot, not an IP), got %q", req.SNI)})
+			return
+		}
+		req.SNI = n
+	}
+	a, err := s.o.Control.IdentifyRun(r.Context(), actor(r), r.PathValue("id"), req.Probe, req.SNI)
 	if err != nil {
 		s.controlFail(w, err)
 		return

@@ -41,14 +41,17 @@ import (
 // frame is one frame the runner sent, as the counter saw it.
 type frame struct {
 	at   time.Time
-	kind string // arp, arp-reply, arp-announce, icmp, tcp-syn, tcp, udp-probe, ipv4
+	kind string // arp, arp-reply, arp-announce, arp-unicast, icmp, tcp-syn, tcp, udp-probe, ipv4
 	dst  netip.Addr
 }
 
 // probe reports whether the frame is probe traffic: what the engines send
 // and the ARP the kernel sends to resolve probed hosts, not the kernel's
-// ARP replies to other hosts or Docker's gratuitous ARP for the runner.
-func (f frame) probe() bool { return f.kind != "arp-reply" && f.kind != "arp-announce" }
+// ARP replies to other hosts, its unicast re-checks of cached neighbours,
+// or Docker's gratuitous ARP for the runner.
+func (f frame) probe() bool {
+	return f.kind != "arp-reply" && f.kind != "arp-announce" && f.kind != "arp-unicast"
+}
 
 // counter records every IPv4 and ARP frame the runner sends on an
 // interface, with kernel timestamps, from an AF_PACKET ring without a
@@ -145,6 +148,14 @@ func classify(data []byte, own net.HardwareAddr) (frame, bool) {
 				f.kind = "arp-reply"
 			case bytes.Equal(arp.SourceProtAddress, arp.DstProtAddress):
 				f.kind = "arp-announce" // gratuitous: the runner's own address
+			case !bytes.Equal(eth.DstMAC, layers.EthernetBroadcast):
+				// The kernel re-checking a neighbour it has cached sends
+				// unicast requests to the known MAC, seconds after traffic
+				// to it (here capcheck's, before this test). The sweep only
+				// broadcasts, and the kernel's ARP is not budgeted
+				// (ARCHITECTURE.md §5); counting it once put an 11th
+				// "request" in a second of a 10 pps sweep.
+				f.kind = "arp-unicast"
 			}
 		case layers.LayerTypeIPv4:
 			f.kind, f.dst = "ipv4", netip.AddrFrom4([4]byte(ip4.DstIP.To4()))
@@ -556,7 +567,7 @@ logging: { format: text }
 		}
 	}
 	host := slices.Sorted(maps.Keys(tried))[0]
-	if _, err := l.client.IdentifyRun(ctx, host, "modbus"); statusNet(err) != 409 {
+	if _, err := l.client.IdentifyRun(ctx, host, "modbus", ""); statusNet(err) != 409 {
 		t.Errorf("identify run with kill switch: %v", err)
 	}
 	if _, err := l.client.EnableActive(ctx, "test done"); err != nil { // commits again
@@ -567,7 +578,7 @@ logging: { format: text }
 	}
 	// identify run is the only retry; it answers once its attempt is
 	// committed.
-	a, err := l.client.IdentifyRun(ctx, host, "modbus")
+	a, err := l.client.IdentifyRun(ctx, host, "modbus", "")
 	if err != nil {
 		t.Fatalf("identify run retry: %v\n%s", err, l.log)
 	}

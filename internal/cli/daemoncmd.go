@@ -20,9 +20,10 @@ func (a *app) daemonCmd() *cobra.Command {
 
 func (a *app) daemonRunCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "run",
-		Short: "Run the service in the foreground (systemd owns the process)",
-		Args:  cobra.NoArgs,
+		Use:     "run",
+		Short:   "Run the service in the foreground (systemd owns the process)",
+		Example: "  sudo lan-sentinel daemon run --config /etc/lan-sentinel/config.yaml",
+		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			err := daemon.Run(cmd.Context(), daemon.Options{
 				Load:             a.loadOptions(),

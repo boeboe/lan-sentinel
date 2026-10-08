@@ -638,6 +638,7 @@ func (s *Scheduler) identifyPass(ctx context.Context, cfg *config.Config, ic con
 				HostID: c.HostID, IP: c.IP, Probe: e.Name,
 				UnitID:    uint8(cfg.Active.Identify.UnitIDOf(e)), //nolint:gosec // validated 1–255
 				Community: cfg.Active.Identify.CommunityOf(e),
+				SNI:       config.ResolveSNI(cfg.Active.Identify.SNIModeOf(e), c.PreferredName, ""),
 				Trigger:   observation.TriggerScheduled,
 			})
 		}

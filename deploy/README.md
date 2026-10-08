@@ -69,6 +69,8 @@ From the release that adds identification probes (ADR 0011, migrations `0008_ide
 
 The TLS probe completes a TLS 1.2 or 1.3 handshake (`BudgetCost` 7, no SNI, X25519 and P-256 only). A host already recorded as `tls` `malformed` from the earlier ClientHello-only exchange stays latched; retry it with `sudo lan-sentinel identify run <host> --probe tls`.
 
+`identify run` takes several probes from the release that adds `--probe all` (the probes enabled on the host's interface) and comma lists (`--probe http,tls`), with `--sni NAME` for tls. Its `-o json` output is now an array with one entry per probe, not a single object: a script that read `.result` reads `.[0].result`. SNI stays off unless an interface sets `{name: tls, sni: auto}` or `identify run --sni` names it.
+
 To roll back, stop the service, put the previous binary and the copied database back, and start it. `lan-sentinel --offline` refuses a database whose schema differs from the binary's until the daemon has migrated it.
 
 ## Cutting a release

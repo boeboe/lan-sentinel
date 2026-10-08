@@ -1270,11 +1270,12 @@ const (
 // IdentifyCandidate is an open IPv4 binding considered for an
 // identification probe. Suppress is empty when the address is eligible.
 type IdentifyCandidate struct {
-	HostID    string
-	IP        netip.Addr
-	LastSeen  time.Time
-	Suppress  string
-	Attempted bool
+	HostID        string
+	IP            netip.Addr
+	LastSeen      time.Time
+	PreferredName string
+	Suppress      string
+	Attempted     bool
 }
 
 // IdentifyTargets lists open IPv4 bindings on iface for one probe, with
@@ -1282,7 +1283,7 @@ type IdentifyCandidate struct {
 func (r *Reader) IdentifyTargets(ctx context.Context, iface, probe string, since time.Time) ([]IdentifyCandidate, error) {
 	var out []IdentifyCandidate
 	err := r.read(ctx, func(tx *sql.Tx) error {
-		rows, err := tx.QueryContext(ctx, `SELECT h.host_id, a.ip, a.last_seen, a.conflict,
+		rows, err := tx.QueryContext(ctx, `SELECT h.host_id, a.ip, a.last_seen, coalesce(h.preferred_name, ''), a.conflict,
 			(SELECT count(*) FROM addresses o WHERE o.context_id = a.context_id AND o.ip = a.ip AND o.ended_at IS NULL) AS holders,
 			EXISTS(SELECT 1 FROM identifications i WHERE i.host_id = h.host_id AND i.field = 'proxy_arp' AND i.value = 'true') AS proxy,
 			EXISTS(SELECT 1 FROM identify_attempts t WHERE t.host_id = h.host_id AND t.probe = ?) AS attempted
@@ -1296,17 +1297,17 @@ func (r *Reader) IdentifyTargets(ctx context.Context, iface, probe string, since
 		}
 		defer rows.Close()
 		for rows.Next() {
-			var hid, ip string
+			var hid, ip, preferred string
 			var last int64
 			var conflict, holders, proxy, attempted int
-			if err := rows.Scan(&hid, &ip, &last, &conflict, &holders, &proxy, &attempted); err != nil {
+			if err := rows.Scan(&hid, &ip, &last, &preferred, &conflict, &holders, &proxy, &attempted); err != nil {
 				return err
 			}
 			addr, err := netip.ParseAddr(ip)
 			if err != nil {
 				continue
 			}
-			c := IdentifyCandidate{HostID: hid, IP: addr, LastSeen: timeOf(last), Attempted: attempted != 0}
+			c := IdentifyCandidate{HostID: hid, IP: addr, LastSeen: timeOf(last), PreferredName: preferred, Attempted: attempted != 0}
 			switch {
 			case attempted != 0:
 				c.Suppress = IdentifyAttempted

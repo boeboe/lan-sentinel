@@ -79,6 +79,7 @@ type InterfaceIdentify struct {
 	Name      string `yaml:"name" json:"name"`
 	UnitID    *int   `yaml:"unit_id,omitempty" json:"unit_id,omitempty"`
 	Community string `yaml:"community,omitempty" json:"community,omitempty"`
+	SNI       string `yaml:"sni,omitempty" json:"sni,omitempty"`
 }
 
 // InterfaceDHCP configures DHCP server monitoring on one interface
@@ -171,12 +172,19 @@ type IdentifyConfig struct {
 // IdentifyProbeDefaults are the compiled defaults for probe options.
 type IdentifyProbeDefaults struct {
 	Modbus IdentifyModbusOptions `yaml:"modbus" json:"modbus"`
+	TLS    IdentifyTLSOptions    `yaml:"tls" json:"tls"`
 	SNMP   IdentifySNMPOptions   `yaml:"snmp" json:"snmp"`
 }
 
 // IdentifyModbusOptions are the defaults for the Modbus FC 43/14 probe.
 type IdentifyModbusOptions struct {
 	UnitID int `yaml:"unit_id" json:"unit_id"`
+}
+
+// IdentifyTLSOptions are the defaults for the TLS handshake. SNI is empty
+// (none) or auto (preferred_name when it is a DNS name).
+type IdentifyTLSOptions struct {
+	SNI string `yaml:"sni" json:"sni"`
 }
 
 // IdentifySNMPOptions are the defaults for the SNMPv2c GetRequest.

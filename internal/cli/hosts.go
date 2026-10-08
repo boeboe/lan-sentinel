@@ -62,8 +62,9 @@ func (a *app) hostsListCmd() *cobra.Command {
 	var active, stale bool
 	var port int
 	c := &cobra.Command{
-		Use:   "list",
-		Short: "Inventory: MAC, IP, hostname, vendor, device type, interface, presence, last seen, description",
+		Use:     "list",
+		Short:   "Inventory: MAC, IP, hostname, vendor, device type, interface, presence, last seen, description",
+		Example: "  sudo lan-sentinel hosts list --active",
 		Long: "List hosts. --active shows live hosts (ACTIVE or RECENT), --stale the others\n" +
 			"(STALE or MISSING); --port hosts with that port OPEN; --device hosts whose\n" +
 			"device type (the most confident identification) contains the text;\n" +
@@ -146,8 +147,9 @@ func (a *app) hostsShowCmd() *cobra.Command {
 	var q queryFlags
 	var iface string
 	c := &cobra.Command{
-		Use:   "show <query>",
-		Short: "Full record of one current host, with every address and name over time",
+		Use:     "show <query>",
+		Short:   "Full record of one current host, with every address and name over time",
+		Example: "  sudo lan-sentinel hosts show 192.168.0.99",
 		Long: "Shows one current host by host ID, MAC, IP or hostname (detected in that\n" +
 			"order, as hosts find). When several match (the same MAC on two interfaces),\n" +
 			"it lists them with their host IDs and exits 64; --interface or --id picks one.",
@@ -256,25 +258,7 @@ func (a *app) hostRecord(w io.Writer, h store.Host, at *time.Time) {
 			fmt.Fprintf(w, "  %-8s %-11s %s\n", s.Proto+"/"+strconv.Itoa(s.Port), s.State, a.ago(s.LastResultAt))
 		}
 	}
-	// The current claims, most confident first; hosts evidence has them all.
-	var current []store.Identification
-	for _, i := range h.Identifications {
-		if i.Current {
-			current = append(current, i)
-		}
-	}
-	sort.SliceStable(current, func(x, y int) bool {
-		if current[x].Field != current[y].Field {
-			return current[x].Field < current[y].Field
-		}
-		return current[x].Confidence > current[y].Confidence
-	})
-	if len(current) > 0 {
-		fmt.Fprintln(w, "\nIdentification:")
-		for _, i := range current {
-			fmt.Fprintf(w, "  %s=%s  %s  confidence %.2f  %s\n", i.Field, i.Value, i.Source, i.Confidence, a.ago(i.LastSeen))
-		}
-	}
+	a.printIdentifications(w, h.Identifications, identPrint{currentOnly: true})
 }
 
 // bindingLine renders "IP  first → end|open  sources: …  CONFLICT".
@@ -300,12 +284,138 @@ func (a *app) bindingLine(b store.Binding, at *time.Time) string {
 	return line
 }
 
+// identPrint is how hosts show/find and hosts evidence render Identification.
+type identPrint struct {
+	currentOnly     bool // hosts show lists only each source's current claims
+	markCurrent     bool // hosts evidence: * on current
+	everyConfidence bool // hosts evidence: each claim's confidence, not only where it differs
+	withEvidence    bool
+}
+
+// maxValueWidth caps the padding of identification values, so one long
+// value (a certificate's SAN list) does not push the other rows' columns far
+// right; a longer value is printed whole.
+const maxValueWidth = 32
+
+type identGroup struct {
+	source     string
+	confidence float64
+	lastSeen   time.Time
+	claims     []store.Identification
+}
+
+// groupIdentifications groups claims by source, then field. Confidence is
+// the source's highest current claim (or highest of any claim if none is
+// current). Sources are ordered by that confidence, then last seen.
+func groupIdentifications(ids []store.Identification, currentOnly bool) []identGroup {
+	idx := map[string]int{}
+	var groups []identGroup
+	for _, i := range ids {
+		if currentOnly && !i.Current {
+			continue
+		}
+		if n, ok := idx[i.Source]; ok {
+			g := &groups[n]
+			g.claims = append(g.claims, i)
+			if i.LastSeen.After(g.lastSeen) {
+				g.lastSeen = i.LastSeen
+			}
+			continue
+		}
+		idx[i.Source] = len(groups)
+		groups = append(groups, identGroup{source: i.Source, lastSeen: i.LastSeen, claims: []store.Identification{i}})
+	}
+	for i := range groups {
+		g := &groups[i]
+		var maxCur, maxAny float64
+		hasCur := false
+		for _, c := range g.claims {
+			if c.Confidence > maxAny {
+				maxAny = c.Confidence
+			}
+			if c.Current && (!hasCur || c.Confidence > maxCur) {
+				maxCur, hasCur = c.Confidence, true
+			}
+		}
+		if hasCur {
+			g.confidence = maxCur
+		} else {
+			g.confidence = maxAny
+		}
+		sort.SliceStable(g.claims, func(x, y int) bool {
+			if g.claims[x].Field != g.claims[y].Field {
+				return g.claims[x].Field < g.claims[y].Field
+			}
+			if g.claims[x].Current != g.claims[y].Current {
+				return g.claims[x].Current
+			}
+			return g.claims[x].Confidence > g.claims[y].Confidence
+		})
+	}
+	sort.SliceStable(groups, func(i, j int) bool {
+		if groups[i].confidence != groups[j].confidence {
+			return groups[i].confidence > groups[j].confidence
+		}
+		if !groups[i].lastSeen.Equal(groups[j].lastSeen) {
+			return groups[i].lastSeen.After(groups[j].lastSeen)
+		}
+		return groups[i].source < groups[j].source
+	})
+	return groups
+}
+
+// printIdentifications writes the Identification block: source line with
+// confidence and last seen, then aligned field/value rows. A claim's own
+// confidence follows its value in evidence (it is why one claim is current
+// and a weaker one is not) and, elsewhere, where it differs from its
+// source's.
+func (a *app) printIdentifications(w io.Writer, ids []store.Identification, how identPrint) {
+	groups := groupIdentifications(ids, how.currentOnly)
+	if len(groups) == 0 {
+		return
+	}
+	srcW, fieldW, valW := 0, 0, 0
+	for _, g := range groups {
+		srcW = max(srcW, len(g.source))
+		for _, c := range g.claims {
+			fieldW = max(fieldW, len(c.Field))
+			valW = max(valW, len(c.Value))
+		}
+	}
+	valW = min(valW, maxValueWidth)
+	fmt.Fprintln(w, "\nIdentification:")
+	for _, g := range groups {
+		fmt.Fprintf(w, "  %-*s  (%.2f)  %s\n", srcW, g.source, g.confidence, a.ago(g.lastSeen))
+		for _, c := range g.claims {
+			mark := ""
+			if how.markCurrent {
+				mark = " "
+				if c.Current {
+					mark = "*"
+				}
+			}
+			line := fmt.Sprintf("    %s%-*s  %s", mark, fieldW, c.Field, c.Value)
+			if how.everyConfidence || c.Confidence != g.confidence {
+				line = fmt.Sprintf("    %s%-*s  %-*s  (%.2f)", mark, fieldW, c.Field, valW, c.Value, c.Confidence)
+			}
+			if how.withEvidence {
+				line += "  " + compact(c.Evidence)
+			}
+			fmt.Fprintln(w, line)
+		}
+	}
+	if how.markCurrent {
+		fmt.Fprintln(w, "  (* current: the value each source holds now)")
+	}
+}
+
 func (a *app) hostsFindCmd() *cobra.Command {
 	var q queryFlags
 	var iface, atFlag string
 	c := &cobra.Command{
-		Use:   "find <query>",
-		Short: "Current or point-in-time holder(s) with addresses, names and services",
+		Use:     "find <query>",
+		Short:   "Current or point-in-time holder(s) with addresses, names and services",
+		Example: "  sudo lan-sentinel hosts find 192.168.0.99",
 		Long: "Find hosts by host ID, MAC, IP or hostname (detected in that order). With --at,\n" +
 			"answer for that time: the holder of an IP with its binding and what replaced it,\n" +
 			"every holder of a duplicate IP, or the bindings before and after when nobody\n" +
@@ -405,8 +515,9 @@ func (a *app) hostsHistoryCmd() *cobra.Command {
 	var q queryFlags
 	var iface, since, until string
 	c := &cobra.Command{
-		Use:   "history <query>",
-		Short: "Event timeline for a host, MAC, IP or name",
+		Use:     "history <query>",
+		Short:   "Event timeline for a host, MAC, IP or name",
+		Example: "  sudo lan-sentinel hosts history 192.168.0.99",
 		Long: "For a host ID or MAC, every event of the host; for an IP, every event whose\n" +
 			"old value, new value or evidence IP is that IP, across all its holders; for a\n" +
 			"name, every event of the hosts that ever had it.",
@@ -497,8 +608,9 @@ func (a *app) hostsEvidenceCmd() *cobra.Command {
 	var q queryFlags
 	var iface, since string
 	c := &cobra.Command{
-		Use:   "evidence <query>",
-		Short: "Why we believe what we believe about a host",
+		Use:     "evidence <query>",
+		Short:   "Why we believe what we believe about a host",
+		Example: "  sudo lan-sentinel hosts evidence 192.168.0.99",
 		Long: "For every host that ever matched the query: per address, name, service and\n" +
 			"identification the sources that confirmed it with first and last seen, the\n" +
 			"observation counts per source within roll-up retention, and the host's events\n" +
@@ -578,17 +690,7 @@ func (a *app) evidenceTable(w io.Writer, all []store.Evidence) {
 				fmt.Fprintf(w, "  %-8s %-11s first %s  last result %s\n", s.Proto+"/"+strconv.Itoa(s.Port), s.State, a.stamp(s.FirstSeen), a.stamp(s.LastResultAt))
 			}
 		}
-		if len(h.Identifications) > 0 {
-			fmt.Fprintln(w, "\nIdentification:")
-			for _, id := range h.Identifications {
-				mark := " "
-				if id.Current {
-					mark = "*"
-				}
-				fmt.Fprintf(w, " %s%s=%s  %s  confidence %.2f  %s\n", mark, id.Field, id.Value, id.Source, id.Confidence, compact(id.Evidence))
-			}
-			fmt.Fprintln(w, "  (* current: the value each source holds now)")
-		}
+		a.printIdentifications(w, h.Identifications, identPrint{markCurrent: true, everyConfidence: true, withEvidence: true})
 		if len(ev.Counts) > 0 {
 			fmt.Fprintln(w, "\nObservations (raw and roll-ups):")
 			for _, c := range ev.Counts {

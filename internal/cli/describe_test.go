@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"lan-sentinel/internal/api"
+	"lan-sentinel/internal/config"
 	"lan-sentinel/internal/store"
 	"lan-sentinel/internal/store/storetest"
 )
@@ -43,7 +44,13 @@ func serveDescribe(t *testing.T) *describeFixture {
 	}
 	t.Cleanup(func() { _ = r.Close() })
 	f := &describeFixture{socket: filepath.Join(t.TempDir(), "api.sock"), ctl: &control{}, a: a, ids: map[string]string{}}
-	srv := api.New(api.Options{Reader: r, Control: f.ctl})
+	// The configuration /v1/config serves: identification probes enabled on
+	// eth1 only (identify run --probe all).
+	cfg := &config.Config{Interfaces: []config.InterfaceConfig{
+		{Name: "eth1", Active: config.InterfaceActive{Identify: []config.InterfaceIdentify{{Name: "http"}, {Name: "tls"}, {Name: "ftp"}}}},
+		{Name: "eth0"},
+	}}
+	srv := api.New(api.Options{Reader: r, Control: f.ctl, Config: func() any { return cfg }})
 	ctx, cancel := context.WithCancel(context.Background())
 	if err := srv.Start(ctx, f.socket, ""); err != nil {
 		t.Fatal(err)

@@ -81,6 +81,8 @@ func resolve(job probe.IdentifyJob) (Probe, bool) {
 		return Modbus{UnitID: job.UnitID}, true
 	case "snmp":
 		return SNMP{Community: job.Community}, true
+	case "tls":
+		return TLS{ServerName: job.SNI}, true
 	}
 	pr, ok := Probes[job.Probe]
 	return pr, ok

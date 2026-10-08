@@ -12,6 +12,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -66,6 +67,14 @@ func (f *fakeNotifier) Watchdog() error         { return f.record("WATCHDOG") }
 func (f *fakeNotifier) Status(msg string) error { return f.record("STATUS=" + msg) }
 func (f *fakeNotifier) WatchdogInterval() (int64, bool) {
 	return int64(f.watchdog), f.watchdog > 0
+}
+
+// snapshot copies the calls under the lock, for failure messages: the
+// daemon may still be notifying.
+func (f *fakeNotifier) snapshot() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.calls)
 }
 
 func (f *fakeNotifier) count(c string) int {
@@ -212,6 +221,20 @@ func (h *harness) waitLog(substr string) {
 	}
 }
 
+// waitNotified waits until c has been sent n times. A reload logs its
+// outcome before its deferred READY, so its log line does not prove the
+// READY has been sent.
+func (h *harness) waitNotified(c string, n int) {
+	h.t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for h.notifier.count(c) < n {
+		if time.Now().After(deadline) {
+			h.t.Fatalf("%s sent %d times, want %d: %v", c, h.notifier.count(c), n, h.notifier.snapshot())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 func (h *harness) stop() {
 	h.t.Helper()
 	h.signals <- syscall.SIGTERM
@@ -230,7 +253,7 @@ func TestStartupAndShutdown(t *testing.T) {
 	h := start(t, testConfig(dir, "info", "active: { tcp: { enabled: true, targets: [{port: 502, timeout: 750ms}] } }\n"), 0)
 
 	if h.notifier.count("READY") != 1 || h.notifier.count("STATUS=running") != 1 {
-		t.Errorf("notifications = %v", h.notifier.calls)
+		t.Errorf("notifications = %v", h.notifier.snapshot())
 	}
 	want := map[string]platform.State{
 		"capture": platform.StateRunning, "interface": platform.StateRunning, "neighbor": platform.StateRunning,
@@ -256,7 +279,7 @@ func TestStartupAndShutdown(t *testing.T) {
 	}
 	h.stop()
 	if h.notifier.count("STOPPING") != 1 {
-		t.Errorf("STOPPING not sent: %v", h.notifier.calls)
+		t.Errorf("STOPPING not sent: %v", h.notifier.snapshot())
 	}
 	db := filepath.Join(h.dir, "data", "hosts.db")
 	if _, err := os.Stat(db); err != nil {
@@ -306,8 +329,9 @@ func TestReload(t *testing.T) {
 	if h.d.Config().Logging.Level != "debug" {
 		t.Errorf("rejected reload changed the level to %s", h.d.Config().Logging.Level)
 	}
+	h.waitNotified("READY", 3) // start-up and both reloads
 	if h.notifier.count("RELOADING") != 2 || h.notifier.count("READY") != 3 {
-		t.Errorf("reload notifications = %v", h.notifier.calls)
+		t.Errorf("reload notifications = %v", h.notifier.snapshot())
 	}
 }
 
@@ -320,7 +344,7 @@ func TestWatchdogPingsWhileStoreResponds(t *testing.T) {
 		deadline := time.Now().Add(5 * time.Second)
 		for h.notifier.count("WATCHDOG") < i {
 			if time.Now().After(deadline) {
-				t.Fatalf("watchdog ping %d not sent: %v", i, h.notifier.calls)
+				t.Fatalf("watchdog ping %d not sent: %v", i, h.notifier.snapshot())
 			}
 			time.Sleep(5 * time.Millisecond)
 		}

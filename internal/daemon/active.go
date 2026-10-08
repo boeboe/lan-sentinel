@@ -207,7 +207,7 @@ func (d *Daemon) emitObservation(o observation.Observation) {
 
 // IdentifyRun implements api.Control: one forced identification exchange
 // (ADR 0011). It bypasses only the once-per-MAC latch.
-func (d *Daemon) IdentifyRun(ctx context.Context, actor, hostID, probeName string) (store.IdentifyAttempt, error) {
+func (d *Daemon) IdentifyRun(ctx context.Context, actor, hostID, probeName, sni string) (store.IdentifyAttempt, error) {
 	if d.sched == nil {
 		return store.IdentifyAttempt{}, api.ErrNoScanner
 	}
@@ -257,6 +257,7 @@ func (d *Daemon) IdentifyRun(ctx context.Context, actor, hostID, probeName strin
 		HostID: hostID, IP: cand.IP, Probe: probeName,
 		UnitID:    uint8(cfg.Active.Identify.UnitIDOf(entry)), //nolint:gosec // validated 1–255
 		Community: cfg.Active.Identify.CommunityOf(entry),
+		SNI:       config.ResolveSNI(cfg.Active.Identify.SNIModeOf(entry), cand.PreferredName, sni),
 		Force:     true, Trigger: observation.TriggerOperator, Actor: actor,
 	}
 	results, err := d.sched.IdentifyRun(ctx, h.Interface, job)
