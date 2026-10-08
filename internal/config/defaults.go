@@ -40,6 +40,8 @@ func Defaults() *Config {
 			ICMP:                ProbeConfig{Enabled: false, Interval: Duration(10 * time.Minute)},
 			TCP:                 TCPProbeConfig{Enabled: false, Interval: Duration(5 * time.Minute)},
 			UDP:                 UDPProbeConfig{Enabled: false, Interval: Duration(15 * time.Minute), Probes: []string{"ntp", "enip"}},
+			Identify: IdentifyConfig{Interval: Duration(time.Hour), Timeout: Duration(2 * time.Second), HostMaxAge: Duration(30 * time.Minute),
+				Probes: IdentifyProbeDefaults{Modbus: IdentifyModbusOptions{UnitID: 1}}},
 		},
 		Presence: PresenceConfig{
 			Active: Duration(5 * time.Minute),

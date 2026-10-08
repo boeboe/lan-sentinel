@@ -67,6 +67,18 @@ type InterfaceActive struct {
 	Enabled  bool           `yaml:"enabled" json:"enabled"`
 	Networks []netip.Prefix `yaml:"networks,omitempty" json:"networks,omitempty"`
 	Exclude  []AddrOrPrefix `yaml:"exclude,omitempty" json:"exclude,omitempty"`
+	// Identify is the opt-in identification probes on this interface
+	// (ADR 0011). Object form only; a string list is invalid. Empty
+	// (the default) sends nothing.
+	Identify []InterfaceIdentify `yaml:"identify,omitempty" json:"identify,omitempty"`
+}
+
+// InterfaceIdentify is one named identification probe on an interface.
+// Omitted options use active.identify.probes.
+type InterfaceIdentify struct {
+	Name      string `yaml:"name" json:"name"`
+	UnitID    *int   `yaml:"unit_id,omitempty" json:"unit_id,omitempty"`
+	Community string `yaml:"community,omitempty" json:"community,omitempty"`
 }
 
 // InterfaceDHCP configures DHCP server monitoring on one interface
@@ -136,10 +148,62 @@ type ActiveConfig struct {
 	ICMP            ProbeConfig    `yaml:"icmp" json:"icmp"`
 	TCP             TCPProbeConfig `yaml:"tcp" json:"tcp"`
 	UDP             UDPProbeConfig `yaml:"udp" json:"udp"`
+	Identify        IdentifyConfig `yaml:"identify" json:"identify"`
 }
 
 // UDPProbeNames are the protocol-specific UDP probes (FR-AC-6).
 var UDPProbeNames = []string{"ntp", "enip"}
+
+// IdentifyProbeNames are the identification probes an interface may name
+// (ADR 0011). A name that is not on this list fails validation.
+var IdentifyProbeNames = []string{"modbus", "http", "tls", "snmp", "ssh-banner", "telnet", "ftp"}
+
+// IdentifyConfig is the global identification-probe schedule and defaults
+// (FR-AC-11). Interval is how often the daemon looks for hosts it has
+// never attempted, not a repeat period.
+type IdentifyConfig struct {
+	Interval   Duration              `yaml:"interval" json:"interval"`
+	Timeout    Duration              `yaml:"timeout" json:"timeout"`
+	HostMaxAge Duration              `yaml:"host_max_age" json:"host_max_age"`
+	Probes     IdentifyProbeDefaults `yaml:"probes" json:"probes"`
+}
+
+// IdentifyProbeDefaults are the compiled defaults for probe options.
+type IdentifyProbeDefaults struct {
+	Modbus IdentifyModbusOptions `yaml:"modbus" json:"modbus"`
+	SNMP   IdentifySNMPOptions   `yaml:"snmp" json:"snmp"`
+}
+
+// IdentifyModbusOptions are the defaults for the Modbus FC 43/14 probe.
+type IdentifyModbusOptions struct {
+	UnitID int `yaml:"unit_id" json:"unit_id"`
+}
+
+// IdentifySNMPOptions are the defaults for the SNMPv2c GetRequest.
+type IdentifySNMPOptions struct {
+	Community string `yaml:"community" json:"community"`
+}
+
+// UnitIDOf returns the Modbus unit id for an interface entry.
+func (c IdentifyConfig) UnitIDOf(e InterfaceIdentify) int {
+	if e.UnitID != nil {
+		return *e.UnitID
+	}
+	if c.Probes.Modbus.UnitID != 0 {
+		return c.Probes.Modbus.UnitID
+	}
+	return 1
+}
+
+// CommunityOf returns the SNMPv2c community for an interface entry.
+// Empty when neither the entry nor the global default is set; validation
+// requires a value when the interface names snmp.
+func (c IdentifyConfig) CommunityOf(e InterfaceIdentify) string {
+	if e.Community != "" {
+		return e.Community
+	}
+	return c.Probes.SNMP.Community
+}
 
 // UDPProbeConfig configures periodic protocol-specific UDP probes.
 type UDPProbeConfig struct {

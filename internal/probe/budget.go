@@ -22,10 +22,11 @@ type Protocol string
 
 // Probe protocols. IPv6 NDP is deferred (v1 is IPv4-first).
 const (
-	ARP  Protocol = "arp"
-	ICMP Protocol = "icmp"
-	TCP  Protocol = "tcp"
-	UDP  Protocol = "udp"
+	ARP      Protocol = "arp"
+	ICMP     Protocol = "icmp"
+	TCP      Protocol = "tcp"
+	UDP      Protocol = "udp"
+	Identify Protocol = "identify"
 )
 
 // TCPTokens is how many global packet tokens a TCP connect costs.
@@ -247,6 +248,18 @@ func (b *Budget) take(ctx context.Context, ch chan struct{}, p Protocol, reason 
 // the interface and host slots) until then. The policy is checked before
 // the wait and again just before returning.
 func (b *Budget) Acquire(ctx context.Context, p Protocol, iface string, target netip.Addr) (func(), error) {
+	return b.acquire(ctx, p, iface, target, 0)
+}
+
+// AcquirePackets is Acquire with an explicit global packet charge
+// (identification probes: BudgetCost). The protocol rate still counts one
+// probe (one TCP connect or one UDP datagram). packets <= 0 uses the
+// usual charge (1, or 3 for TCP).
+func (b *Budget) AcquirePackets(ctx context.Context, p Protocol, iface string, target netip.Addr, packets int) (func(), error) {
+	return b.acquire(ctx, p, iface, target, packets)
+}
+
+func (b *Budget) acquire(ctx context.Context, p Protocol, iface string, target netip.Addr, packets int) (func(), error) {
 	if err := b.check(iface, p, target); err != nil {
 		return nil, err
 	}
@@ -283,7 +296,7 @@ func (b *Budget) Acquire(ctx context.Context, p Protocol, iface string, target n
 			return nil, err
 		}
 	}
-	at, reason := b.reserve(p, iface, target)
+	at, reason := b.reserve(p, iface, target, packets)
 	if wait := at.Sub(b.clock.Now()); wait > 0 {
 		b.count(p, reason)
 		if err := b.sleep(ctx, wait); err != nil {
@@ -295,7 +308,7 @@ func (b *Budget) Acquire(ctx context.Context, p Protocol, iface string, target n
 		release()
 		return nil, err
 	}
-	b.settle(p, iface, target, at)
+	b.settle(p, iface, target, at, packets)
 	return release, nil
 }
 
@@ -303,17 +316,14 @@ func (b *Budget) Acquire(ctx context.Context, p Protocol, iface string, target n
 // late (a timer that fired late, a goroutine that was not scheduled at
 // once): the budgets then count when probes really leave, so a late send
 // cannot crowd the next ones into one window.
-func (b *Budget) settle(p Protocol, iface string, target netip.Addr, at time.Time) {
+func (b *Budget) settle(p Protocol, iface string, target netip.Addr, at time.Time, packets int) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	now := b.clock.Now()
 	if !now.After(at) {
 		return
 	}
-	cost := 1.0
-	if p == TCP {
-		cost = TCPTokens
-	}
+	cost := packetCost(p, packets)
 	if pb := b.proto[p]; pb != nil {
 		pb.move(at, now, 1, b.limits.Rates[p])
 	}
@@ -354,14 +364,21 @@ func (b *Budget) check(iface string, p Protocol, target netip.Addr) error {
 // target's spacing and the protocol and global budgets, booked in all of
 // them in one step so the time booked everywhere is the time of the send.
 // It returns the binding constraint.
-func (b *Budget) reserve(p Protocol, iface string, target netip.Addr) (time.Time, string) {
+func packetCost(p Protocol, packets int) float64 {
+	if packets > 0 {
+		return float64(packets)
+	}
+	if p == TCP {
+		return TCPTokens
+	}
+	return 1
+}
+
+func (b *Budget) reserve(p Protocol, iface string, target netip.Addr, packets int) (time.Time, string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	now := b.clock.Now()
-	cost := 1.0
-	if p == TCP {
-		cost = TCPTokens
-	}
+	cost := packetCost(p, packets)
 	pb := b.proto[p]
 	if pb == nil {
 		pb = &bucket{}
@@ -428,7 +445,7 @@ func Simulate(limits Limits, start time.Time, probes []SimProbe) time.Duration {
 	last := start
 	for _, p := range probes {
 		sim.Set(b.spacing(p.Interface, p.Target)) // as Acquire: the spacing first
-		at, _ := b.reserve(p.Protocol, p.Interface, p.Target)
+		at, _ := b.reserve(p.Protocol, p.Interface, p.Target, p.Packets)
 		sim.Set(at)
 		last = at
 	}
@@ -440,4 +457,5 @@ type SimProbe struct {
 	Protocol  Protocol
 	Interface string
 	Target    netip.Addr
+	Packets   int // 0: the usual charge
 }

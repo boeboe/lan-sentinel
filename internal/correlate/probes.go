@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -21,11 +22,12 @@ const probeConfidence = 0.9
 // causeOperator is the cause of kill-switch and scan events.
 const causeOperator = "operator"
 
-// probeSources lists the UDP probe names as an SQL list, for loading the
-// identifications the probes made.
+// probeSources lists the UDP and identification probe names as an SQL
+// list, for loading the identifications the probes made.
 var probeSources = func() string {
-	q := make([]string, len(config.UDPProbeNames))
-	for i, n := range config.UDPProbeNames {
+	names := append(append([]string{}, config.UDPProbeNames...), config.IdentifyProbeNames...)
+	q := make([]string, len(names))
+	for i, n := range names {
 		q[i] = "'" + n + "'"
 	}
 	return strings.Join(q, ", ")
@@ -43,6 +45,9 @@ func (c *Correlator) probeDetails(ctx context.Context, h *host, o observation.Ob
 	details := map[string]string{}
 	identity := map[string]string{}
 	for k, v := range o.Meta {
+		if strings.HasPrefix(k, observation.MetaIdentityConfPrefix) {
+			continue
+		}
 		if f, ok := strings.CutPrefix(k, observation.MetaIdentityPrefix); ok {
 			if f != "" && v != "" {
 				identity[f] = v
@@ -66,13 +71,19 @@ func (c *Correlator) probeDetails(ctx context.Context, h *host, o observation.Ob
 	}
 	for _, f := range fields {
 		v := identity[f]
-		c.dbIdentification(ctx, h, f, v, probeConfidence, src, evidence, o.Time)
+		conf := probeConfidence
+		if s, ok := o.Meta[observation.MetaIdentityConfPrefix+f]; ok {
+			if parsed, err := strconv.ParseFloat(s, 64); err == nil && parsed > 0 && parsed <= 1 {
+				conf = parsed
+			}
+		}
+		c.dbIdentification(ctx, h, f, v, conf, src, evidence, o.Time)
 		key := identKey(f, src)
 		old, known := h.idents[key]
 		if known && old == v {
 			continue
 		}
-		h.idents[key], h.identConf[key] = v, probeConfidence
+		h.idents[key], h.identConf[key] = v, conf
 		c.dbCurrent(ctx, h, f, src, v)
 		if f == identify.FieldDeviceType {
 			c.updateDeviceType(ctx, h)
@@ -146,6 +157,42 @@ func switchText(what string, op observation.Operator) string {
 	return s
 }
 
+// recordIdentifyAttempt upserts the once-per-MAC latch (ADR 0011). An
+// operator retry also emits IDENTIFY_RAN with the caller.
+func (c *Correlator) recordIdentifyAttempt(ctx context.Context, h *host, o observation.Observation, obsID int64) {
+	name := o.Meta[observation.MetaProbe]
+	result := o.Meta[observation.MetaResult]
+	if name == "" || !identifyResult(result) {
+		return
+	}
+	trigger := o.Meta[observation.MetaTrigger]
+	if trigger != observation.TriggerOperator {
+		trigger = observation.TriggerScheduled
+	}
+	actor := o.Meta[observation.MetaActor]
+	c.exec(ctx, "identify attempt", `INSERT INTO identify_attempts (host_id, probe, result, attempted_at, trigger, actor)
+		VALUES (?, ?, ?, ?, ?, ?)
+		ON CONFLICT (host_id, probe) DO UPDATE SET
+			result = excluded.result, attempted_at = excluded.attempted_at, trigger = excluded.trigger, actor = excluded.actor`,
+		h.id, name, result, ms(o.Time), trigger, actor)
+	if trigger != observation.TriggerOperator {
+		return
+	}
+	ev := events.EvidenceFrom(o)
+	ev.Actor, ev.Probe, ev.Result = actor, name, result
+	e := hostEvent(events.IdentifyRan, o.Time, h, causeOperator, ev)
+	e.New, e.ObservationID = name+" "+result, obsID
+	c.emit(ctx, e)
+}
+
+func identifyResult(s string) bool {
+	switch s {
+	case observation.ResultOK, observation.ResultTimeout, observation.ResultRefused, observation.ResultMalformed:
+		return true
+	}
+	return false
+}
+
 func (c *Correlator) scan(ctx context.Context, op observation.Operator, ev events.Evidence) {
 	sc := op.Scan
 	if sc == nil {
@@ -172,7 +219,7 @@ func (c *Correlator) scan(ctx context.Context, op observation.Operator, ev event
 		}
 		results, err := json.Marshal(sc.Results)
 		if err != nil {
-			results = []byte(fmt.Sprintf(`{"error": %q}`, err.Error()))
+			results = fmt.Appendf(nil, `{"error": %q}`, err.Error())
 		}
 		c.exec(ctx, "finish scan", `UPDATE scans SET finished_at = ?, results_json = ? WHERE id = ?`, ms(op.Time), string(results), sc.Handle.ID)
 		e.Type = events.ScanCompleted

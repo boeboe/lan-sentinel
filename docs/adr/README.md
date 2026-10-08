@@ -29,3 +29,4 @@ If an ADR and a specification disagree, stop and ask (`AGENTS.md` §2).
 | [0008](0008-active-discovery-safety-envelope.md) | Active discovery inside a fixed OT safety envelope | Accepted |
 | [0009](0009-operator-changes-through-the-daemon.md) | Operator changes travel through the bus to the correlator | Accepted |
 | [0010](0010-precomputed-oui-table.md) | The OUI table is precomputed and searched in place | Accepted |
+| [0011](0011-active-identification-probes.md) | Opt-in identification probes inside the safety envelope | Accepted |

@@ -72,12 +72,13 @@ The capture decoders put protocol detail that is not identity evidence into `met
 | `passive_mdns` | `services` (service types such as `_http._tcp`), `service_ports` (`_http._tcp=80`), `txt` |
 | `passive_lldp` | `chassis_id`, `port_id`, `port_description`, `system_description`, `capabilities`, `management_ip` |
 | `udp_probe` | `probe` (`ntp`, `enip`); service details: NTP `version`, `stratum`, `leap`, `reference_id`, `root_delay_ms`, `root_dispersion_ms` (and `kiss_code` for a kiss-o'-death reply); EtherNet/IP `vendor_id`, `device_type`, `product_code`, `revision`, `status`, `serial_number`, `product_name`, `state`; identity claims under `id.` (`id.product`, `id.device_type`), §5.5 |
+| `identify_probe` | `probe` (`modbus`, `http`, `tls`, `snmp`, `ssh-banner`, `telnet`, `ftp`); `result` (`ok`, `timeout`, `refused`, `malformed`); `trigger` (`scheduled`, `operator`); on success, identity claims under `id.` and per-claim confidence under `idconf.`; a failure has no service state |
 
-The probes emit `arp_scan` (MAC and IP of an ARP reply to a sweep request), `icmp_scan` (IP of an echo reply), `tcp_connect` (IP and `service` with the connect result: OPEN, REFUSED, TIMEOUT, UNREACHABLE or UNKNOWN) and `udp_probe` (IP, `service` `udp/<port>` OPEN and `meta`, only when a protocol-specific probe got an answer; no answer emits nothing).
+The probes emit `arp_scan` (MAC and IP of an ARP reply to a sweep request), `icmp_scan` (IP of an echo reply), `tcp_connect` (IP and `service` with the connect result: OPEN, REFUSED, TIMEOUT, UNREACHABLE or UNKNOWN), `udp_probe` (IP, `service` `udp/<port>` OPEN and `meta`, only when a protocol-specific probe got an answer; no answer emits nothing) and `identify_probe` (IP, `meta.probe` and `meta.result`; a success also has `service` `tcp/<port>` or `udp/161` OPEN and `id.*` claims; a failure has no service state and does not prove presence).
 
 Which address an observation carries: the ARP sender address (none for a probe); the source address of an NDP message, or the target of an advertisement; for DHCP, with distinct provenance: `yiaddr` of an ACK as `passive_dhcp_lease` (the server allocated or renewed a lease), `ciaddr` of a REQUEST or an INFORM as `passive_dhcp` (the client claims to use the address, which after an INFORM may be static; neither confirms a lease), none for DISCOVER, OFFER, DECLINE, RELEASE, NAK or the ACK that answers an INFORM, and for a server's reply (`passive_dhcp_server`) the IPv4 source of the frame, the server or the relay that forwarded it; each A/AAAA address of an mDNS response; the address of a DNS PTR answer; the IPv4/IPv6 header source for `passive_ipv4`/`passive_ipv6`. LLDP observations carry no address.
 
-Sources: `passive_arp`, `passive_ipv4`, `passive_ipv6`, `passive_ndp`, `passive_dhcp`, `passive_dhcp_lease`, `passive_dhcp_server`, `passive_mdns`, `passive_dns`, `passive_lldp`, `kernel_neighbor`, `arp_scan`, `icmp_scan`, `ndp_probe`, `tcp_connect`, `udp_probe`.
+Sources: `passive_arp`, `passive_ipv4`, `passive_ipv6`, `passive_ndp`, `passive_dhcp`, `passive_dhcp_lease`, `passive_dhcp_server`, `passive_mdns`, `passive_dns`, `passive_lldp`, `kernel_neighbor`, `arp_scan`, `icmp_scan`, `ndp_probe`, `tcp_connect`, `udp_probe`, `identify_probe`.
 
 Events that are not caused by an observation use one of these internal causes instead of a source: `presence` (presence ticker), `expiry` (binding expiry), `iface_monitor` (interface manager), `operator` (kill switch and operator scans), `integrity_check` (start-up database check).
 
@@ -97,7 +98,7 @@ A binding in effect at T with `T > last_seen` was **unconfirmed** at T: it was t
 
 `hosts` has `first_seen` and `last_seen` (no `ended_at`: hosts are never closed, only their presence changes).
 
-## 4. Schema (`migrations/0001_init.sql`, read-side indexes in `0002_read_indexes.sql`, probe details in `0003_probes.sql`, clock state of events in `0004_clock_sync.sql`, DHCP servers and their event types in `0005_dhcp_servers.sql`, current identifications in `0006_identification_current.sql`, host descriptions in `0007_host_description.sql`)
+## 4. Schema (`migrations/0001_init.sql`, read-side indexes in `0002_read_indexes.sql`, probe details in `0003_probes.sql`, clock state of events in `0004_clock_sync.sql`, DHCP servers and their event types in `0005_dhcp_servers.sql`, current identifications in `0006_identification_current.sql`, host descriptions in `0007_host_description.sql`, identification attempts in `0008_identify_attempts.sql`, `IDENTIFY_RAN` in `0009_identify_ran.sql`)
 
 | Table | Columns | Purpose |
 | --- | --- | --- |
@@ -114,6 +115,7 @@ A binding in effect at T with `T > last_seen` was **unconfirmed** at T: it was t
 | `events` | id, ts, type, severity, context_id, host_id, related_host_id, old_value, new_value, cause, observation_id, evidence_json, clock_sync | Permanent history |
 | `scans` | id, context_id, kind, trigger, started_at, finished_at, targets, results_json | Operator scans, one row per interface: `kind` the probes (`arp,tcp/502`), `trigger` `operator` (periodic passes are not recorded), `targets` the larger of the sweep and known-host counts, `results_json` `{counts: {probe: {result: n}}, responders, seconds, aborted?}`. A scan left unfinished by a crash is closed at the next start (`finished_at` = `started_at`, aborted, with `SCAN_COMPLETED`) |
 | `dhcp_servers` | id, context_id, server_id, relay, mac, ip, host_id, status, config_json, first_seen, last_seen | DHCP servers seen (§5.6): one row per server identifier (option 54, `''` when unknown), relay (`giaddr`, `''` when not relayed) and sender MAC; `ip` the sender's last address, `host_id` the sender's host; `status` `allowed`, `unexpected` or `unchecked` at the last reply; `config_json` the router, DNS servers and subnet mask last advertised |
+| `identify_attempts` | host_id, probe, result, attempted_at, trigger, actor | One row per host and identification probe (§5.5): success and failure both consume the once-per-MAC attempt (ADR 0011). `result` is `ok`, `timeout`, `refused` or `malformed`; `trigger` is `scheduled` or `operator`; `actor` is the `SO_PEERCRED` caller of `identify run`, empty when scheduled |
 | `runtime_state` | key, value, updated_at | Persisted operator state (kill switch, §8) |
 | `schema_migrations` | version, applied_at | Migration tracking |
 
@@ -232,6 +234,8 @@ A probe result attached to a host upserts `services`. A transition into OPEN emi
 
 A `udp_probe` result also records what the probe learnt, in the generic service and identification model (no protocol-specific host state): the `meta` keys without the `id.` prefix (including `probe`) replace `services.detail_json` of that service; each `id.<field>` key is an identification (`field`, value, source = the probe name, confidence 0.9: the device's own statement) with the details as evidence. A field a probe reports for the first time, or with a new value, emits `VENDOR_IDENTIFIED` (old `field=old value`, new `field=value`); the same value again only refreshes `last_seen`. A `device_type` claim also sets `hosts.device_type`. A probe that gets no answer emits no observation, so it changes nothing: it is never evidence that a host or service is gone.
 
+An `identify_probe` uses the same `id.*` claims. Confidence is per claim (`idconf.<field>`); absent `idconf.` means 0.9, so NTP and EtherNet/IP stay at 0.9. Modbus claims `vendor`, `product` and `revision` at 0.95; HTTP `server` 0.6 and `title` 0.5; TLS certificate fields 0.7; SNMP `sysDescr` 0.9, `sysObjectID` 0.95, `sysName` 0.8, `sysServices` 0.7; SSH `software` 0.8; Telnet and FTP `banner` (and FTP `syst`) 0.6. A success with `service` OPEN proves presence and may open the service. A failure (`result` `timeout`, `refused` or `malformed`) has no service state: it does not open or close `services`, does not prove presence, and is not evidence that the host is offline. Every `identify_probe` upserts `identify_attempts` (`host_id`, `probe`) so a restart cannot send that probe to that MAC again. `trigger` is `scheduled` or `operator`. An operator retry also emits `IDENTIFY_RAN` with the caller. An address is eligible only with exactly one open IPv4 binding on the interface, `conflict = 0`, `last_seen` within `active.identify.host_max_age`, and a holder that is not flagged `proxy_arp`. Suppression writes no attempt. `identify run` is the only way to send again (ADR 0011). The daemon does not infer `device_type` from banners.
+
 ### 5.6 DHCP servers
 
 DHCP evidence about clients and about servers is kept apart. For a client, a server's ACK with a `yiaddr` is a lease the server allocated or renewed (`passive_dhcp_lease`, with lease time and server identifier); a REQUEST's or INFORM's `ciaddr` is only the client's claim (`passive_dhcp`). Both bind the address like any L2 evidence (§5.2), and `address_sources` records which one confirmed it, so a server-confirmed lease is never confused with a claim. Lease state is not presence: a valid lease does not keep a host present and an expired one does not make it missing. Routine lease ACKs produce no events; `IP_ADDED` and `IP_CHANGED` announce assignments.
@@ -306,6 +310,7 @@ Thresholds are configurable (`presence:`). Transitions into MISSING emit `HOST_D
 | `DHCP_SERVER_MAC_CHANGED` | `dhcp-server-mac-changed` | warning | A known DHCP server identity replied from another sender MAC |
 | `DHCP_CONFIG_CHANGED` | `dhcp-config-changed` | notice | A DHCP server advertised another router, DNS servers or subnet mask |
 | `HOST_DESCRIBED` | `described` | notice | An operator set, changed or removed a host's description (§5.8) |
+| `IDENTIFY_RAN` | `identify-ran` | info | An operator forced one identification exchange (`identify run`) |
 
 ### Values
 
@@ -333,6 +338,7 @@ Thresholds are configurable (`presence:`). Transitions into MISSING emit `HOST_D
 | `DHCP_SERVER_MAC_CHANGED` | previous sender MAC | new sender MAC | `host_id` = the new sender, `related_host_id` = the previous one |
 | `DHCP_CONFIG_CHANGED` | changed settings before (`dns=… router=…`) | the same settings now | `host_id` = the sender |
 | `HOST_DESCRIBED` | the previous description (— for a first one) | the new description (— when removed) | cause `operator`; evidence `{actor}` |
+| `IDENTIFY_RAN` | — | `probe result` (e.g. `modbus ok`) | cause `operator`; evidence `{actor, probe, result}` |
 
 ### Provenance
 

@@ -9,10 +9,9 @@
 // ends it); TIMEOUT sends the SYN and at most 2 kernel retransmissions
 // (platform.SYNRetries), never data.
 //
-// The reset close belongs to this bare probe only. A protocol-specific TCP
-// probe that exchanges data over the established connection (none in v1)
-// must close it orderly (FIN) after its exchange, and is charged for the
-// packets it sends.
+// The reset close belongs to this bare probe only. Identification probes
+// (internal/probe/idprobe) write a bounded exchange and Close() without
+// SetLinger(0); they are charged BudgetCost, not this engine's 3 tokens.
 package tcp
 
 import (

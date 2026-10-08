@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"slices"
 
 	"lan-sentinel/internal/config"
 	"lan-sentinel/internal/platform"
@@ -29,6 +30,15 @@ type Control interface {
 	// the host once the change is committed; store.ErrNotFound for an
 	// unknown host.
 	DescribeHost(ctx context.Context, actor, hostID, description string) (store.HostSummary, error)
+	// IdentifyRun sends one identification probe. It bypasses only the
+	// once-per-MAC latch (ADR 0011). ErrIdentifyRefused when nothing was
+	// sent; store.ErrNotFound for an unknown host.
+	IdentifyRun(ctx context.Context, actor, hostID, probe string) (store.IdentifyAttempt, error)
+}
+
+// IdentifyRequest is the body of /v1/hosts/{id}/identify.
+type IdentifyRequest struct {
+	Probe string `json:"probe"`
 }
 
 // DescriptionRequest is the body of /v1/hosts/{id}/description.
@@ -52,6 +62,8 @@ var (
 	ErrForced = errors.New("active discovery is forced off by LAN_SENTINEL_ACTIVE_DISABLED=1; unset it and restart the daemon")
 	// ErrNoScanner: replay mode runs no probes.
 	ErrNoScanner = errors.New("active discovery does not run in replay mode")
+	// ErrIdentifyRefused: eligibility, kill switch or policy stopped the send.
+	ErrIdentifyRefused = errors.New("identification probe refused")
 )
 
 // ErrConfigRejected means the configuration file did not load or
@@ -111,7 +123,8 @@ func (s *Server) control(w http.ResponseWriter) bool {
 }
 
 func (s *Server) controlFail(w http.ResponseWriter, err error) {
-	if errors.Is(err, ErrForced) || errors.Is(err, ErrNoScanner) || errors.Is(err, scheduler.ErrScanRunning) {
+	if errors.Is(err, ErrForced) || errors.Is(err, ErrNoScanner) || errors.Is(err, scheduler.ErrScanRunning) ||
+		errors.Is(err, ErrIdentifyRefused) {
 		writeJSON(w, http.StatusConflict, errorBody{err.Error()})
 		return
 	}
@@ -251,4 +264,32 @@ func (s *Server) hostDescription(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, h)
+}
+
+// hostIdentify sends one identification probe: 200 with the attempt, 400
+// for an unknown probe name, 404 for an unknown host, 409 when nothing
+// was sent.
+func (s *Server) hostIdentify(w http.ResponseWriter, r *http.Request) {
+	if !s.control(w) {
+		return
+	}
+	var req IdentifyRequest
+	if err := decode(r, &req); err != nil {
+		s.fail(w, err)
+		return
+	}
+	if req.Probe == "" {
+		s.fail(w, badParam{"probe is required"})
+		return
+	}
+	if !slices.Contains(config.IdentifyProbeNames, req.Probe) {
+		s.fail(w, badParam{fmt.Sprintf("probe must be one of %v, got %q", config.IdentifyProbeNames, req.Probe)})
+		return
+	}
+	a, err := s.o.Control.IdentifyRun(r.Context(), actor(r), r.PathValue("id"), req.Probe)
+	if err != nil {
+		s.controlFail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, a)
 }

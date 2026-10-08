@@ -58,11 +58,25 @@ type Pass struct {
 	InSweep func(netip.Addr) bool
 	TCP     []config.TCPTarget
 	UDP     []string
-	Budget  *Budget
-	Emit    func(observation.Observation)
-	Clock   clock.Clock // nil: the wall clock
+	// Identify is the identification jobs of this pass (ADR 0011).
+	Identify []IdentifyJob
+	Budget   *Budget
+	Emit     func(observation.Observation)
+	Clock    clock.Clock // nil: the wall clock
 	// ReplyTimeout bounds the wait for an ARP, ICMP or UDP reply.
 	ReplyTimeout time.Duration
+}
+
+// IdentifyJob is one identification exchange: one probe to one host.
+type IdentifyJob struct {
+	HostID    string
+	IP        netip.Addr
+	Probe     string
+	UnitID    uint8
+	Community string
+	Force     bool
+	Trigger   string // scheduled or operator
+	Actor     string // SO_PEERCRED caller of identify run; empty when scheduled
 }
 
 // Now returns the pass clock's time in UTC, the time stamped on

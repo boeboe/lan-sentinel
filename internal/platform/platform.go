@@ -162,8 +162,9 @@ type Transmitter interface {
 	Backend(transport string) string
 	// Frames opens a frame connection on iface for one EtherType.
 	Frames(ctx context.Context, iface string, etherType uint16) (FrameConn, error)
-	// DialTCP makes a plain connect() bound to iface (SO_BINDTODEVICE).
-	// The caller closes the connection immediately and never writes.
+	// DialTCP makes a connect() bound to iface (SO_BINDTODEVICE).
+	// The bare TCP discovery probe closes immediately with a RST and never
+	// writes. Identification probes write a bounded exchange and Close().
 	DialTCP(ctx context.Context, iface string, addr netip.AddrPort, timeout time.Duration) (net.Conn, error)
 	// DialUDP opens a UDP socket bound to iface and connected to addr, for
 	// protocol-specific probes.

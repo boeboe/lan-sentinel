@@ -18,7 +18,7 @@ import (
 const Prefix = "lan_sentinel_"
 
 // AllowedLabels are the only label names a metric may use.
-var AllowedLabels = []string{"interface", "presence", "type", "source", "protocol", "port", "result", "reason", "collector", "status"}
+var AllowedLabels = []string{"interface", "presence", "type", "source", "protocol", "port", "result", "reason", "collector", "status", "probe", "field"}
 
 // Metric types.
 const (

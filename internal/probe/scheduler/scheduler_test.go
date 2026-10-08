@@ -3,6 +3,7 @@ package scheduler
 import (
 	"context"
 	"errors"
+	"maps"
 	"math/rand/v2"
 	"net"
 	"net/netip"
@@ -137,9 +138,27 @@ type rig struct {
 	opErr   error
 	failOn  observation.OperatorKind // fail only this kind (empty: every one)
 	s       *Scheduler
+	ids     *identifyMap
 	cancel  context.CancelFunc
 	done    chan struct{}
 	emitted []observation.Observation
+}
+
+type identifyMap struct {
+	mu    sync.Mutex
+	cands []store.IdentifyCandidate
+}
+
+func (m *identifyMap) IdentifyTargets(context.Context, string, string, time.Time) ([]store.IdentifyCandidate, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return slices.Clone(m.cands), nil
+}
+
+func (m *identifyMap) set(cands []store.IdentifyCandidate) {
+	m.mu.Lock()
+	m.cands = slices.Clone(cands)
+	m.mu.Unlock()
 }
 
 func baseConfig() *config.Config {
@@ -173,6 +192,7 @@ func newRig(t *testing.T, cfg *config.Config) *rig {
 		defer r.mu.Unlock()
 		return r.cfg
 	}
+	r.ids = &identifyMap{}
 	r.s = New(Options{
 		Config: conf,
 		Links: func() map[string]probe.Link {
@@ -180,10 +200,11 @@ func newRig(t *testing.T, cfg *config.Config) *rig {
 			defer r.mu.Unlock()
 			return r.links
 		},
-		Known:   known{"eth1": {ip("192.168.110.5"), ip("192.168.110.6")}},
-		Engines: engines,
-		Budget:  probe.NewBudget(r.sim, probe.Limits{MaxConcurrent: 10}, probe.ConfigPolicy{Switch: r.sw, Config: conf}),
-		Switch:  r.sw,
+		Known:    known{"eth1": {ip("192.168.110.5"), ip("192.168.110.6")}},
+		Identify: r.ids,
+		Engines:  engines,
+		Budget:   probe.NewBudget(r.sim, probe.Limits{MaxConcurrent: 10}, probe.ConfigPolicy{Switch: r.sw, Config: conf}),
+		Switch:   r.sw,
 		Emit: func(o observation.Observation) {
 			r.mu.Lock()
 			r.emitted = append(r.emitted, o)
@@ -863,7 +884,7 @@ func TestDefaults(t *testing.T) {
 	if noAnswer("OPEN") || !noAnswer("TIMEOUT") || !noAnswer("UNREACHABLE") || !noAnswer(probe.NoReply) || noAnswer(probe.Reply) {
 		t.Error("noAnswer")
 	}
-	if ok, _ := probeConfig(config.Defaults(), "ndp"); ok {
+	if ok, _ := probeConfig(config.Defaults(), "eth0", "ndp"); ok {
 		t.Error("ndp has a periodic config")
 	}
 }
@@ -886,5 +907,131 @@ func TestPortLabelIsBounded(t *testing.T) {
 	cfg.Profiles["extra"] = config.ProfileConfig{TCP: []int{503}}
 	if portLabel(cfg, probe.TCP, 503) != "503" {
 		t.Error("profile port not labelled")
+	}
+}
+
+func identifyCfg() *config.Config {
+	cfg := baseConfig()
+	cfg.Active.StartupDelay = 0
+	cfg.Active.Jitter = 0
+	cfg.Active.Identify.Interval = config.Duration(time.Minute)
+	cfg.Interfaces[0].Active.Identify = []config.InterfaceIdentify{{Name: "modbus"}}
+	return cfg
+}
+
+func TestIdentifyEmptyListSendsNothing(t *testing.T) {
+	r := newRig(t, baseConfig())
+	r.start()
+	r.waiters(1)
+	r.sim.Advance(time.Minute)
+	r.eng[probe.Identify].quiet(t)
+}
+
+// The next look does not send again to a host whose attempt the writer has
+// not committed yet: the store is up to one batch behind. A blocked job
+// sent nothing, so its host stays eligible (ADR 0011).
+func TestIdentifyNotResentBeforeCommit(t *testing.T) {
+	r := newRig(t, identifyCfg())
+	r.eng[probe.Identify].result = func(p probe.Pass) ([]probe.Result, error) {
+		var out []probe.Result
+		for _, j := range p.Identify {
+			state := observation.ResultTimeout
+			if j.HostID == "blocked" {
+				state = probe.Blocked
+			}
+			out = append(out, probe.Result{Target: j.IP, Probe: j.Probe, State: state})
+		}
+		return out, nil
+	}
+	// The store never shows an attempt: every commit is still pending.
+	r.ids.set([]store.IdentifyCandidate{
+		{HostID: "sent", IP: ip("192.168.110.8")},
+		{HostID: "blocked", IP: ip("192.168.110.9")},
+	})
+	r.start()
+	r.waiters(2) // arp + identify
+	r.sim.Advance(time.Second)
+	if p := r.eng[probe.Identify].wait(t); len(p.Identify) != 2 {
+		t.Fatalf("first look = %+v", p.Identify)
+	}
+	r.waiters(2)
+	r.sim.Advance(2 * time.Minute)
+	if p := r.eng[probe.Identify].wait(t); len(p.Identify) != 1 || p.Identify[0].HostID != "blocked" {
+		t.Fatalf("second look = %+v, want only the blocked host", p.Identify)
+	}
+}
+
+func TestIdentifySuppressesAndOnce(t *testing.T) {
+	r := newRig(t, identifyCfg())
+	r.ids.set([]store.IdentifyCandidate{
+		{HostID: "stale", IP: ip("192.168.110.5"), Suppress: store.IdentifyStale},
+		{HostID: "dup", IP: ip("192.168.110.6"), Suppress: store.IdentifyDuplicate},
+		{HostID: "proxy", IP: ip("192.168.110.7"), Suppress: store.IdentifyProxyARP},
+		{HostID: "ok", IP: ip("192.168.110.8")},
+		{HostID: "done", IP: ip("192.168.110.9"), Attempted: true, Suppress: store.IdentifyAttempted},
+	})
+	r.start()
+	r.waiters(2) // arp + identify
+	r.sim.Advance(time.Second)
+	p := r.eng[probe.Identify].wait(t)
+	if len(p.Identify) != 1 || p.Identify[0].HostID != "ok" || p.Identify[0].Trigger != observation.TriggerScheduled {
+		t.Fatalf("jobs = %+v", p.Identify)
+	}
+	// Suppressed hosts are counted per reason; an attempted host is not.
+	want := map[[2]string]uint64{{"modbus", store.IdentifyStale}: 1, {"modbus", store.IdentifyDuplicate}: 1, {"modbus", store.IdentifyProxyARP}: 1}
+	if got := r.s.IdentifySuppressed(); !maps.Equal(got, want) {
+		t.Errorf("suppressed = %v, want %v", got, want)
+	}
+	r.ids.set([]store.IdentifyCandidate{
+		{HostID: "ok", IP: ip("192.168.110.8"), Attempted: true, Suppress: store.IdentifyAttempted},
+		{HostID: "new", IP: ip("192.168.110.11")},
+	})
+	r.waiters(2)
+	r.sim.Advance(2 * time.Minute)
+	p = r.eng[probe.Identify].wait(t)
+	if len(p.Identify) != 1 || p.Identify[0].HostID != "new" {
+		t.Fatalf("second pass = %+v", p.Identify)
+	}
+}
+
+func TestIdentifyEachNamedProbe(t *testing.T) {
+	cfg := identifyCfg()
+	cfg.Interfaces[0].Active.Identify = []config.InterfaceIdentify{
+		{Name: "modbus"}, {Name: "http"}, {Name: "snmp", Community: "public"},
+	}
+	r := newRig(t, cfg)
+	r.ids.set([]store.IdentifyCandidate{{HostID: "ok", IP: ip("192.168.110.8")}})
+	r.start()
+	r.waiters(2)
+	r.sim.Advance(time.Second)
+	p := r.eng[probe.Identify].wait(t)
+	if len(p.Identify) != 3 {
+		t.Fatalf("jobs = %+v", p.Identify)
+	}
+	seen := map[string]bool{}
+	for _, j := range p.Identify {
+		seen[j.Probe] = true
+		if j.Probe == "snmp" && j.Community != "public" {
+			t.Errorf("snmp community = %q", j.Community)
+		}
+	}
+	if !seen["modbus"] || !seen["http"] || !seen["snmp"] {
+		t.Errorf("seen = %v", seen)
+	}
+}
+
+func TestIdentifyRunForcesOnce(t *testing.T) {
+	r := newRig(t, identifyCfg())
+	job := probe.IdentifyJob{
+		HostID: "ok", IP: ip("192.168.110.8"), Probe: "modbus", UnitID: 1,
+		Force: true, Trigger: observation.TriggerOperator,
+	}
+	results, err := r.s.IdentifyRun(context.Background(), "eth1", job)
+	if err != nil || len(r.eng[probe.Identify].all()) != 1 {
+		t.Fatalf("IdentifyRun = %v results %v passes %d", err, results, len(r.eng[probe.Identify].all()))
+	}
+	p := r.eng[probe.Identify].all()[0]
+	if len(p.Identify) != 1 || p.Identify[0].Trigger != observation.TriggerOperator || !p.Identify[0].Force {
+		t.Errorf("forced job = %+v", p.Identify)
 	}
 }

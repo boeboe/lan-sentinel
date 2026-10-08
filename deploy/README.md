@@ -65,6 +65,8 @@ sudo cp -a /data/lan-sentinel/hosts.db /data/lan-sentinel/hosts.db.pre-$(lan-sen
 
 Then run the commands of step 2: they install the new binary and unit, keep the site's config and start the daemon, which migrates the database. `sudo lan-sentinel daemon status` shows the running version. New settings appear in the release's `config.yaml`; compare it with the site's (`sudo diff config.yaml /etc/lan-sentinel/config.yaml`).
 
+From the release that adds identification probes (ADR 0011, migrations `0008_identify_attempts.sql` and `0009_identify_ran.sql`): existing site configs send no identification traffic until an interface lists a probe under `active.identify`. A default or omitted list is empty. Allow-listed names are `modbus`, `http`, `tls`, `snmp`, `ssh-banner`, `telnet` and `ftp`. SNMPv2c sends one configured community in the clear on one `GetRequest`; there is no compiled default, so `{name: snmp}` without a community fails `config validate`. `identify run` is the only way to repeat a probe on a host the daemon has already tried, and is recorded as `IDENTIFY_RAN` with the calling user.
+
 To roll back, stop the service, put the previous binary and the copied database back, and start it. `lan-sentinel --offline` refuses a database whose schema differs from the binary's until the daemon has migrated it.
 
 ## Cutting a release

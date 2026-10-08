@@ -55,6 +55,7 @@ const (
 	DHCPConfigChanged    Type = "DHCP_CONFIG_CHANGED"
 
 	HostDescribed Type = "HOST_DESCRIBED"
+	IdentifyRan   Type = "IDENTIFY_RAN"
 )
 
 // Severity is an event's severity.
@@ -106,6 +107,7 @@ func init() {
 		{DHCPServerMACChanged, "dhcp-server-mac-changed", Warning},
 		{DHCPConfigChanged, "dhcp-config-changed", Notice},
 		{HostDescribed, "described", Notice},
+		{IdentifyRan, "identify-ran", Info},
 	} {
 		catalogue[s.Type] = s
 	}
@@ -151,6 +153,8 @@ type Evidence struct {
 	NeighborState string                     `json:"neighbor_state,omitempty"`
 	Reason        string                     `json:"reason,omitempty"`
 	Actor         string                     `json:"actor,omitempty"`
+	Probe         string                     `json:"probe,omitempty"`
+	Result        string                     `json:"result,omitempty"`
 }
 
 // EvidenceFrom snapshots an observation.

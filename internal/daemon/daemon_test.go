@@ -236,6 +236,7 @@ func TestStartupAndShutdown(t *testing.T) {
 		"capture": platform.StateRunning, "interface": platform.StateRunning, "neighbor": platform.StateRunning,
 		// Enabled probe engines run; the others are reported disabled.
 		"arp": platform.StateRunning, "tcp": platform.StateRunning, "icmp": platform.StateDisabled, "udp": platform.StateDisabled,
+		"identify": platform.StateDisabled,
 	}
 	got := h.waitCollectors(len(want))
 	for _, c := range got {
@@ -358,6 +359,9 @@ func queryDB(t *testing.T, path, q string) []string {
 			t.Fatal(err)
 		}
 		out = append(out, s)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
 	}
 	return out
 }

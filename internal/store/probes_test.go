@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 	"testing/fstest"
+	"time"
 
 	"lan-sentinel/internal/store"
 	"lan-sentinel/migrations"
@@ -77,6 +78,50 @@ func TestKnownIPv4(t *testing.T) {
 	}
 	if none, err := r.KnownIPv4(ctx, "eth9"); err != nil || len(none) != 0 {
 		t.Errorf("unknown interface: %v, %v", none, err)
+	}
+}
+
+func TestIdentifyTargets(t *testing.T) {
+	st, _, _ := seed(t)
+	r := reader(t, st)
+	ctx := context.Background()
+	got, err := r.IdentifyTargets(ctx, "eth1", "modbus", time.Time{})
+	if err != nil || len(got) == 0 {
+		t.Fatalf("IdentifyTargets = %v, %v", got, err)
+	}
+	var eligible store.IdentifyCandidate
+	for _, c := range got {
+		if c.Suppress == "" {
+			eligible = c
+			break
+		}
+	}
+	if eligible.HostID == "" {
+		t.Fatal("no eligible host")
+	}
+	exec(t, st, `INSERT INTO identify_attempts (host_id, probe, result, attempted_at, trigger) VALUES (?, 'modbus', 'timeout', ?, 'scheduled')`,
+		eligible.HostID, t0.UnixMilli())
+	again, err := r.IdentifyTargets(ctx, "eth1", "modbus", time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range again {
+		if c.HostID == eligible.HostID && (!c.Attempted || c.Suppress != store.IdentifyAttempted) {
+			t.Errorf("after attempt %+v", c)
+		}
+	}
+	att, err := r.IdentifyAttemptOf(ctx, eligible.HostID, "modbus")
+	if err != nil || att.Result != "timeout" || att.Trigger != "scheduled" {
+		t.Errorf("IdentifyAttemptOf = %+v, %v", att, err)
+	}
+	stale, err := r.IdentifyTargets(ctx, "eth1", "modbus", t0.Add(100*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range stale {
+		if c.Suppress == "" {
+			t.Errorf("expected stale or attempted, got %+v", c)
+		}
 	}
 }
 

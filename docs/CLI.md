@@ -8,7 +8,7 @@ lan-sentinel [global options] <command> <subcommand> [options]
 
 ## 1. How commands reach data
 
-- **Online (default):** commands talk to the running daemon over `/run/lan-sentinel/api.sock`. This gives consistent reads and is required for `scan run`, `active enable|disable`, `config reload`, `watch` and `daemon status`.
+- **Online (default):** commands talk to the running daemon over `/run/lan-sentinel/api.sock`. This gives consistent reads and is required for `scan run`, `identify run`, `active enable|disable`, `config reload`, `watch` and `daemon status`.
 - **Offline (`--offline`):** the CLI opens the database directly, read-only. Read commands (`hosts`, `events`, `observations`, `services`, `interfaces`, `db`, `scan plan`) still work when the daemon will not start. Commands that need the daemon refuse `--offline` with exit 64 and a clear message.
 
 `lan-sentinel daemon run` stays in the foreground; systemd owns the process. No double-fork daemonisation.
@@ -46,7 +46,8 @@ The daemon runs as root with `UMask=0027` and the data directory is `0750 root:r
 | `daemon run` | Run the service in the foreground | `--config`, `--log-level` | 0 |
 | `daemon status` | Version, platform, PID, uptime, DB health, interfaces, host counts, kill-switch state, clock synchronisation, last scan, and per-interface collector state (`running`/`disabled`/`unsupported`/`failed`, backend or error); for each probe its last periodic pass, e.g. `arp running afpacket last pass 2m ago: 253 swept, 14 replied (26 s)` (blocked probes and `cut short` when they apply). Passes are shown here only, never logged | `-o json`; `--quiet` exit codes | 3 |
 | `hosts list` | Inventory: MAC, IP, hostname, vendor, device type, interface, presence, last seen, description. `--active`: live hosts (ACTIVE or RECENT); `--stale`: the others (STALE or MISSING); `--port`: an OPEN service on that port; `--vendor`: substring of vendor or manufacturer; `--device`: substring of the device type (the most confident identification, `DATA_MODEL.md` §5.7); `--description`: substring of the description | `--interface`, `--active`, `--stale`, `--vendor`, `--device`, `--description`, `--port`, `--seen-within` | 3 (device type from 6) |
-| `hosts show <host-id>` | Full record of one host: the device type, the description and the current identifications (most confident first per field) | | 3 (identification from 6) |
+| `hosts show <host-id>` | Full record of one host: the device type, the description and the current identifications (most confident first per field, with last seen) | | 3 (identification from 6) |
+| `identify run <host> --probe NAME` | Force one more identification probe on a host (bypasses only the once-per-MAC latch; the kill switch, budget and freshness rule still apply). Names: `modbus`, `http`, `tls`, `snmp`, `ssh-banner`, `telnet`, `ftp` | `--interface`, `--ip`/`--mac`/`--hostname`/`--id`, `--probe` (required) | 6 |
 | `hosts find <query>` | Current or point-in-time holder(s) with addresses, names and services and their sources; exit 1 when nothing matches | `--interface`, `--at <time>`, `--ip`/`--mac`/`--hostname`/`--id` | 3 |
 | `hosts history <query>` | Event timeline for a host, MAC, IP or name | `--interface`, `--since`, `--until`, `--ip`/`--mac`/`--hostname`/`--id` | 3 |
 | `hosts set <host> --description TEXT` | Set or replace a host's description (one line, at most 200 characters); the host resolved like `hosts find` to exactly one current host | `--interface`, `--ip`/`--mac`/`--hostname`/`--id`, `-o json` | 5 |
@@ -130,6 +131,10 @@ With no probe given (no `--arp`, `--icmp`, `--tcp`, `--udp` and no profile) the 
 
 Computes the same plan, prints it, and refuses (exit 2) if `scan plan` would. Otherwise it runs through the daemon's scheduler and budgets, interface by interface: the ARP sweep, then ICMP, TCP port by port and UDP probe by probe on the known hosts and the ARP responders. It prints the estimated typical duration while it runs and returns when the scan completes, with per interface the duration, how many hosts answered the sweep and the results per probe; exit 2 if the scan was aborted (the kill switch was set meanwhile), refused by the daemon, or done but not recorded. Only one operator scan runs at a time; interrupting `scan run` (Ctrl-C) aborts the scan, which is recorded as aborted. Each interface's scan is recorded as a `scans` row with `SCAN_STARTED` and `SCAN_COMPLETED` events; periodic passes are not. Needs the daemon.
 
+### `identify run`
+
+`identify run <host> --probe NAME` sends one identification probe to a host that has already been attempted, or that the scheduled look has not reached yet (ADR 0011). The host is resolved as for `hosts set` (exactly one current host). `--probe` is one of `modbus`, `http`, `tls`, `snmp`, `ssh-banner`, `telnet`, `ftp`. The command goes through the daemon and bypasses only the once-per-MAC latch; the kill switch, budget, excludes, configured networks and the fresh unambiguous-binding rule still apply. If those refuse, nothing is sent and the existing attempt row stays (exit 2). A send is recorded as `IDENTIFY_RAN` with the calling user. Offline is exit 64. `-o json` prints the attempt (`probe`, `result`, `trigger`, `actor`).
+
 ### Time arguments
 
 `--since`/`--seen-within` accept durations (`24h`, `7d`, `90m`) counted back from now, or timestamps. `--at`/`--until` accept `YYYY-MM-DD`, `YYYY-MM-DD HH:MM[:SS]` (local time) or RFC 3339. Tables show local time.
@@ -148,7 +153,7 @@ One row per DHCP server identity, relay and sender seen in a reply on an interfa
 
 ### Event type names
 
-`--type` takes the kebab-case CLI names from `DATA_MODEL.md` §7, e.g. `ip-changed`, `duplicate-ip`, `mac-moved`, `dhcp-server-unexpected`. Repeatable.
+`--type` takes the kebab-case CLI names from `DATA_MODEL.md` §7, e.g. `ip-changed`, `duplicate-ip`, `mac-moved`, `dhcp-server-unexpected`, `identify-ran`. Repeatable.
 
 ### Exit codes
 

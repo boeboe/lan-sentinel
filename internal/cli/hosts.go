@@ -228,7 +228,7 @@ func (a *app) hostRecord(w io.Writer, h store.Host, at *time.Time) {
 	if len(current) > 0 {
 		fmt.Fprintln(w, "\nIdentification:")
 		for _, i := range current {
-			fmt.Fprintf(w, "  %s=%s  %s  confidence %.2f\n", i.Field, i.Value, i.Source, i.Confidence)
+			fmt.Fprintf(w, "  %s=%s  %s  confidence %.2f  %s\n", i.Field, i.Value, i.Source, i.Confidence, a.ago(i.LastSeen))
 		}
 	}
 }

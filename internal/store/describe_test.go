@@ -86,3 +86,50 @@ func TestDescriptionMigration(t *testing.T) {
 		t.Errorf("after 0007: events %q, %d indexes, description %q", types, indexes, desc)
 	}
 }
+
+// Migration 0009 rebuilds events for IDENTIFY_RAN, keeping the rows and
+// every index.
+func TestIdentifyRanMigration(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "hosts.db")
+	all, err := fs.Glob(migrations.FS, "*.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := fstest.MapFS{}
+	for _, n := range all {
+		if n < "0009" {
+			b, _ := fs.ReadFile(migrations.FS, n)
+			old[n] = &fstest.MapFile{Data: b}
+		}
+	}
+	ctx := context.Background()
+	st, err := store.Open(ctx, store.Options{Path: path, Migrations: old})
+	if err != nil {
+		t.Fatal(err)
+	}
+	exec(t, st, `INSERT INTO network_contexts (id, interface, first_seen, last_seen) VALUES (1, 'eth1', 0, 0)`)
+	exec(t, st, `INSERT INTO hosts (host_id, context_id, mac, presence, first_seen, last_seen) VALUES ('h1', 1, '00:1b:1b:aa:bb:01', 'ACTIVE', 0, 0)`)
+	exec(t, st, `INSERT INTO events (ts, type, severity, cause, host_id) VALUES (5, 'HOST_DISCOVERED', 'notice', 'passive_arp', 'h1')`)
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	st, err = store.Open(ctx, store.Options{Path: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	exec(t, st, `INSERT INTO events (ts, type, severity, cause, host_id, new_value, evidence_json) VALUES (6, 'IDENTIFY_RAN', 'info', 'operator', 'h1', 'modbus ok', '{"actor":"bart","probe":"modbus","result":"ok"}')`)
+	var types string
+	var indexes int
+	if err := st.View(ctx, func(ctx context.Context, tx *sql.Tx) error {
+		if err := tx.QueryRowContext(ctx, `SELECT group_concat(type, ',') FROM (SELECT type FROM events ORDER BY id)`).Scan(&types); err != nil {
+			return err
+		}
+		return tx.QueryRowContext(ctx, `SELECT count(*) FROM sqlite_master WHERE type = 'index' AND tbl_name = 'events' AND sql IS NOT NULL`).Scan(&indexes)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if types != "HOST_DISCOVERED,IDENTIFY_RAN" || indexes != 9 {
+		t.Errorf("after 0009: events %q, %d indexes", types, indexes)
+	}
+}

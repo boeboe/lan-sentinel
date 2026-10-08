@@ -314,6 +314,9 @@ func bindings(ctx context.Context, tx *sql.Tx, cond string, args ...any) ([]Bind
 			out[i].Sources = append(out[i].Sources, s)
 		}
 		src.Close()
+		if err := src.Err(); err != nil {
+			return nil, err
+		}
 	}
 	if out == nil {
 		out = []Binding{}
@@ -993,6 +996,9 @@ func (r *Reader) Interfaces(ctx context.Context) ([]InterfaceInfo, error) {
 				out[k].Prefixes = append(out[k].Prefixes, p)
 			}
 			ps.Close()
+			if err := ps.Err(); err != nil {
+				return err
+			}
 		}
 		return nil
 	})
@@ -1251,6 +1257,100 @@ func (r *Reader) KnownIPv4(ctx context.Context, iface string) ([]KnownAddr, erro
 		return rows.Err()
 	})
 	return out, err
+}
+
+// IdentifySuppress reasons (ADR 0011): not sent, and not an attempt.
+const (
+	IdentifyStale     = "stale"
+	IdentifyDuplicate = "duplicate"
+	IdentifyProxyARP  = "proxy_arp"
+	IdentifyAttempted = "attempted"
+)
+
+// IdentifyCandidate is an open IPv4 binding considered for an
+// identification probe. Suppress is empty when the address is eligible.
+type IdentifyCandidate struct {
+	HostID    string
+	IP        netip.Addr
+	LastSeen  time.Time
+	Suppress  string
+	Attempted bool
+}
+
+// IdentifyTargets lists open IPv4 bindings on iface for one probe, with
+// why each is ineligible. KnownIPv4 is unchanged: discovery still uses it.
+func (r *Reader) IdentifyTargets(ctx context.Context, iface, probe string, since time.Time) ([]IdentifyCandidate, error) {
+	var out []IdentifyCandidate
+	err := r.read(ctx, func(tx *sql.Tx) error {
+		rows, err := tx.QueryContext(ctx, `SELECT h.host_id, a.ip, a.last_seen, a.conflict,
+			(SELECT count(*) FROM addresses o WHERE o.context_id = a.context_id AND o.ip = a.ip AND o.ended_at IS NULL) AS holders,
+			EXISTS(SELECT 1 FROM identifications i WHERE i.host_id = h.host_id AND i.field = 'proxy_arp' AND i.value = 'true') AS proxy,
+			EXISTS(SELECT 1 FROM identify_attempts t WHERE t.host_id = h.host_id AND t.probe = ?) AS attempted
+			FROM addresses a
+			JOIN hosts h ON h.host_id = a.host_id
+			JOIN network_contexts c ON c.id = a.context_id
+			WHERE c.interface = ? AND a.family = 4 AND a.ended_at IS NULL
+			ORDER BY a.ip, h.host_id`, probe, iface)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var hid, ip string
+			var last int64
+			var conflict, holders, proxy, attempted int
+			if err := rows.Scan(&hid, &ip, &last, &conflict, &holders, &proxy, &attempted); err != nil {
+				return err
+			}
+			addr, err := netip.ParseAddr(ip)
+			if err != nil {
+				continue
+			}
+			c := IdentifyCandidate{HostID: hid, IP: addr, LastSeen: timeOf(last), Attempted: attempted != 0}
+			switch {
+			case attempted != 0:
+				c.Suppress = IdentifyAttempted
+			case conflict != 0 || holders != 1:
+				c.Suppress = IdentifyDuplicate
+			case proxy != 0:
+				c.Suppress = IdentifyProxyARP
+			case !since.IsZero() && c.LastSeen.Before(since):
+				c.Suppress = IdentifyStale
+			}
+			out = append(out, c)
+		}
+		return rows.Err()
+	})
+	return out, err
+}
+
+// IdentifyAttempt is the last identification exchange for a host and probe.
+type IdentifyAttempt struct {
+	Probe     string    `json:"probe"`
+	Result    string    `json:"result"`
+	Attempted time.Time `json:"attempted_at"`
+	Trigger   string    `json:"trigger"`
+	Actor     string    `json:"actor,omitempty"`
+}
+
+// IdentifyAttemptOf returns the attempt row for host and probe, or
+// ErrNotFound.
+func (r *Reader) IdentifyAttemptOf(ctx context.Context, hostID, probe string) (IdentifyAttempt, error) {
+	var a IdentifyAttempt
+	err := r.read(ctx, func(tx *sql.Tx) error {
+		var at int64
+		err := tx.QueryRowContext(ctx, `SELECT probe, result, attempted_at, trigger, actor FROM identify_attempts
+			WHERE host_id = ? AND probe = ?`, hostID, probe).Scan(&a.Probe, &a.Result, &at, &a.Trigger, &a.Actor)
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return err
+		}
+		a.Attempted = timeOf(at)
+		return nil
+	})
+	return a, err
 }
 
 // DHCPServers lists the DHCP servers seen, by interface and identity.

@@ -5,8 +5,10 @@ package nettest
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"net"
 	"net/netip"
@@ -22,6 +24,8 @@ import (
 	"github.com/gopacket/gopacket"
 	"github.com/gopacket/gopacket/afpacket"
 	"github.com/gopacket/gopacket/layers"
+	"golang.org/x/net/bpf"
+	"golang.org/x/sys/unix"
 
 	"lan-sentinel/internal/api"
 	"lan-sentinel/internal/config"
@@ -62,26 +66,38 @@ func startCounter(t *testing.T, iface string, own net.HardwareAddr) *counter {
 	if err != nil {
 		t.Fatalf("counter: %v", err)
 	}
+	// Only the frames the runner sends, which the kernel marks
+	// PACKET_OUTGOING. The Docker bridge reflects broadcasts back to the
+	// port they came from (hairpin mode); such a copy arrives as an incoming
+	// frame with the runner's source MAC, sometimes tens of milliseconds
+	// late, so telling copies apart by time was not enough (CI once counted
+	// one ARP request twice, 21 ms apart).
+	prog, err := bpf.Assemble([]bpf.Instruction{
+		bpf.LoadExtension{Num: bpf.ExtType},
+		bpf.JumpIf{Cond: bpf.JumpEqual, Val: unix.PACKET_OUTGOING, SkipFalse: 1},
+		bpf.RetConstant{Val: 1 << 16},
+		bpf.RetConstant{Val: 0},
+	})
+	if err != nil {
+		t.Fatalf("counter filter: %v", err)
+	}
+	if err := tp.SetBPF(prog); err != nil {
+		tp.Close()
+		t.Fatalf("counter filter: %v", err)
+	}
+	// The ring is mapped before the filter is attached: skip what came in
+	// between.
+	filtered := time.Now()
 	c := &counter{}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		// The Docker bridge reflects broadcasts back to the port they came
-		// from (hairpin mode), so the ring sees a broadcast twice, tens of
-		// microseconds apart: count a frame once. The engines never send
-		// the same frame twice within milliseconds (per-target spacing).
-		var prev []byte
-		var prevAt time.Time
 		for ctx.Err() == nil {
 			data, ci, err := tp.ReadPacketData()
-			if err != nil {
+			if err != nil || ci.Timestamp.Before(filtered) {
 				continue
 			}
-			if bytes.Equal(data, prev) && ci.Timestamp.Sub(prevAt) < 5*time.Millisecond {
-				continue
-			}
-			prev, prevAt = data, ci.Timestamp
 			if f, ok := classify(data, own); ok {
 				f.at = ci.Timestamp
 				c.mu.Lock()
@@ -360,12 +376,29 @@ logging: { format: text }
 	// 4. The kill switch stops a running sweep at once.
 	scanDone := make(chan error, 1)
 	var killed scheduler.ScanResult
+	scanStart := time.Now()
 	go func() {
 		var err error
 		killed, err = l.client.Scan(ctx, probe.Request{ARP: true})
 		scanDone <- err
 	}()
-	time.Sleep(3 * time.Second)
+	// Stop it once the sweep is on the wire, not after a fixed delay: on a
+	// slow runner the switch could land before the scan starts and refuse
+	// it instead of stopping it. The sweep takes about 12 s at 10 pps.
+	for deadline := time.Now().Add(15 * time.Second); ; time.Sleep(100 * time.Millisecond) {
+		n := 0
+		for _, f := range cnt.all() {
+			if f.kind == "arp" && f.at.After(scanStart) {
+				n++
+			}
+		}
+		if n >= 5 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the sweep never reached the wire (%d ARP requests)\n%s", n, l.log)
+		}
+	}
 	if _, err := l.client.DisableActive(ctx, "test: stop now"); err != nil {
 		t.Fatal(err)
 	}
@@ -444,7 +477,186 @@ logging: { format: text }
 	if p, err := l.client.PlanScan(ctx, probe.Request{}); err != nil || !p.Allowed {
 		t.Errorf("plan after enable: %+v, %v", p.Reasons, err)
 	}
+	if obs, err := l.client.Observations(ctx, store.ObservationFilter{Source: string(observation.IdentifyProbe), Limit: 10}); err != nil || len(obs) != 0 {
+		t.Errorf("default config sent identification probes: %v, %v", obs, err)
+	}
 	l.stop(t)
+}
+
+// TestIdentifyOnce is ADR 0011 on the wire: an empty list sends nothing; an
+// opted-in Modbus probe is attempted once per host; the kill switch
+// refuses without writing another attempt; identify run is the only retry.
+func TestIdentifyOnce(t *testing.T) {
+	iface, prefix := env(t, "LS_TEST_IFACE"), netip.MustParsePrefix(env(t, "LS_TEST_PREFIX"))
+	dir := t.TempDir()
+	cfgPath, socket := filepath.Join(dir, "config.yaml"), filepath.Join(dir, "api.sock")
+	body := func(identify string) string {
+		return fmt.Sprintf(`version: 1
+interfaces:
+  - name: %s
+    passive: { enabled: false }
+    active:
+      enabled: true
+      networks: [%s]
+      identify: %s
+active:
+  startup_delay: 0s
+  jitter: 0
+  arp: { enabled: true, interval: 24h }
+  identify: { interval: 10s, timeout: 500ms, host_max_age: 1h }
+storage: { path: %s }
+api: { socket: %s }
+logging: { format: text }
+`, iface, prefix, identify, filepath.Join(dir, "hosts.db"), socket)
+	}
+	if err := os.WriteFile(cfgPath, []byte(body("[]")), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	l := startDaemon(t, cfgPath, socket)
+	ctx := context.Background()
+	if _, err := l.client.Scan(ctx, probe.Request{ARP: true}); err != nil {
+		t.Fatalf("sweep: %v\n%s", err, l.log)
+	}
+	// An empty list never looks: no pass is recorded and nothing is sent.
+	time.Sleep(3 * time.Second)
+	if p := identifyLook(t, l.client, iface); p != nil {
+		t.Fatalf("empty list ran an identification look: %+v", p)
+	}
+	if n := l.identifyAttempts(t); len(n) != 0 {
+		t.Fatalf("empty list sent identify probes: %v", n)
+	}
+
+	if err := os.WriteFile(cfgPath, []byte(body("[{name: modbus}]")), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := l.client.ReloadConfig(ctx); err != nil {
+		t.Fatalf("reload: %v\n%s", err, l.log)
+	}
+	l.waitCollector(t, iface, platform.CollectorIdentify, platform.StateRunning)
+	// Synchronise on the scheduler's own record of its looks, never on the
+	// database: the API reads what the writer has committed, up to one 5 s
+	// batch behind, so a count that stops growing for a while proves
+	// nothing (CI saw 1, then 6 once the next batch landed). A look that
+	// sent, then two more, which must not send to those hosts again.
+	l.waitIdentifyLooks(t, iface, 2)
+	// The kill switch is an operator action: it answers once everything on
+	// the bus before it is committed, so the counts below are complete.
+	if _, err := l.client.DisableActive(ctx, "test: identify"); err != nil {
+		t.Fatal(err)
+	}
+	// Once per host: later looks may find and try new hosts, never a host
+	// already tried.
+	tried := l.identifyAttempts(t)
+	if len(tried) == 0 {
+		t.Fatalf("opted-in identify sent nothing\n%s", l.log)
+	}
+	for id, n := range tried {
+		if n[observation.TriggerScheduled] != 1 || n[observation.TriggerOperator] != 0 {
+			t.Errorf("host %s attempts %v, want one scheduled", id, n)
+		}
+	}
+	host := slices.Sorted(maps.Keys(tried))[0]
+	if _, err := l.client.IdentifyRun(ctx, host, "modbus"); statusNet(err) != 409 {
+		t.Errorf("identify run with kill switch: %v", err)
+	}
+	if _, err := l.client.EnableActive(ctx, "test done"); err != nil { // commits again
+		t.Fatal(err)
+	}
+	if n := l.identifyAttempts(t)[host]; n[observation.TriggerScheduled] != 1 || n[observation.TriggerOperator] != 0 {
+		t.Errorf("kill switch still sent to %s: %v", host, n)
+	}
+	// identify run is the only retry; it answers once its attempt is
+	// committed.
+	a, err := l.client.IdentifyRun(ctx, host, "modbus")
+	if err != nil {
+		t.Fatalf("identify run retry: %v\n%s", err, l.log)
+	}
+	if a.Trigger != observation.TriggerOperator || a.Actor == "" {
+		t.Errorf("retry attempt = %+v, want trigger operator with the caller", a)
+	}
+	if n := l.identifyAttempts(t)[host]; n[observation.TriggerScheduled] != 1 || n[observation.TriggerOperator] != 1 {
+		t.Errorf("after the retry %s has %v, want one scheduled and one operator attempt", host, n)
+	}
+	l.stop(t)
+}
+
+// identifyLook is the last identification look on iface that daemon
+// status reports, nil before the first.
+func identifyLook(t *testing.T, c *api.Client, iface string) *scheduler.PassSummary {
+	t.Helper()
+	st, err := c.Status(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, in := range st.Interfaces {
+		for _, cs := range in.Collectors {
+			if cs.Interface == iface && cs.Collector == platform.CollectorIdentify {
+				return cs.LastPass
+			}
+		}
+	}
+	return nil
+}
+
+// waitIdentifyLooks waits until the identification loop on iface has
+// finished a look that sent, then more looks after it. A finished look's
+// exchanges are on the bus, not yet necessarily committed. The deadline
+// only bounds a failure (looks come every 10 s here), so it is generous
+// for slow runners; each look is logged for the CI output.
+func (l *liveDaemon) waitIdentifyLooks(t *testing.T, iface string, more int) {
+	t.Helper()
+	start := time.Now()
+	deadline := start.Add(2 * time.Minute)
+	var last time.Time
+	sent, after := false, 0
+	for after < more {
+		if time.Now().After(deadline) {
+			t.Fatalf("identification looks on %s: one that sent %v, %d after it, want %d\n%s", iface, sent, after, more, l.log)
+		}
+		time.Sleep(100 * time.Millisecond)
+		p := identifyLook(t, l.client, iface)
+		if p == nil || !p.At.After(last) {
+			continue
+		}
+		last = p.At
+		t.Logf("identification look after %.1fs: %d sent, %d answered, %d blocked, %.1fs", time.Since(start).Seconds(), p.Probed, p.Replied, p.Blocked, p.Seconds)
+		if sent {
+			after++
+		} else {
+			sent = p.Probed > 0
+		}
+	}
+}
+
+// identifyAttempts counts the committed identification attempts per host
+// and trigger, from the identify_probe observations.
+func (l *liveDaemon) identifyAttempts(t *testing.T) map[string]map[string]int {
+	t.Helper()
+	obs, err := l.client.Observations(context.Background(), store.ObservationFilter{Source: string(observation.IdentifyProbe), Limit: 1000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := map[string]map[string]int{}
+	for _, o := range obs {
+		var meta map[string]string
+		if err := json.Unmarshal(o.Meta, &meta); err != nil {
+			t.Fatalf("identify observation %d meta %q: %v", o.ID, o.Meta, err)
+		}
+		id := meta[observation.MetaHostID]
+		if out[id] == nil {
+			out[id] = map[string]int{}
+		}
+		out[id][meta[observation.MetaTrigger]]++
+	}
+	return out
+}
+
+func statusNet(err error) int {
+	var ae *api.Error
+	if errors.As(err, &ae) {
+		return ae.Status
+	}
+	return 0
 }
 
 // TestICMPRawSocket runs where ping sockets are not allowed for the

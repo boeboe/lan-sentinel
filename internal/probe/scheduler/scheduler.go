@@ -27,6 +27,8 @@ import (
 	"lan-sentinel/internal/observation"
 	"lan-sentinel/internal/platform"
 	"lan-sentinel/internal/probe"
+	"lan-sentinel/internal/probe/idprobe"
+	"lan-sentinel/internal/store"
 )
 
 // Known is a known host address: an open IPv4 binding, and when its
@@ -40,6 +42,11 @@ type Known struct {
 // interface: the targets of ICMP, TCP and UDP probes.
 type KnownSource interface {
 	Known(ctx context.Context, iface string) ([]Known, error)
+}
+
+// IdentifySource lists identification candidates of an interface (ADR 0011).
+type IdentifySource interface {
+	IdentifyTargets(ctx context.Context, iface, probe string, since time.Time) ([]store.IdentifyCandidate, error)
 }
 
 func addrs(known []Known) []netip.Addr {
@@ -57,6 +64,7 @@ type Options struct {
 	// MAC and addresses.
 	Links    func() map[string]probe.Link
 	Known    KnownSource
+	Identify IdentifySource
 	Engines  map[probe.Protocol]probe.Engine
 	Budget   *probe.Budget
 	Switch   *probe.Switch
@@ -73,17 +81,19 @@ type Options struct {
 }
 
 // Protocols in the order a scan runs them.
-var Protocols = []probe.Protocol{probe.ARP, probe.ICMP, probe.TCP, probe.UDP}
+var Protocols = []probe.Protocol{probe.ARP, probe.ICMP, probe.TCP, probe.UDP, probe.Identify}
 
 var collectors = map[probe.Protocol]string{
 	probe.ARP: platform.CollectorARP, probe.ICMP: platform.CollectorICMP,
 	probe.TCP: platform.CollectorTCP, probe.UDP: platform.CollectorUDP,
+	probe.Identify: platform.CollectorIdentify,
 }
 
 // transports says how each protocol's probes leave the box.
 var transports = map[probe.Protocol]string{
 	probe.ARP: platform.TransportFrames, probe.ICMP: platform.TransportICMP,
 	probe.TCP: platform.TransportTCP, probe.UDP: platform.TransportUDP,
+	probe.Identify: platform.TransportTCP,
 }
 
 // PassSummary is the outcome of the last periodic pass of a probe on an
@@ -108,12 +118,14 @@ type Scheduler struct {
 	backoff *probe.Backoff
 	scanMu  sync.Mutex
 
-	mu        sync.Mutex
-	rnd       *rand.Rand
-	reload    chan struct{}
-	counts    map[Count]uint64
-	durations map[[2]string]float64
-	passes    map[[2]string]PassSummary // interface, collector
+	mu         sync.Mutex
+	rnd        *rand.Rand
+	reload     chan struct{}
+	counts     map[Count]uint64
+	durations  map[[2]string]float64
+	passes     map[[2]string]PassSummary // interface, collector
+	suppressed map[[2]string]uint64      // identification probe, reason
+	sent       map[[2]string]bool        // host ID, identification probe: exchanges this process sent
 }
 
 // Count is a lan_sentinel_probe_total series.
@@ -138,6 +150,7 @@ func New(o Options) *Scheduler {
 	return &Scheduler{
 		o: o, backoff: probe.NewBackoff(), rnd: o.Rand, reload: make(chan struct{}),
 		counts: map[Count]uint64{}, durations: map[[2]string]float64{}, passes: map[[2]string]PassSummary{},
+		suppressed: map[[2]string]uint64{}, sent: map[[2]string]bool{},
 	}
 }
 
@@ -200,6 +213,55 @@ func (s *Scheduler) Durations() map[[2]string]float64 {
 		out[k] = v
 	}
 	return out
+}
+
+// IdentifySuppressed counts the hosts a scheduled identification look
+// did not send to, per probe and reason (stale, duplicate, proxy_arp):
+// lan_sentinel_identify_suppressed_total. The scheduler owns eligibility
+// (ADR 0011), so it counts them.
+func (s *Scheduler) IdentifySuppressed() map[[2]string]uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make(map[[2]string]uint64, len(s.suppressed))
+	for k, v := range s.suppressed {
+		out[k] = v
+	}
+	return out
+}
+
+func (s *Scheduler) suppress(name, reason string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.suppressed[[2]string{name, reason}]++
+}
+
+// markSent remembers the hosts an identification exchange went to. The
+// once-per-MAC latch is the committed identify_attempts row, and the store
+// is up to one batch behind; without this a look that starts before the
+// writer has committed the previous look's attempts would send again. A
+// blocked job sent nothing and is not an attempt (ADR 0011). On restart
+// the committed rows take over.
+func (s *Scheduler) markSent(jobs []probe.IdentifyJob, results []probe.Result) {
+	hosts := make(map[[2]string]string, len(jobs)) // address, probe → host ID
+	for _, j := range jobs {
+		hosts[[2]string{j.IP.String(), j.Probe}] = j.HostID
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, r := range results {
+		if r.State == probe.Blocked {
+			continue
+		}
+		if id, ok := hosts[[2]string{r.Target.String(), r.Probe}]; ok {
+			s.sent[[2]string{id, r.Probe}] = true
+		}
+	}
+}
+
+func (s *Scheduler) wasSent(hostID, name string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.sent[[2]string{hostID, name}]
 }
 
 func (s *Scheduler) record(iface string, p probe.Protocol, results []probe.Result, took time.Duration) {
@@ -305,7 +367,7 @@ func (s *Scheduler) report(iface string, p probe.Protocol, state platform.State,
 }
 
 // probeConfig returns whether p runs periodically and how often.
-func probeConfig(cfg *config.Config, p probe.Protocol) (bool, time.Duration) {
+func probeConfig(cfg *config.Config, iface string, p probe.Protocol) (bool, time.Duration) {
 	a := cfg.Active
 	switch p {
 	case probe.ARP:
@@ -316,6 +378,9 @@ func probeConfig(cfg *config.Config, p probe.Protocol) (bool, time.Duration) {
 		return a.TCP.Enabled && len(a.TCP.Targets) > 0, a.TCP.Interval.D()
 	case probe.UDP:
 		return a.UDP.Enabled && len(a.UDP.Probes) > 0, a.UDP.Interval.D()
+	case probe.Identify:
+		ic, ok := probe.InterfaceConfig(cfg, iface)
+		return ok && len(ic.Active.Identify) > 0, a.Identify.Interval.D()
 	}
 	return false, 0
 }
@@ -339,7 +404,7 @@ func (s *Scheduler) loop(ctx context.Context, iface string, p probe.Protocol) {
 		// closes them, so the loop never waits on a stale configuration.
 		reload, changed := s.reloaded(), s.o.Switch.Changed()
 		cfg := s.o.Config()
-		enabled, interval := probeConfig(cfg, p)
+		enabled, interval := probeConfig(cfg, iface, p)
 		if ic, ok := probe.InterfaceConfig(cfg, iface); !ok || !ic.Active.Enabled {
 			enabled = false
 		}
@@ -479,6 +544,9 @@ func (s *Scheduler) periodic(pctx context.Context, cfg *config.Config, ic config
 		s.sweepOrder(probe.NewSweep(ic.Active.Networks, ic.Active.Exclude, pass.Link.Own()), &pass)
 		return eng.Run(pctx, pass)
 	}
+	if p == probe.Identify {
+		return s.identifyPass(pctx, cfg, ic, pass, false)
+	}
 	found, err := s.o.Known.Known(pctx, iface)
 	if err != nil {
 		return nil, fmt.Errorf("known hosts of %s: %w", iface, err)
@@ -534,6 +602,78 @@ func (s *Scheduler) periodic(pctx context.Context, cfg *config.Config, ic config
 	return all, err
 }
 
+// identifyPass looks for hosts never attempted (or, when force, any
+// eligible host). Suppression is not an attempt.
+func (s *Scheduler) identifyPass(ctx context.Context, cfg *config.Config, ic config.InterfaceConfig, pass probe.Pass, force bool) ([]probe.Result, error) {
+	if s.o.Identify == nil {
+		return nil, nil
+	}
+	eng := s.o.Engines[probe.Identify]
+	if eng == nil {
+		return nil, fmt.Errorf("no identify engine")
+	}
+	since := s.o.Clock.Now().Add(-cfg.Active.Identify.HostMaxAge.D())
+	pass.ReplyTimeout = cfg.Active.Identify.Timeout.D()
+	var jobs []probe.IdentifyJob
+	for _, e := range ic.Active.Identify {
+		cands, err := s.o.Identify.IdentifyTargets(ctx, ic.Name, e.Name, since)
+		if err != nil {
+			return nil, fmt.Errorf("identify targets of %s: %w", ic.Name, err)
+		}
+		for _, c := range cands {
+			if !force && (c.Attempted || s.wasSent(c.HostID, e.Name)) {
+				continue
+			}
+			if c.Suppress != "" && c.Suppress != store.IdentifyAttempted {
+				s.suppress(e.Name, c.Suppress)
+				continue
+			}
+			if force && c.Suppress == store.IdentifyAttempted {
+				c.Suppress = ""
+			}
+			if c.Suppress != "" {
+				continue
+			}
+			jobs = append(jobs, probe.IdentifyJob{
+				HostID: c.HostID, IP: c.IP, Probe: e.Name,
+				UnitID:    uint8(cfg.Active.Identify.UnitIDOf(e)), //nolint:gosec // validated 1–255
+				Community: cfg.Active.Identify.CommunityOf(e),
+				Trigger:   observation.TriggerScheduled,
+			})
+		}
+	}
+	if len(jobs) == 0 {
+		return nil, nil
+	}
+	pass.Identify = jobs
+	results, err := eng.Run(ctx, pass)
+	s.markSent(jobs, results)
+	return results, err
+}
+
+// IdentifyRun sends one forced identification exchange (ADR 0011).
+func (s *Scheduler) IdentifyRun(ctx context.Context, iface string, job probe.IdentifyJob) ([]probe.Result, error) {
+	pass, ok := s.newPass(ctx, iface)
+	if !ok {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		return nil, fmt.Errorf("%s is down or absent", iface)
+	}
+	cfg := s.o.Config()
+	pass.ReplyTimeout = cfg.Active.Identify.Timeout.D()
+	pass.Identify = []probe.IdentifyJob{job}
+	eng := s.o.Engines[probe.Identify]
+	if eng == nil {
+		return nil, fmt.Errorf("no identify engine")
+	}
+	pctx, cancel := s.passContext(ctx)
+	defer cancel()
+	results, err := eng.Run(pctx, pass)
+	s.markSent(pass.Identify, results)
+	return results, s.stopped(err)
+}
+
 // noAnswer is a result that counts towards back-off: nothing came back.
 func noAnswer(state string) bool {
 	switch observation.ServiceState(state) {
@@ -547,13 +687,33 @@ func noAnswer(state string) bool {
 // configuration, the kill switch, the live links and the known hosts.
 func (s *Scheduler) Plan(ctx context.Context, req probe.Request) (probe.Plan, error) {
 	cfg := s.o.Config()
-	in := probe.PlanInput{Config: cfg, Active: s.o.Switch.State(), Links: s.o.Links(), Known: map[string][]netip.Addr{}}
+	in := probe.PlanInput{
+		Config: cfg, Active: s.o.Switch.State(), Links: s.o.Links(), Known: map[string][]netip.Addr{},
+		IdentifyJobs: map[string]int{}, IdentifyPackets: map[string]int{},
+	}
 	for _, ic := range cfg.Interfaces {
 		known, err := s.o.Known.Known(ctx, ic.Name)
 		if err != nil {
 			return probe.Plan{}, fmt.Errorf("known hosts of %s: %w", ic.Name, err)
 		}
 		in.Known[ic.Name] = addrs(known)
+		if s.o.Identify == nil || len(ic.Active.Identify) == 0 {
+			continue
+		}
+		since := s.o.Clock.Now().Add(-cfg.Active.Identify.HostMaxAge.D())
+		for _, e := range ic.Active.Identify {
+			cands, err := s.o.Identify.IdentifyTargets(ctx, ic.Name, e.Name, since)
+			if err != nil {
+				return probe.Plan{}, fmt.Errorf("identify targets of %s: %w", ic.Name, err)
+			}
+			for _, c := range cands {
+				if c.Suppress != "" || s.wasSent(c.HostID, e.Name) {
+					continue
+				}
+				in.IdentifyJobs[ic.Name]++
+				in.IdentifyPackets[ic.Name] += idprobe.BudgetCostOf(e.Name)
+			}
+		}
 	}
 	return probe.Compute(in, req), nil
 }

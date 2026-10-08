@@ -10,5 +10,5 @@ Read `AGENTS.md` at the repository root before changing anything. It holds the h
 - Collectors and probes only emit observations; only `internal/correlate` mutates state and writes events; one SQLite writer.
 - A host is one MAC per interface (UUID `host_id`); never merge or split.
 - Kernel access only in `internal/platform`.
-- OT safety rules 7, 11 and 12 are not negotiable without a recorded decision.
+- OT safety rules 7, 11 and 12 are not negotiable without a recorded decision. Identification probes follow ADR 0011 (opt-in, once per MAC).
 - If code and docs disagree, or a decision is missing, ask.

@@ -77,6 +77,7 @@ Fixed names and paths:
 | `internal/collect/replay` | pcap/pcapng/JSONL replay on a simulated clock |
 | `internal/probe` | What the engines share: the budget, policy, kill switch, targets, back-off, the planner (`Compute`) |
 | `internal/probe/{arp,icmp,tcp,udp}` | Probe engines; `udp` holds NTP and EtherNet/IP ListIdentity |
+| `internal/probe/idprobe` | Opt-in identification probes (ADR 0011): Modbus FC 43/14, HTTP, TLS, SNMPv2c, SSH banner, Telnet, FTP |
 | `internal/probe/scheduler` | Periodic loops per interface and protocol; operator scans; last-pass summaries |
 | `internal/netrange` | IPv4 range arithmetic and the keyed random walk for sweeps |
 | `internal/identify` | OUI lookup; the passive identifiers (mDNS, DHCP, hostname, LLDP) |
@@ -122,10 +123,11 @@ Fixed names and paths:
 7. **OT safety first.**
    - Active discovery is off by default and only scans explicitly configured networks.
    - It respects the global packet-rate budget, the concurrency cap, excludes and the `/24` prefix guard.
-   - Never add SYN scanning, generic UDP port scanning or IPv6 sweeping.
-   - TCP probes are a plain `connect()` with immediate close and no payload.
-   - ARP sweeps the configured networks; ICMP, TCP and UDP probe known hosts only.
-   - UDP probes are protocol-specific (NTP, EtherNet/IP ListIdentity) and only add evidence: no response means nothing, never that a host is offline.
+  - Never add SYN scanning, generic UDP port scanning or IPv6 sweeping.
+  - Discovery TCP probes are a plain `connect()` with immediate close and no payload.
+  - Identification probes (ADR 0011) are opt-in per interface, known hosts only, once per MAC. Each has one bounded, protocol-specified exchange. They must not use the discovery probe's immediate RST. Silence is never offline.
+  - ARP sweeps the configured networks; ICMP, TCP and UDP probe known hosts only.
+  - UDP probes are protocol-specific (NTP, EtherNet/IP ListIdentity) and only add evidence: no response means nothing, never that a host is offline.
 8. **No journal spam.** Observations are never logged. Only state transitions (events) go to journald.
 9. **No high-cardinality metrics.** Never put a MAC, IP, hostname or host ID in a Prometheus label.
 10. **Least privilege.**
@@ -134,9 +136,9 @@ Fixed names and paths:
     - Do not introduce anything that needs `CAP_NET_ADMIN`, another capability or root's file access.
 11. **Out of scope for v1.**
     - VLAN tagging, a web UI, and any data leaving the box (fleet aggregation, remote API).
-    - Identification by active probes that send payloads (Modbus FC 43/14, HTTP, TLS, SNMP); these would also need rule 7 changed.
-    - Do not build, design, scaffold, stub or add interfaces for any of these without an explicit request and a recorded decision.
-    - The passive identifiers (mDNS, DHCP, hostname, LLDP) are in scope.
+    - Identification by active probes that send payloads is in scope only under ADR 0011: opt-in per interface, once per MAC. Built probes are Modbus FC 43/14, HTTP, TLS, SNMPv2c, SSH banner, Telnet and FTP. Do not add another payload-sending probe, or infer `device_type` from banners, without a recorded decision. `ssh-kex` is not specified.
+    - Do not build, design, scaffold or stub VLAN tagging, a web UI or off-box data without an explicit request and a recorded decision.
+    - The passive identifiers (mDNS, DHCP, hostname, LLDP) stay in scope.
 12. **IPv4-first.** v1 active discovery is IPv4, and ARP is the primary LAN discovery mechanism. IPv6 active probing (NDP solicitation) is deferred until it is requested. Passive IPv6/NDP decoding stays.
 
 ## 5. Read this before editing
@@ -294,7 +296,7 @@ Which files each task touches: `docs/AI_REPO_MAP.md` (Common tasks).
 2. Engines only emit observations.
 3. Keep `scan plan` (`probe.Compute`) consistent with what `scan run` sends.
 4. Run `make check-all`: `TestActiveDiscovery` measures budgets on the wire.
-5. **A new probe protocol, or any probe that sends a payload to identify a device, changes the safety contract** (rules 7 and 11). Stop and ask. It needs a recorded decision before any code, interface or stub.
+5. **A new identification probe, or any probe that sends a payload the contract does not already name**, changes the safety contract (rules 7 and 11, ADR 0011). Stop and ask. It needs a recorded decision before any code, interface or stub.
 
 ## 11. Generated artifacts: do not edit by hand
 

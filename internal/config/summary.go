@@ -207,6 +207,20 @@ func Summarize(cfg *Config) Summary {
 		s.Probes = append(s.Probes, "udp "+strings.Join(a.UDP.Probes, ", ")+" every "+a.UDP.Interval.String())
 		rate += a.Budgets.UDP.PacketsPerSecond
 	}
+	var identify []string
+	seen := map[string]bool{}
+	for _, ic := range cfg.Interfaces {
+		for _, e := range ic.Active.Identify {
+			if e.Name == "" || seen[e.Name] {
+				continue
+			}
+			seen[e.Name] = true
+			identify = append(identify, e.Name)
+		}
+	}
+	if len(identify) > 0 {
+		s.Probes = append(s.Probes, "identify "+strings.Join(identify, ", ")+" every "+a.Identify.Interval.String())
+	}
 	if anyActive {
 		s.MaxPacketsPerSecond = math.Min(rate, a.MaxPacketsPerSecond)
 	}

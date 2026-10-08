@@ -138,6 +138,13 @@ func (c *Client) EnableActive(ctx context.Context, reason string) (store.ActiveS
 	return st, err
 }
 
+// IdentifyRun sends one identification probe through the daemon.
+func (c *Client) IdentifyRun(ctx context.Context, hostID, probe string) (store.IdentifyAttempt, error) {
+	var a store.IdentifyAttempt
+	err := c.post(ctx, c.http, "/v1/hosts/"+url.PathEscape(hostID)+"/identify", IdentifyRequest{Probe: probe}, &a)
+	return a, err
+}
+
 // SetDescription sets a host's description; "" removes it.
 func (c *Client) SetDescription(ctx context.Context, hostID, description string) (store.HostSummary, error) {
 	var h store.HostSummary

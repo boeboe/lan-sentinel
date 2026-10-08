@@ -41,12 +41,13 @@ const (
 	NDPProbe          Source = "ndp_probe"
 	TCPConnect        Source = "tcp_connect"
 	UDPProbe          Source = "udp_probe"
+	IdentifyProbe     Source = "identify_probe"
 )
 
 // Sources lists every valid source.
 var Sources = []Source{
 	PassiveARP, PassiveIPv4, PassiveIPv6, PassiveNDP, PassiveDHCP, PassiveDHCPLease, PassiveDHCPServer, PassiveMDNS,
-	PassiveDNS, PassiveLLDP, KernelNeighbor, ARPScan, ICMPScan, NDPProbe, TCPConnect, UDPProbe,
+	PassiveDNS, PassiveLLDP, KernelNeighbor, ARPScan, ICMPScan, NDPProbe, TCPConnect, UDPProbe, IdentifyProbe,
 }
 
 // Valid reports whether s is a known source.
@@ -81,8 +82,23 @@ const (
 // with MetaIdentityPrefix are the device's claims about itself
 // (identifications); the other keys describe the service.
 const (
-	MetaProbe          = "probe"
-	MetaIdentityPrefix = "id."
+	MetaProbe              = "probe"
+	MetaIdentityPrefix     = "id."
+	MetaIdentityConfPrefix = "idconf."
+	MetaResult             = "result"
+	MetaTrigger            = "trigger"
+	MetaHostID             = "host_id"
+	MetaActor              = "actor"
+)
+
+// Identification attempt results and triggers (DATA_MODEL.md §5.5).
+const (
+	ResultOK         = "ok"
+	ResultTimeout    = "timeout"
+	ResultRefused    = "refused"
+	ResultMalformed  = "malformed"
+	TriggerScheduled = "scheduled"
+	TriggerOperator  = "operator"
 )
 
 // Meta keys of DHCP observations (docs/DATA_MODEL.md §2, §5.6): the
@@ -114,6 +130,9 @@ func (o Observation) ProvesPresence() bool {
 	}
 	if o.Source == PassiveDNS {
 		return false
+	}
+	if o.Source == IdentifyProbe {
+		return o.Service != nil && o.Service.State == ServiceOpen
 	}
 	if o.Service != nil {
 		return o.Service.State == ServiceOpen || o.Service.State == ServiceRefused

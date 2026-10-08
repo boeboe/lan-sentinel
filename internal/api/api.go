@@ -138,6 +138,7 @@ func New(o Options) *Server {
 		"/v1/config/reload":  s.configReload,
 
 		"/v1/hosts/{id}/description": s.hostDescription,
+		"/v1/hosts/{id}/identify":    s.hostIdentify,
 	} {
 		s.mux.HandleFunc(path, postOnly(h))
 	}

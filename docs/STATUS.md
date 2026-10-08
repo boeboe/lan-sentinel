@@ -8,7 +8,7 @@ Snapshot as of **8 Oct 2026**: `main` at a6e9eee, latest release **v0.0.6** (v0.
 
 - **Phases 0–4** are built and verified in Docker and replay. They wait only for hardware and field checks.
 - **Phase 5** (releases, hardening, rollout) is in progress: the release pipeline, hardening, config reload, DHCP server monitoring and host descriptions are in; board audits, pilots and rollout follow `TEST_PLAN.md`.
-- **Phase 6** has its passive identifiers. The active identifiers are deferred.
+- **Phase 6** has its passive identifiers. Identification probes are in (ADR 0011, opt-in, once per MAC): Modbus FC 43/14, HTTP, TLS, SNMPv2c, SSH banner, Telnet and FTP. `ssh-kex` is not specified.
 
 ## By area
 
@@ -25,6 +25,8 @@ Snapshot as of **8 Oct 2026**: `main` at a6e9eee, latest release **v0.0.6** (v0.
 | DHCP server monitoring | Done | Receive only, DHCPv4 | `TestCaptureScenario`, `make test-net` |
 | Host descriptions (`hosts set` / `hosts unset`) | Done | | `internal/{cli,api,daemon,correlate,store}` tests |
 | Passive identification (mDNS, DHCP, hostname, LLDP), device type in `hosts list` | Done | | `internal/identify`, `internal/correlate` tests |
+| Active identification: Modbus, HTTP, TLS, SNMP, SSH banner, Telnet, FTP | Done in Docker | Opt-in per interface, once per MAC; `identify run` is the only retry | `internal/probe/idprobe`, `make test-net` |
+| Identification probes on the OT rig | **Pending (hardware)** | One named probe at a time; do not tick from Docker | `TEST_PLAN.md` I1 |
 | Clock-sync marking of events | Done | Read-only `adjtimex` | `make test-systemd` |
 | Release pipeline (tarballs, checksums, manual `release` workflow) | Done | | CI, releases v0.0.1–v0.0.6 |
 | Unit hardening, root with `CAP_NET_RAW` bounding set | Done in containers and on a CM4 | Exposure 2.3 on Debian 11, 12 and 13 | `make test-systemd`; CM4 row in `ARCHITECTURE.md` §8 |
@@ -40,14 +42,14 @@ Snapshot as of **8 Oct 2026**: `main` at a6e9eee, latest release **v0.0.6** (v0.
 | Item | Why | Recorded in |
 | --- | --- | --- |
 | IPv6 active probing (NDP solicitation) | v1 is IPv4-first; passive IPv6/NDP decoding stays | `REQUIREMENTS.md` §5 (IPv4-first), AGENTS.md rule 12 |
-| Active identification probes (Modbus FC 43/14, HTTP, TLS, SNMP) | They send payloads, which the OT safety contract forbids. They need a decision by the maintainer on that contract before any code, interface or stub exists | `REQUIREMENTS.md` §4 and §5 (Identification plugins), AGENTS.md rule 11, `IMPLEMENTATION_PLAN.md` phase 6 |
+| SSH key exchange identification (`ssh-kex`) | Not specified; ADR 0011 reads only the server identification line | `REQUIREMENTS.md` §5 (Active identification), ADR 0011 |
 | DHCPv6 monitoring; synthetic DHCP requests | DHCPv6 needs its own decoder and identity model; requests would change server state | `REQUIREMENTS.md` §5 (DHCP server monitoring) |
 | VLAN tagging, web UI, any data leaving the box | Out of scope for v1 | `REQUIREMENTS.md` §4, AGENTS.md rule 11 |
 
 ## Blocked on the maintainer
 
 - The hardware and field checks above. The maintainer runs `TEST_PLAN.md` on the boards; agents record the results they are given (`ARCHITECTURE.md` §8 table, plan checkboxes) and never tick these from Docker results.
-- The safety-contract decision for active identification.
+- `ssh-kex` if it is ever requested: a new bounded exchange under ADR 0011, not a scaffold of the banner probe.
 
 ## Open questions and rejected proposals
 

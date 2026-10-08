@@ -15,6 +15,7 @@ import (
 
 	"lan-sentinel/internal/config"
 	"lan-sentinel/internal/probe"
+	"lan-sentinel/internal/probe/idprobe"
 	"lan-sentinel/internal/probe/scheduler"
 	"lan-sentinel/internal/store"
 )
@@ -234,7 +235,9 @@ func (a *app) plan(ctx context.Context, req probe.Request) (probe.Plan, error) {
 			st.Reason = config.EnvActiveDisabled + "=1"
 		}
 	}
-	in := probe.PlanInput{Config: cfg, Active: st, Known: map[string][]netip.Addr{}}
+	in := probe.PlanInput{Config: cfg, Active: st, Known: map[string][]netip.Addr{},
+		IdentifyJobs: map[string]int{}, IdentifyPackets: map[string]int{}}
+	since := a.env.now().Add(-cfg.Active.Identify.HostMaxAge.D())
 	for _, ic := range cfg.Interfaces {
 		known, err := r.KnownIPv4(ctx, ic.Name)
 		if err != nil {
@@ -242,6 +245,19 @@ func (a *app) plan(ctx context.Context, req probe.Request) (probe.Plan, error) {
 		}
 		for _, k := range known {
 			in.Known[ic.Name] = append(in.Known[ic.Name], k.IP)
+		}
+		for _, e := range ic.Active.Identify {
+			cands, err := r.IdentifyTargets(ctx, ic.Name, e.Name, since)
+			if err != nil {
+				return probe.Plan{}, err
+			}
+			for _, c := range cands {
+				if c.Suppress != "" {
+					continue
+				}
+				in.IdentifyJobs[ic.Name]++
+				in.IdentifyPackets[ic.Name] += idprobe.BudgetCostOf(e.Name)
+			}
 		}
 	}
 	return probe.Compute(in, req), nil

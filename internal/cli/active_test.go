@@ -55,6 +55,13 @@ func (c *control) DescribeHost(_ context.Context, _, hostID, description string)
 	return store.HostSummary{HostID: hostID, MAC: "00:1b:1b:aa:bb:01", Interface: "eth1", Description: description}, nil
 }
 
+func (c *control) IdentifyRun(_ context.Context, _, _, probe string) (store.IdentifyAttempt, error) {
+	if c.err != nil {
+		return store.IdentifyAttempt{}, c.err
+	}
+	return store.IdentifyAttempt{Probe: probe, Result: "ok", Trigger: "operator"}, nil
+}
+
 func (c *control) ReloadConfig(context.Context, string) (api.ReloadResult, error) {
 	return c.reload, c.err
 }

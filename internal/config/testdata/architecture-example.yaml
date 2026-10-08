@@ -9,6 +9,7 @@ interfaces:
       enabled: true
       networks: [192.168.110.0/24]
       exclude:  [192.168.110.1]
+      identify: []                   # empty: no identification payload; names: modbus, http, tls, snmp, ssh-banner, telnet, ftp
 passive:
   protocols: { arp: true, ipv4: true, ipv6: false, dhcp: true, mdns: true, dns: true, lldp: true }
   ring_size: 2MiB                   # AF_PACKET ring per captured interface (256KiB-256MiB)
@@ -40,6 +41,13 @@ active:
     enabled: false
     interval: 15m
     probes: [ntp, enip]            # NTP (123), EtherNet/IP ListIdentity (44818)
+  identify:
+    interval: 1h
+    timeout: 2s
+    host_max_age: 30m
+    probes:
+      modbus: { unit_id: 1 }
+      snmp: { community: public }   # required when an interface names snmp; no compiled default
 profiles:
   modbus:
     arp: true

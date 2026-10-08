@@ -66,6 +66,11 @@ func (c *control) DescribeHost(_ context.Context, actor, hostID, description str
 	return store.HostSummary{HostID: hostID, Description: description}, c.err
 }
 
+func (c *control) IdentifyRun(_ context.Context, actor, hostID, probe string) (store.IdentifyAttempt, error) {
+	c.note(actor, hostID+"="+probe)
+	return store.IdentifyAttempt{Probe: probe, Result: "ok", Trigger: "operator"}, c.err
+}
+
 func (c *control) ReloadConfig(_ context.Context, actor string) (api.ReloadResult, error) {
 	c.note(actor, "reload")
 	return c.reload, c.err
@@ -179,6 +184,24 @@ func TestScanEndpoints(t *testing.T) {
 	}
 }
 
+func TestIdentifyEndpoint(t *testing.T) {
+	ctl := &control{}
+	c, _, _ := startControl(t, ctl)
+	ctx := context.Background()
+	a, err := c.IdentifyRun(ctx, "host-1", "modbus")
+	if err != nil || a.Probe != "modbus" || a.Result != "ok" || a.Trigger != "operator" || ctl.reasons[0] != "host-1=modbus" {
+		t.Fatalf("identify = %+v, %v (calls %v)", a, err, ctl.reasons)
+	}
+	ctl.err = fmt.Errorf("%w: stale", api.ErrIdentifyRefused)
+	if _, err := c.IdentifyRun(ctx, "host-1", "modbus"); status(err) != http.StatusConflict {
+		t.Errorf("refused: %v", err)
+	}
+	ctl.err = fmt.Errorf("host x: %w", store.ErrNotFound)
+	if _, err := c.IdentifyRun(ctx, "x", "modbus"); status(err) != http.StatusNotFound {
+		t.Errorf("unknown host: %v", err)
+	}
+}
+
 func TestConfigReloadEndpoint(t *testing.T) {
 	ctl := &control{reload: api.ReloadResult{
 		Path:       "/etc/lan-sentinel/config.yaml",
@@ -268,6 +291,9 @@ func TestOperatorRequestsAreChecked(t *testing.T) {
 		{"description is required", http.MethodPost, "/v1/hosts/h1/description", `{}`, http.StatusBadRequest},
 		{"description takes no other fields", http.MethodPost, "/v1/hosts/h1/description", `{"description":"x","tags":[]}`, http.StatusBadRequest},
 		{"get description is not allowed", http.MethodGet, "/v1/hosts/h1/description", "", http.StatusMethodNotAllowed},
+		{"identify probe required", http.MethodPost, "/v1/hosts/h1/identify", `{}`, http.StatusBadRequest},
+		{"identify unknown probe", http.MethodPost, "/v1/hosts/h1/identify", `{"probe":"ssh-kex"}`, http.StatusBadRequest},
+		{"get identify is not allowed", http.MethodGet, "/v1/hosts/h1/identify", "", http.StatusMethodNotAllowed},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -311,7 +337,7 @@ func TestOperatorWithoutControlOrPeer(t *testing.T) {
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Errorf("without control: %d", rec.Code)
 	}
-	for _, path := range []string{"/v1/active/disable", "/v1/active/enable", "/v1/scans/plan", "/v1/config/reload", "/v1/hosts/h1/description"} {
+	for _, path := range []string{"/v1/active/disable", "/v1/active/enable", "/v1/scans/plan", "/v1/config/reload", "/v1/hosts/h1/description", "/v1/hosts/h1/identify"} {
 		rec := httptest.NewRecorder()
 		srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{"reason":"x"}`)))
 		if rec.Code != http.StatusServiceUnavailable {

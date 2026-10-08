@@ -53,6 +53,7 @@ Fill in **PASS**, **FAIL** or **SKIP** (with the reason) and copy the per-test n
 | F1 Pilot sites, passive, 7 days | Open check: Phase 2 exit (3 pilot sites); Phase 5 staged rollout | | |
 | G1 Site captures | Open check: Phase 2 pcap fixtures | | |
 | H1 OT soak with active discovery, 7 days | Open check: Phase 4 exit (soak) | | |
+| I1 Identification probes, one name at a time | ADR 0011 on the OT rig | | |
 
 ---
 
@@ -525,6 +526,8 @@ On the OT rig with a real PLC, inverter and HMI, with the site team watching the
 2. ICMP echo to known hosts: `active: { icmp: { enabled: true } }`.
 3. TCP connect to the devices' Modbus port: `active: { tcp: { enabled: true, targets: [{ port: 502, name: modbus, timeout: 750ms }] } }`, a plain connect, closed at once, no data.
 
+Identification probes (`interfaces[].active.identify`) are a separate opt-in (ADR 0011) and are not part of this soak; use section I.
+
 Apply each step with `sudo lan-sentinel config validate && sudo lan-sentinel config reload`; the journal line says what runs.
 
 **Expect:** no device fault, alarm, diagnostic-buffer entry or dropped session on the PLC, inverter or HMI; budgets as in D2; `services list --port 502` shows OPEN for the Modbus devices. Note anything the devices log about the probes.
@@ -537,6 +540,41 @@ Apply each step with `sudo lan-sentinel config validate && sudo lan-sentinel con
 
 ---
 
+## I. Identification probes (LAB / OT rig)
+
+### I1 One named probe at a time
+
+On the OT rig with a real PLC, inverter or HMI, with the site team watching the device diagnostics. Enable **one** name under `interfaces[].active.identify` at a time (ADR 0011). For SNMPv2c write an explicit community (`community: public` or the site's read-only string); there is no compiled default. After each name:
+
+```bash
+sudo lan-sentinel config validate && sudo lan-sentinel config reload
+sudo journalctl -u lan-sentinel -n 50 --no-pager
+sudo lan-sentinel hosts show <mac-or-ip>
+```
+
+Expect no device fault. A first look writes `identify_attempts`; a second interval does not send again. `identify run` is the only retry and records `IDENTIFY_RAN` with your user. Silence is never offline. Do not tick this from Docker.
+
+Measure each probe on the wire once, as in D2. Its charge on the budget is a logical cost (ADR 0011) that does not count the ACKs and FIN of the exchange, so this is the only measurement of what it really sends. Capture the box's own packets to the device on the probe's port, force one exchange, then stop the capture:
+
+```bash
+sudo tcpdump -i <iface> -n -tttt -w /tmp/identify-<probe>.pcap ether src $(cat /sys/class/net/<iface>/address) and ip host <device-ip> and port <port>
+sudo lan-sentinel identify run <mac-or-ip> --probe <probe>
+```
+
+Count the packets sent (`tcpdump -r /tmp/identify-<probe>.pcap | wc -l`) and the busiest second (`tcpdump -r /tmp/identify-<probe>.pcap -tt | cut -d. -f1 | uniq -c | sort -n | tail -1`). **Expect:** the busiest second within the 20-packet global budget; record how far the packets sent exceed the charge.
+
+| Probe | Port | Charge | Device | Faults or diagnostics | Packets sent / busiest second | `identify_attempts` / `IDENTIFY_RAN` | Notes |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| modbus | 502 | 8 | | | | | |
+| http | 80 | 4 | | | | | |
+| tls | 443 | 4 | | | | | |
+| snmp | 161 | 1 | | | | | |
+| ssh-banner | 22 | 3 | | | | | |
+| telnet | 23 | 11 | | | | | |
+| ftp | 21 | 5 | | | | | |
+
+---
+
 ## Feedback
 
 Send back this file with the tables filled, plus:
@@ -545,6 +583,7 @@ Send back this file with the tables filled, plus:
 - any failing command with its full output and `sudo journalctl -u lan-sentinel -n 200 --no-pager`;
 - wrong or missing hosts, names or labels (B3, B6, F1);
 - the captures from G1;
+- identification-probe notes from I1;
 - anything in this plan that was unclear or impossible on the hardware.
 
 Each passed test lets the matching box in `IMPLEMENTATION_PLAN.md` be ticked; each failure becomes a fix or a decision.

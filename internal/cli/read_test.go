@@ -203,7 +203,7 @@ func TestReadCommands(t *testing.T) {
 		t.Errorf("--device printer lists %s:\n%s", b, out)
 	}
 	// hosts show has the current claims, hosts evidence all of them.
-	if !strings.Contains(out, "Device:      Printer\n") || !strings.Contains(out, "  device_type=Printer  mdns  confidence 0.70\n") ||
+	if !strings.Contains(out, "Device:      Printer\n") || !strings.Contains(out, "  device_type=Printer  mdns  confidence 0.70  5h ago\n") ||
 		strings.Contains(out, "Media player") {
 		t.Errorf("hosts show identification:\n%s", out)
 	}

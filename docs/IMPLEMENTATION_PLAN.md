@@ -124,7 +124,8 @@ Plugin interface in `internal/identify` taking a host's evidence and returning (
 
 - [x] Plugin interface (`identify.Identifier`: a name and `Identify(observation) []Claim`) applied by the correlator to every observation of a present host, each identifier switchable on reload (`identity.identifiers`); a source's value changes only to a more confident claim, the adopted one is marked `current` (migration 0006) and `hosts.device_type` is the most confident claim of any source (`DATA_MODEL.md` §5.7) — *started 7 Oct 2026*
 - [x] Passive identifiers, sending nothing: mDNS service types and `_device-info` model, DHCP fingerprint (vendor class, the iOS/macOS request list), hostname patterns, LLDP capabilities; `hosts show` shows the device type and current claims, `hosts evidence` every claim
-- [ ] Active identifiers: Modbus Device Identification (FC 43/14), HTTP `Server` and title, TLS certificate subject, SNMP `sysDescr`. Each sends a payload, which the OT safety rules (AGENTS.md rule 7) forbid: needs a decision on the safety contract (opt-in per site and probe, known hosts only, budgets, what each may send) before it is built
+- [x] Active identifiers: Modbus Device Identification (FC 43/14) — *opt-in, once per MAC (ADR 0011, 8 Oct 2026)*
+- [x] Active identifiers: HTTP `Server` and title, TLS certificate subject, SNMPv2c `sysDescr`, SSH banner, Telnet banner, FTP SYST — *opt-in, once per MAC (ADR 0011, 8 Oct 2026)*
 
 ## Testing strategy
 

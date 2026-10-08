@@ -32,6 +32,7 @@ import (
 	"lan-sentinel/internal/observation"
 	"lan-sentinel/internal/platform"
 	"lan-sentinel/internal/probe"
+	"lan-sentinel/internal/probe/idprobe"
 	"lan-sentinel/internal/probe/scheduler"
 	"lan-sentinel/internal/service"
 	"lan-sentinel/internal/store"
@@ -84,6 +85,7 @@ type Daemon struct {
 	reloadMu sync.Mutex           // serialises reloads (SIGHUP and the API)
 	budget   *probe.Budget        // live mode only
 	sched    *scheduler.Scheduler // live mode only
+	identify *idprobe.Engine      // live mode only; its counters feed the metrics
 }
 
 // Ready is closed once the daemon has signalled readiness.

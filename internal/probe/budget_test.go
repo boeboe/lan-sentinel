@@ -16,6 +16,10 @@ var t0 = time.Date(2026, 10, 1, 10, 0, 0, 0, time.UTC)
 
 func ip(s string) netip.Addr { return netip.MustParseAddr(s) }
 
+func sim(p Protocol, iface string, t netip.Addr) SimProbe {
+	return SimProbe{Protocol: p, Interface: iface, Target: t}
+}
+
 // hosts returns n distinct addresses 10.0.x.y.
 func hosts(n int) []netip.Addr {
 	out := make([]netip.Addr, n)
@@ -40,7 +44,7 @@ func schedule(limits Limits, probes []SimProbe) []send {
 	out := make([]send, 0, len(probes))
 	for _, p := range probes {
 		sim.Set(b.spacing(p.Interface, p.Target))
-		at, _ := b.reserve(p.Protocol, p.Interface, p.Target)
+		at, _ := b.reserve(p.Protocol, p.Interface, p.Target, p.Packets)
 		sim.Set(at)
 		out = append(out, send{at, p.Protocol})
 	}
@@ -77,14 +81,14 @@ func TestPacingStaysWithinEveryOneSecondWindow(t *testing.T) {
 		var ps []SimProbe
 		for i, h := range hosts(n) {
 			p := []Protocol{ARP, ICMP, TCP, UDP}[i%4]
-			ps = append(ps, SimProbe{p, "eth1", h})
+			ps = append(ps, sim(p, "eth1", h))
 		}
 		return ps
 	}
 	only := func(p Protocol, n int) []SimProbe {
 		var ps []SimProbe
 		for _, h := range hosts(n) {
-			ps = append(ps, SimProbe{p, "eth1", h})
+			ps = append(ps, sim(p, "eth1", h))
 		}
 		return ps
 	}
@@ -125,7 +129,7 @@ func TestPacingStaysWithinEveryOneSecondWindow(t *testing.T) {
 
 func TestTargetSpacing(t *testing.T) {
 	h := ip("10.0.0.5")
-	sends := schedule(defaultLimits(), []SimProbe{{ARP, "eth1", h}, {ICMP, "eth1", h}, {TCP, "eth1", h}, {TCP, "eth2", h}})
+	sends := schedule(defaultLimits(), []SimProbe{sim(ARP, "eth1", h), sim(ICMP, "eth1", h), sim(TCP, "eth1", h), sim(TCP, "eth2", h)})
 	for i := 1; i < 3; i++ {
 		if gap := sends[i].at.Sub(sends[i-1].at); gap < time.Second {
 			t.Errorf("probe %d to one target %v after the previous, want >= 1s", i, gap)
@@ -140,7 +144,7 @@ func TestTargetSpacing(t *testing.T) {
 func TestSimulateMatchesPacing(t *testing.T) {
 	probes := make([]SimProbe, 0, 101)
 	for _, h := range hosts(101) {
-		probes = append(probes, SimProbe{ARP, "eth1", h})
+		probes = append(probes, sim(ARP, "eth1", h))
 	}
 	got := Simulate(defaultLimits(), t0, probes)
 	want := 100 * time.Duration(float64(time.Second)/10*paceMargin)
@@ -226,14 +230,14 @@ func TestConcurrencyCaps(t *testing.T) {
 		blocks bool
 		reason string
 	}{
-		{"global cap", []SimProbe{{ARP, "eth1", ip("10.0.0.1")}, {ICMP, "eth1", ip("10.0.0.2")}, {UDP, "eth2", ip("10.0.0.3")}},
-			SimProbe{ARP, "eth1", ip("10.0.0.4")}, true, "concurrency"},
-		{"tcp per host", []SimProbe{{TCP, "eth1", ip("10.0.0.1")}}, SimProbe{TCP, "eth1", ip("10.0.0.1")}, true, "tcp_host"},
-		{"tcp per host is per interface", []SimProbe{{TCP, "eth1", ip("10.0.0.1")}}, SimProbe{TCP, "eth2", ip("10.0.0.1")}, false, ""},
-		{"tcp per interface", []SimProbe{{TCP, "eth1", ip("10.0.0.1")}, {TCP, "eth1", ip("10.0.0.2")}},
-			SimProbe{TCP, "eth1", ip("10.0.0.3")}, true, "tcp_interface"},
-		{"other protocols ignore tcp caps", []SimProbe{{TCP, "eth1", ip("10.0.0.1")}, {TCP, "eth1", ip("10.0.0.2")}},
-			SimProbe{ICMP, "eth1", ip("10.0.0.3")}, false, ""},
+		{"global cap", []SimProbe{sim(ARP, "eth1", ip("10.0.0.1")), sim(ICMP, "eth1", ip("10.0.0.2")), sim(UDP, "eth2", ip("10.0.0.3"))},
+			sim(ARP, "eth1", ip("10.0.0.4")), true, "concurrency"},
+		{"tcp per host", []SimProbe{sim(TCP, "eth1", ip("10.0.0.1"))}, sim(TCP, "eth1", ip("10.0.0.1")), true, "tcp_host"},
+		{"tcp per host is per interface", []SimProbe{sim(TCP, "eth1", ip("10.0.0.1"))}, sim(TCP, "eth2", ip("10.0.0.1")), false, ""},
+		{"tcp per interface", []SimProbe{sim(TCP, "eth1", ip("10.0.0.1")), sim(TCP, "eth1", ip("10.0.0.2"))},
+			sim(TCP, "eth1", ip("10.0.0.3")), true, "tcp_interface"},
+		{"other protocols ignore tcp caps", []SimProbe{sim(TCP, "eth1", ip("10.0.0.1")), sim(TCP, "eth1", ip("10.0.0.2"))},
+			sim(ICMP, "eth1", ip("10.0.0.3")), false, ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -291,7 +295,7 @@ func TestAcquireCancelled(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer r()
-		for _, p := range []SimProbe{{ARP, "eth1", ip("10.0.0.2")}} {
+		for _, p := range []SimProbe{sim(ARP, "eth1", ip("10.0.0.2"))} {
 			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 			_, err := b.Acquire(ctx, p.Protocol, p.Interface, p.Target)
 			cancel()
@@ -370,10 +374,10 @@ func TestPruneDropsPastSpacing(t *testing.T) {
 	sim := clock.NewSim(t0)
 	b := NewBudget(sim, Limits{TargetSpacing: time.Second}, nil)
 	for _, h := range hosts(4096) {
-		b.reserve(ARP, "eth1", h)
+		b.reserve(ARP, "eth1", h, 0)
 	}
 	sim.Advance(time.Minute)
-	b.reserve(ARP, "eth1", ip("10.1.0.1"))
+	b.reserve(ARP, "eth1", ip("10.1.0.1"), 0)
 	if len(b.target) != 1 {
 		t.Errorf("%d spacing entries after prune, want 1", len(b.target))
 	}
@@ -414,7 +418,7 @@ func TestLateSendMovesTheBooking(t *testing.T) {
 		t.Fatalf("second send at +%v", late)
 	}
 	// The third send is paced from the actual (late) send, not the booking.
-	at, _ := b.reserve(ARP, "eth1", h[2])
+	at, _ := b.reserve(ARP, "eth1", h[2], 0)
 	if gap := at.Sub(sent); gap < interval(1, 10) {
 		t.Errorf("third send %v after the late one, want >= %v", gap, interval(1, 10))
 	}

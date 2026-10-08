@@ -22,6 +22,7 @@ Where each concern lives, what to read before changing it, and which tests cover
 | Kernel access | `internal/platform` (`afpacket.go`, `netlink.go`, `transmit.go`); fakes in `platform/fake` | `ARCHITECTURE.md` §3 (Platform layer), §8 | `platform` tests; `test/net` |
 | Active probe safety (budget, policy, kill switch, back-off, plan) | `internal/probe` | `ARCHITECTURE.md` §3 (Active probes), §5 | `budget_test.go`, `policy_test.go`, `plan_test.go`; `test/net/active_test.go` (`TestActiveDiscovery`) |
 | Probe engines | `internal/probe/{arp,icmp,tcp,udp}` | `ARCHITECTURE.md` §3, §5 | per-engine tests on `platform/fake`; `test/net/active_test.go` |
+| Identification probes | `internal/probe/idprobe`, `internal/correlate/probes.go`, `identify_attempts` | `ARCHITECTURE.md` §3, §5; ADR 0011; `DATA_MODEL.md` §5.5 | `internal/probe/idprobe`; `test/net/active_test.go` |
 | Scheduling and operator scans | `internal/probe/scheduler`, `internal/netrange` | `ARCHITECTURE.md` §3 (scheduler paragraph) | `scheduler_test.go`, `netrange` tests |
 | Storage, writer, compaction, integrity | `internal/store` (`store.go`, `compact.go`, `integrity.go`, `migrate.go`) | `DATA_MODEL.md` §4, §9; `ARCHITECTURE.md` §3 (Store) | `store_test.go`, `compact_test.go`, `integrity_test.go`; `test/crash`; `make soak` |
 | Read model (API and `--offline`) | `internal/store/reader.go`, `query.go`, `model.go` | `CLI.md` §1, §4; `DATA_MODEL.md` §4 (Point-in-time query) | `reader_test.go`; `test/golden/cli_test.go` |

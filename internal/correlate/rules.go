@@ -12,6 +12,15 @@ import (
 	"lan-sentinel/internal/observation"
 )
 
+func (c *Correlator) hostByID(id string) *host {
+	for _, h := range c.st.order {
+		if h.id == id {
+			return h
+		}
+	}
+	return nil
+}
+
 // observe applies docs/DATA_MODEL.md §5 to one observation.
 func (c *Correlator) observe(ctx context.Context, o observation.Observation) {
 	n := c.st.contexts[o.Interface]
@@ -58,13 +67,21 @@ func (c *Correlator) observe(ctx context.Context, o observation.Observation) {
 	hostID := ""
 	if h != nil {
 		hostID = h.id
-	} else {
+	} else if hid := o.Meta[observation.MetaHostID]; hid != "" {
+		if found := c.hostByID(hid); found != nil {
+			h, hostID = found, hid
+		}
+	}
+	if h == nil {
 		c.unbound.Add(1)
 		c.count(o.Source, c.unboundBySource)
 	}
 	c.dbObservation(ctx, obsID, n.id, o, hostID)
 	if h == nil {
 		return
+	}
+	if o.Source == observation.IdentifyProbe {
+		c.recordIdentifyAttempt(ctx, h, o, obsID)
 	}
 	if ip.IsValid() && present {
 		c.attribute(ctx, h, ip, o, obsID, ev, discovered)

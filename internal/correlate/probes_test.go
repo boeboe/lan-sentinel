@@ -54,6 +54,11 @@ func TestProbeResultsProvePresenceOnlyWhenAnswered(t *testing.T) {
 		{"icmp reply", observation.Observation{Source: observation.ICMPScan, IP: ip}, true},
 		{"udp reply", observation.Observation{Source: observation.UDPProbe, IP: ip,
 			Service: &observation.ServiceResult{Proto: "udp", Port: 123, State: observation.ServiceOpen}, Meta: map[string]string{"probe": "ntp"}}, true},
+		{"identify ok", observation.Observation{Source: observation.IdentifyProbe, IP: ip,
+			Service: &observation.ServiceResult{Proto: "tcp", Port: 502, State: observation.ServiceOpen},
+			Meta:    map[string]string{observation.MetaProbe: "modbus", observation.MetaResult: observation.ResultOK}}, true},
+		{"identify timeout", observation.Observation{Source: observation.IdentifyProbe, IP: ip,
+			Meta: map[string]string{observation.MetaProbe: "modbus", observation.MetaResult: observation.ResultTimeout}}, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -274,4 +279,67 @@ func TestOperatorActions(t *testing.T) {
 	if next.ID != 3 {
 		t.Errorf("scan id after restart = %d", next.ID)
 	}
+}
+
+func TestIdentifyAttemptAndPerClaimConfidence(t *testing.T) {
+	h := newHarness(t)
+	h.obs(0, observation.PassiveARP, "eth1", plc, "10.1.0.50")
+	ip := netip.MustParseAddr("10.1.0.50")
+	h.probeObs(time.Hour, observation.Observation{
+		Source: observation.IdentifyProbe, IP: ip,
+		Meta: map[string]string{
+			observation.MetaProbe: "modbus", observation.MetaResult: observation.ResultMalformed,
+			observation.MetaTrigger: observation.TriggerScheduled, observation.MetaHostID: "host-01",
+		},
+	})
+	rows := h.query(`SELECT probe || ' ' || result || ' ' || trigger FROM identify_attempts`, func(r *sql.Rows) string {
+		var s string
+		_ = r.Scan(&s)
+		return s
+	})
+	expect(t, "failed attempt", rows, []string{"modbus malformed scheduled"})
+	if ev := strings.Join(h.events(), "\n"); strings.Contains(ev, "VENDOR_IDENTIFIED") {
+		t.Errorf("failed attempt wrote a claim:\n%s", ev)
+	}
+	h.probeObs(2*time.Hour, observation.Observation{
+		Source: observation.IdentifyProbe, IP: ip,
+		Service: &observation.ServiceResult{Proto: "tcp", Port: 502, State: observation.ServiceOpen},
+		Meta: map[string]string{
+			observation.MetaProbe: "modbus", observation.MetaResult: observation.ResultOK,
+			observation.MetaTrigger:                       observation.TriggerOperator,
+			observation.MetaActor:                         "bart",
+			observation.MetaIdentityPrefix + "vendor":     "ACME",
+			observation.MetaIdentityConfPrefix + "vendor": "0.95",
+		},
+	})
+	rows = h.query(`SELECT probe || ' ' || result || ' ' || trigger FROM identify_attempts`, func(r *sql.Rows) string {
+		var s string
+		_ = r.Scan(&s)
+		return s
+	})
+	expect(t, "upserted attempt", rows, []string{"modbus ok operator"})
+	rows = h.query(`SELECT actor FROM identify_attempts`, func(r *sql.Rows) string {
+		var s string
+		_ = r.Scan(&s)
+		return s
+	})
+	expect(t, "attempt actor", rows, []string{"bart"})
+	if ev := strings.Join(h.events(), "\n"); !strings.Contains(ev, "IDENTIFY_RAN") {
+		t.Errorf("operator identify run events:\n%s", ev)
+	}
+	evj := h.query(`SELECT evidence_json FROM events WHERE type = 'IDENTIFY_RAN'`, func(r *sql.Rows) string {
+		var s string
+		_ = r.Scan(&s)
+		return s
+	})
+	if len(evj) != 1 || !strings.Contains(evj[0], `"actor":"bart"`) || !strings.Contains(evj[0], `"probe":"modbus"`) {
+		t.Errorf("IDENTIFY_RAN evidence = %v", evj)
+	}
+	ids := h.query(`SELECT field || '=' || value || ' ' || source || ' ' || confidence FROM identifications WHERE source = 'modbus'`,
+		func(r *sql.Rows) string {
+			var s string
+			_ = r.Scan(&s)
+			return s
+		})
+	expect(t, "modbus claim", ids, []string{"vendor=ACME modbus 0.95"})
 }

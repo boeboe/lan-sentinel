@@ -249,5 +249,8 @@ func queryStrings(t *testing.T, db *sql.DB, q string) []string {
 		}
 		out = append(out, s)
 	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
 	return out
 }

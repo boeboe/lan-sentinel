@@ -29,6 +29,7 @@ const (
 	CollectorNDP       = "ndp"
 	CollectorTCP       = "tcp"
 	CollectorUDP       = "udp"
+	CollectorIdentify  = "identify"
 )
 
 // CollectorStatus is the state of one collector on one interface.

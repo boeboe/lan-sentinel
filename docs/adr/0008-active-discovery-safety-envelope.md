@@ -36,4 +36,4 @@ Active discovery is off by default, enabled per interface, and scoped:
 
 - SYN scanning, generic UDP port scanning, and IPv6 sweeping. NDP solicitation is deferred: v1 is IPv4-first.
 - Scanning discovered subnets automatically.
-- Identification probes that send payloads (Modbus FC 43/14, HTTP, TLS, SNMP). These need a decision by the maintainer on the safety contract before any code, interface or stub exists.
+- Identification probes that send payloads (Modbus FC 43/14, HTTP, TLS, SNMP). *Superseded for this bullet by [ADR 0011](0011-active-identification-probes.md) (8 Oct 2026).*

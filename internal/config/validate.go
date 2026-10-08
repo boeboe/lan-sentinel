@@ -168,6 +168,48 @@ func (v *validator) activeInterface(k string, ic InterfaceConfig, ac ActiveConfi
 			v.add(fmt.Sprintf("%s.active.exclude[%d]", k, j), "%s has host bits set; use %s", e.Prefix, e.Masked())
 		}
 	}
+	v.identifyList(k+".active.identify", ic.Active.Identify, ac.Identify)
+}
+
+// maxSNMPCommunity bounds the SNMPv2c community so a typo cannot send
+// a huge GetRequest (ADR 0011: one datagram).
+const maxSNMPCommunity = 128
+
+func (v *validator) identifyList(key string, list []InterfaceIdentify, defaults IdentifyConfig) {
+	seen := map[string]bool{}
+	for i, e := range list {
+		k := fmt.Sprintf("%s[%d]", key, i)
+		switch {
+		case e.Name == "":
+			v.add(k+".name", "is required")
+		case !slices.Contains(IdentifyProbeNames, e.Name):
+			v.add(k+".name", "must be one of %v, got %q", IdentifyProbeNames, e.Name)
+		case seen[e.Name]:
+			v.add(k+".name", "%q is listed more than once", e.Name)
+		}
+		seen[e.Name] = true
+		if e.Name != "modbus" && e.UnitID != nil {
+			v.add(k+".unit_id", "does not apply to %s", e.Name)
+		}
+		if e.Name != "snmp" && e.Community != "" {
+			v.add(k+".community", "does not apply to %s", e.Name)
+		}
+		if e.Name == "modbus" {
+			id := defaults.UnitIDOf(e)
+			if id < 1 || id > 255 {
+				v.add(k+".unit_id", "must be between 1 and 255, got %d", id)
+			}
+		}
+		if e.Name == "snmp" {
+			c := defaults.CommunityOf(e)
+			switch {
+			case c == "":
+				v.add(k+".community", "is required")
+			case len(c) > maxSNMPCommunity:
+				v.add(k+".community", "must be at most %d characters, got %d", maxSNMPCommunity, len(c))
+			}
+		}
+	}
 }
 
 // Sweep limits: DefaultMaxSweepTargets is active.max_sweep_targets' default
@@ -283,10 +325,19 @@ func (v *validator) active(cfg *Config) {
 		key string
 		d   Duration
 	}{{"active.arp.interval", a.ARP.Interval}, {"active.icmp.interval", a.ICMP.Interval},
-		{"active.tcp.interval", a.TCP.Interval}, {"active.udp.interval", a.UDP.Interval}} {
+		{"active.tcp.interval", a.TCP.Interval}, {"active.udp.interval", a.UDP.Interval},
+		{"active.identify.interval", a.Identify.Interval}} {
 		if iv.d.D() < minProbeInterval {
 			v.add(iv.key, "must be at least %s, got %s", Duration(minProbeInterval), iv.d)
 		}
+	}
+	v.positive("active.identify.timeout", a.Identify.Timeout)
+	v.positive("active.identify.host_max_age", a.Identify.HostMaxAge)
+	if id := a.Identify.Probes.Modbus.UnitID; id < 1 || id > 255 {
+		v.add("active.identify.probes.modbus.unit_id", "must be between 1 and 255, got %d", id)
+	}
+	if c := a.Identify.Probes.SNMP.Community; len(c) > maxSNMPCommunity {
+		v.add("active.identify.probes.snmp.community", "must be at most %d characters, got %d", maxSNMPCommunity, len(c))
 	}
 	v.udpProbes("active.udp.probes", a.UDP.Probes)
 	if a.UDP.Enabled && len(a.UDP.Probes) == 0 {

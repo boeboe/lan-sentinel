@@ -35,6 +35,20 @@ func validationErrors(t *testing.T, yml string) []FieldError {
 	return ve.Errors
 }
 
+func TestIdentifyNamesAllowed(t *testing.T) {
+	yml := minimal + "    active: { identify: [{name: http}, {name: tls}, {name: snmp, community: public}, {name: ssh-banner}, {name: telnet}, {name: ftp}] }\n"
+	l := mustLoad(t, yml, LoadOptions{})
+	if n := len(l.Config.Interfaces[0].Active.Identify); n != 6 {
+		t.Fatalf("identify = %d", n)
+	}
+	if got := l.Config.Active.Identify.CommunityOf(l.Config.Interfaces[0].Active.Identify[2]); got != "public" {
+		t.Errorf("snmp community = %q", got)
+	}
+	if got := Defaults().Active.Identify.CommunityOf(InterfaceIdentify{Name: "snmp"}); got != "" {
+		t.Errorf("compiled community = %q, want empty", got)
+	}
+}
+
 func TestDocExamplesLoad(t *testing.T) {
 	for _, file := range []string{"testdata/architecture-example.yaml", "testdata/replay-example.yaml"} {
 		t.Run(file, func(t *testing.T) {

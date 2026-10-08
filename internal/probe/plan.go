@@ -71,6 +71,10 @@ type InterfacePlan struct {
 	Link  Link                  `json:"-"`
 	Own   []netip.Addr          `json:"-"`
 	Excl  []config.AddrOrPrefix `json:"-"`
+	// IdentifyJobs is how many never-attempted identification exchanges
+	// this interface would send (ADR 0011).
+	IdentifyJobs    int `json:"identify_jobs,omitempty"`
+	IdentifyPackets int `json:"-"`
 }
 
 // Rates are the limits a scan runs under.
@@ -94,6 +98,7 @@ type Estimate struct {
 	ICMPEchoes        int     `json:"icmp_echoes"`
 	TCPConnects       int     `json:"tcp_connects"`
 	UDPProbes         int     `json:"udp_probes"`
+	IdentifyProbes    int     `json:"identify_probes,omitempty"`
 	Packets           int     `json:"packets"`
 	TypicalSeconds    float64 `json:"typical_seconds"`
 	NoResponseSeconds float64 `json:"no_response_seconds"`
@@ -104,6 +109,7 @@ func (e *Estimate) add(o Estimate) {
 	e.ICMPEchoes += o.ICMPEchoes
 	e.TCPConnects += o.TCPConnects
 	e.UDPProbes += o.UDPProbes
+	e.IdentifyProbes += o.IdentifyProbes
 	e.Packets += o.Packets
 	e.TypicalSeconds += o.TypicalSeconds
 	e.NoResponseSeconds += o.NoResponseSeconds
@@ -117,6 +123,10 @@ type PlanInput struct {
 	Active store.ActiveState
 	Links  map[string]Link         // live interface addresses (own IPs are never probed)
 	Known  map[string][]netip.Addr // known IPv4 addresses per interface
+	// IdentifyJobs and IdentifyPackets are never-attempted identification
+	// exchanges per interface (ADR 0011): counted once, at BudgetCost each.
+	IdentifyJobs    map[string]int
+	IdentifyPackets map[string]int
 }
 
 // Compute plans req. Every refusal reason is listed, not only the first.
@@ -300,7 +310,8 @@ func planInterface(cfg *config.Config, in PlanInput, name string, req Request, p
 		ip.KnownTargets = len(ip.Known)
 	}
 	ip.TCP = tcpTargets(cfg, pr.TCP)
-	if ip.SweepTargets == 0 && ip.KnownTargets == 0 {
+	ip.IdentifyJobs, ip.IdentifyPackets = in.IdentifyJobs[name], in.IdentifyPackets[name]
+	if ip.SweepTargets == 0 && ip.KnownTargets == 0 && ip.IdentifyJobs == 0 {
 		ip.Reasons = append(ip.Reasons, "no targets left")
 	}
 	ip.Estimate = estimate(LimitsFrom(cfg.Active), ip, pr)
@@ -371,7 +382,8 @@ func estimate(limits Limits, ip InterfacePlan, pr Probes) Estimate {
 		e.UDPProbes += len(ip.Known)
 		phase(UDP, ip.Known, DefaultReplyTimeout)
 	}
-	e.Packets = e.ARPRequests + e.ICMPEchoes + e.UDPProbes + TCPTokens*e.TCPConnects
+	e.IdentifyProbes = ip.IdentifyJobs
+	e.Packets = e.ARPRequests + e.ICMPEchoes + e.UDPProbes + TCPTokens*e.TCPConnects + ip.IdentifyPackets
 	var pace time.Duration
 	switch {
 	case e.ARPRequests > len(sweep):

@@ -98,6 +98,33 @@ func TestBus(t *testing.T) {
 	}
 }
 
+func TestPublishWaitDoesNotDropIdentify(t *testing.T) {
+	b := NewBus(1)
+	fill := Observation{Time: time.Unix(1, 0), Source: PassiveARP, IP: netip.MustParseAddr("10.0.0.1")}
+	if !b.Publish(fill) {
+		t.Fatal("fill")
+	}
+	id := Observation{Time: time.Unix(2, 0), Source: IdentifyProbe, IP: netip.MustParseAddr("10.0.0.2")}
+	errc := make(chan error, 1)
+	go func() {
+		errc <- b.PublishWait(context.Background(), id)
+	}()
+	got := <-b.C()
+	if got.Observation.Source != PassiveARP {
+		t.Fatalf("first = %s", got.Observation.Source)
+	}
+	if err := <-errc; err != nil {
+		t.Fatal(err)
+	}
+	got = <-b.C()
+	if got.Observation.Source != IdentifyProbe {
+		t.Fatalf("identify = %s", got.Observation.Source)
+	}
+	if b.Dropped() != 0 {
+		t.Errorf("Dropped = %d, want 0", b.Dropped())
+	}
+}
+
 func TestBusCancellation(t *testing.T) {
 	b := NewBus(0) // default size
 	if cap(b.ch) != DefaultBusSize {
