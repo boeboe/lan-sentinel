@@ -25,7 +25,7 @@ Snapshot as of **8 Oct 2026**: `main` at a6e9eee, latest release **v0.0.6** (v0.
 | DHCP server monitoring | Done | Receive only, DHCPv4 | `TestCaptureScenario`, `make test-net` |
 | Host descriptions (`hosts set` / `hosts unset`) | Done | | `internal/{cli,api,daemon,correlate,store}` tests |
 | Passive identification (mDNS, DHCP, hostname, LLDP), device type in `hosts list` | Done | | `internal/identify`, `internal/correlate` tests |
-| Active identification: Modbus, HTTP, TLS, SNMP, SSH banner, Telnet, FTP | Done in Docker | Opt-in per interface, once per MAC; `identify run` is the only retry | `internal/probe/idprobe`, `make test-net` |
+| Active identification: Modbus, HTTP, TLS, SNMP, SSH banner, Telnet, FTP | Done in Docker | Opt-in per interface, once per MAC; `identify run` is the only retry. TLS is a 1.2/1.3 handshake (`BudgetCost` 7, no SNI); hosts already latched `tls` `malformed` need `identify run --probe tls` | `internal/probe/idprobe`, `make test-net` |
 | Identification probes on the OT rig | **Pending (hardware)** | One named probe at a time; do not tick from Docker | `TEST_PLAN.md` I1 |
 | Clock-sync marking of events | Done | Read-only `adjtimex` | `make test-systemd` |
 | Release pipeline (tarballs, checksums, manual `release` workflow) | Done | | CI, releases v0.0.1–v0.0.6 |

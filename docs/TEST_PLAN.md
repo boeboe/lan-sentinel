@@ -563,11 +563,13 @@ sudo lan-sentinel identify run <mac-or-ip> --probe <probe>
 
 Count the packets sent (`tcpdump -r /tmp/identify-<probe>.pcap | wc -l`) and the busiest second (`tcpdump -r /tmp/identify-<probe>.pcap -tt | cut -d. -f1 | uniq -c | sort -n | tail -1`). **Expect:** the busiest second within the 20-packet global budget; record how far the packets sent exceed the charge.
 
+For `tls`, the device completes a full handshake, including its private-key operation: watch its CPU load and diagnostics during the exchange, not only afterwards. The probe offers TLS 1.2 and 1.3 with ECDHE (X25519, P-256); a device that speaks only TLS 1.0 or 1.1, or only RSA key exchange, is recorded `malformed`. Note such devices under Notes, so the range can be decided.
+
 | Probe | Port | Charge | Device | Faults or diagnostics | Packets sent / busiest second | `identify_attempts` / `IDENTIFY_RAN` | Notes |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | modbus | 502 | 8 | | | | | |
 | http | 80 | 4 | | | | | |
-| tls | 443 | 4 | | | | | |
+| tls | 443 | 7 | | | | | |
 | snmp | 161 | 1 | | | | | |
 | ssh-banner | 22 | 3 | | | | | |
 | telnet | 23 | 11 | | | | | |

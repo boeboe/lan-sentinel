@@ -2,26 +2,29 @@ package idprobe
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
-	"crypto/rsa"
+	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
-	"encoding/binary"
 	"errors"
 	"math/big"
+	"net"
 	"testing"
 	"time"
 )
 
-func testTLSCertDER(t *testing.T) []byte {
+func testTLSCertificate(t *testing.T) tls.Certificate {
 	t.Helper()
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
 	tmpl := &x509.Certificate{
 		SerialNumber: big.NewInt(0xabc),
 		Subject:      pkix.Name{CommonName: "plc", Organization: []string{"ACME"}},
+		Issuer:       pkix.Name{CommonName: "plc-ca", Organization: []string{"ACME"}},
 		NotBefore:    time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 		NotAfter:     time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC),
 		DNSNames:     []string{"plc.local"},
@@ -30,70 +33,147 @@ func testTLSCertDER(t *testing.T) []byte {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return der
+	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key}
 }
 
-func tlsRecord(typ byte, payload []byte) []byte {
-	rec := make([]byte, 5+len(payload))
-	rec[0] = typ
-	rec[1], rec[2] = 0x03, 0x03
-	binary.BigEndian.PutUint16(rec[3:5], uint16(len(payload))) //nolint:gosec
-	copy(rec[5:], payload)
-	return rec
+// sizedConn records the size of every write, so a test can see the
+// ClientHello on the wire.
+type sizedConn struct {
+	net.Conn
+	sizes []int
 }
 
-func tlsHandshake(typ byte, body []byte) []byte {
-	msg := make([]byte, 4+len(body))
-	msg[0] = typ
-	putUint24(msg[1:], len(body))
-	copy(msg[4:], body)
-	return msg
+func (c *sizedConn) Write(p []byte) (int, error) {
+	c.sizes = append(c.sizes, len(p))
+	return c.Conn.Write(p)
 }
 
-func tlsServerHello(verMaj, verMin byte) []byte {
-	body := make([]byte, 2+32+1+2+1)
-	body[0], body[1] = verMaj, verMin
-	body[35] = 0
-	body[36], body[37] = 0x00, 0x2f
-	return tlsHandshake(tlsHSServer, body)
-}
-
-func tlsCertificateMsg(der []byte) []byte {
-	inner := make([]byte, 3+3+len(der))
-	putUint24(inner, 3+len(der))
-	putUint24(inner[3:], len(der))
-	copy(inner[6:], der)
-	return tlsHandshake(tlsHSCert, inner)
-}
-
-func TestTLSCertificate(t *testing.T) {
-	der := testTLSCertDER(t)
-	raw := append(tlsRecord(tlsRecordHS, tlsServerHello(0x03, 0x03)),
-		tlsRecord(tlsRecordHS, tlsCertificateMsg(der))...)
-	s := &memSession{in: raw}
-	r, err := (TLS{}).Exchange(context.Background(), s)
+// exchangeTLS runs the probe against a crypto/tls server configured by
+// server and returns the claims and each write the probe made.
+func exchangeTLS(t *testing.T, server func(*tls.Config)) (Response, []int, error) {
+	t.Helper()
+	cert := testTLSCertificate(t)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if r.Identity["subject_cn"] != "plc" || r.Identity["subject_o"] != "ACME" ||
-		r.Identity["san"] != "plc.local" || r.Identity["tls_version"] != "1.2" ||
-		r.Identity["fingerprint"] == "" || r.Confidence["subject_o"] != 0.7 {
-		t.Errorf("identity = %v conf = %v", r.Identity, r.Confidence)
+	t.Cleanup(func() { _ = ln.Close() })
+	errc := make(chan error, 1)
+	go func() {
+		c, err := ln.Accept()
+		if err != nil {
+			errc <- err
+			return
+		}
+		defer c.Close()
+		_ = c.SetDeadline(time.Now().Add(5 * time.Second))
+		cfg := &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12}
+		server(cfg)
+		errc <- tls.Server(c, cfg).Handshake()
+	}()
+	conn, err := net.DialTimeout("tcp", ln.Addr().String(), time.Second)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if len(s.writes) != 1 {
-		t.Errorf("writes = %d", len(s.writes))
+	t.Cleanup(func() { _ = conn.Close() })
+	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+	sized := &sizedConn{Conn: conn}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	r, xerr := (TLS{}).Exchange(ctx, newSession(sized, TLS{}.Limits()))
+	_ = conn.Close()
+	<-errc
+	return r, sized.sizes, xerr
+}
+
+// Every handshake a device may lead the probe into stays within the write
+// cap: a HelloRetryRequest (the server wants another key share) and a
+// client certificate request add messages, never a write past the cap,
+// which would record a working server as malformed and use up its only
+// attempt. The ClientHello stays small enough for one segment (no
+// post-quantum key share), which old embedded TLS stacks expect.
+func TestTLSHandshakes(t *testing.T) {
+	tests := []struct {
+		name    string
+		server  func(*tls.Config)
+		version string
+	}{
+		{"TLS 1.2", func(c *tls.Config) { c.MaxVersion = tls.VersionTLS12 }, "1.2"},
+		{"TLS 1.3", func(c *tls.Config) { c.MaxVersion = tls.VersionTLS13 }, "1.3"},
+		{"TLS 1.3 HelloRetryRequest", func(c *tls.Config) { c.CurvePreferences = []tls.CurveID{tls.CurveP256} }, "1.3"},
+		{"TLS 1.2 client certificate requested", func(c *tls.Config) {
+			c.MaxVersion, c.ClientAuth = tls.VersionTLS12, tls.RequestClientCert
+		}, "1.2"},
+		{"TLS 1.3 client certificate requested", func(c *tls.Config) { c.ClientAuth = tls.RequestClientCert }, "1.3"},
+		{"TLS 1.3 retry and client certificate", func(c *tls.Config) {
+			c.CurvePreferences, c.ClientAuth = []tls.CurveID{tls.CurveP256}, tls.RequestClientCert
+		}, "1.3"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r, writes, err := exchangeTLS(t, tt.server)
+			t.Logf("writes %v", writes)
+			if err != nil {
+				t.Fatalf("exchange: %v (writes %v)", err, writes)
+			}
+			if r.Identity["subject_cn"] != "plc" || r.Identity["subject_o"] != "ACME" || r.Identity["san"] != "plc.local" ||
+				r.Identity["tls_version"] != tt.version || r.Identity["fingerprint"] == "" || r.Confidence["subject_o"] != tlsConfidence {
+				t.Errorf("identity = %v conf = %v", r.Identity, r.Confidence)
+			}
+			if len(writes) < 1 || len(writes) > tlsMaxWrites {
+				t.Errorf("writes %v, want 1..%d", writes, tlsMaxWrites)
+			}
+			if writes[0] > tlsMaxClientHello {
+				t.Errorf("ClientHello of %d bytes, want at most %d", writes[0], tlsMaxClientHello)
+			}
+		})
 	}
 }
 
 func TestTLSRejects(t *testing.T) {
-	if _, err := parseTLS(tlsRecord(tlsRecordAlert, []byte{2, 40})); !errors.Is(err, errTLS) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		c, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		_, _ = c.Write([]byte{21, 3, 3, 0, 2, 2, 40}) // fatal handshake_failure
+		_ = c.Close()
+	}()
+	conn, err := net.DialTimeout("tcp", ln.Addr().String(), time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
+	if _, err := (TLS{}).Exchange(context.Background(), newSession(conn, TLS{}.Limits())); !errors.Is(err, errTLS) {
 		t.Errorf("alert = %v", err)
 	}
-	hello13 := tlsRecord(tlsRecordHS, tlsServerHello(0x03, 0x04))
-	if _, err := parseTLS(hello13); !errors.Is(err, errTLS) {
-		t.Errorf("tls1.3 = %v", err)
+	if _, err := (TLS{}).Exchange(context.Background(), &memSession{}); !errors.Is(err, errTLS) {
+		t.Errorf("memSession = %v", err)
 	}
-	if _, err := parseTLS(nil); !errors.Is(err, errTLS) {
-		t.Errorf("empty = %v", err)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := (TLS{}).Exchange(ctx, nil); !errors.Is(err, context.Canceled) {
+		t.Errorf("cancelled = %v", err)
+	}
+	if _, err := certFromX509(nil, "1.2"); !errors.Is(err, errTLS) {
+		t.Errorf("nil cert = %v", err)
+	}
+}
+
+func TestTLSVersionLabel(t *testing.T) {
+	if got := tlsVersionLabel(tls.VersionTLS10); got != "1.0" {
+		t.Errorf("1.0 = %s", got)
+	}
+	if got := tlsVersionLabel(tls.VersionTLS11); got != "1.1" {
+		t.Errorf("1.1 = %s", got)
+	}
+	if got := tlsVersionLabel(0x0305); got != "0x0305" {
+		t.Errorf("unknown = %s", got)
 	}
 }

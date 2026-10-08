@@ -2,6 +2,7 @@
 
 - Status: Accepted
 - Date: 8 Oct 2026
+- Amended: 8 Oct 2026 (TLS probe: a full handshake, X25519 and P-256 only, at most 4 writes)
 - Specified in: `ARCHITECTURE.md` §3 (Active probes), §5; `REQUIREMENTS.md` FR-AC-11, §4, §5 (Active identification); `DATA_MODEL.md` §2, §5.5; AGENTS.md rules 7 and 11
 - Amends: [0008](0008-active-discovery-safety-envelope.md) identification bullet only. The rest of the envelope stands.
 
@@ -22,7 +23,9 @@ Identification probes that send a bounded payload are allowed under this contrac
 - **No inference.** Claims are what the device asserted, at a per-claim confidence. This work does not classify banners into `device_type`.
 - **Credentials.** No SSH, Telnet, FTP or HTTP authentication, no credential guessing, no community enumeration. SNMPv2c may send exactly one configured read-only community on a single `GetRequest`. There is no compiled default community: listing `snmp` without one fails validation.
 
-Slice 1 builds Modbus FC 43/14 (function `0x2B`, MEI `0x0E`, Read Device ID code `0x01` basic, unit id from config). Slice 2 (8 Oct 2026) builds HTTP, TLS (one ClientHello, TLS 1.2 certificate, `BudgetCost` 4), SNMPv2c, SSH banner, Telnet and FTP. `ssh-kex` is not specified.
+Slice 1 builds Modbus FC 43/14 (function `0x2B`, MEI `0x0E`, Read Device ID code `0x01` basic, unit id from config). Slice 2 (8 Oct 2026) builds HTTP, TLS, SNMPv2c, SSH banner, Telnet and FTP. `ssh-kex` is not specified.
+
+The TLS probe (amended 8 Oct 2026) completes one `crypto/tls` handshake, TLS 1.2 through 1.3, with `InsecureSkipVerify` and no SNI. Claims are the peer certificate (subject, issuer, SAN, serial, not-before/after, SHA-256 fingerprint, negotiated version) at confidence 0.7. It offers X25519 and P-256 only, which keeps the ClientHello in one TCP segment (Go's default post-quantum key share makes it about 1.5 KB). At most 4 writes: the ClientHello, a final flight, and after a HelloRetryRequest a compatibility ChangeCipherSpec and a second ClientHello. `BudgetCost` is 7 (3 TCP + 4 application writes). The handshake is one Exchange on one TCP connection. The first slice-2 form (a handmade ClientHello that parsed only a cleartext TLS 1.2 Certificate) is withdrawn: TLS 1.3 encrypts the certificate, so that exchange returned `malformed` on hosts that speak 1.3. A host already latched as `tls` `malformed` needs `identify run --probe tls` after this change.
 
 ## Consequences
 

@@ -81,23 +81,11 @@ func (a *app) describeHost(cmd *cobra.Command, q queryFlags, args []string, ifac
 		return err
 	}
 	cl := a.client()
-	res, err := cl.Find(cmd.Context(), store.FindQuery{Query: query, Kind: kind, Interface: iface})
+	cur, err := oneCurrent(cmd.Context(), cl, query, kind, iface)
 	if err != nil {
 		return a.failed(err)
 	}
-	switch len(res.Hosts) {
-	case 0:
-		return failf(ExitDegraded, "no current host matches %s", query)
-	case 1:
-	default:
-		var b strings.Builder
-		fmt.Fprintf(&b, "%s matches %d hosts; name one with --interface or its host ID:", query, len(res.Hosts))
-		for _, h := range res.Hosts {
-			fmt.Fprintf(&b, "\n  %s  %s  %s", h.HostID, h.Interface, h.MAC)
-		}
-		return failf(ExitUsage, "%s", b.String())
-	}
-	h, err := cl.SetDescription(cmd.Context(), res.Hosts[0].HostID, text)
+	h, err := cl.SetDescription(cmd.Context(), cur.HostID, text)
 	if err != nil {
 		return a.failed(err)
 	}

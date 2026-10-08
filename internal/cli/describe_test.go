@@ -118,3 +118,17 @@ func TestHostsSetAndUnset(t *testing.T) {
 		t.Errorf("daemon error: exit %d %s", code, stderr)
 	}
 }
+
+func TestHostsShowQuery(t *testing.T) {
+	f := serveDescribe(t)
+	a1 := f.ids["eth1 "+f.a]
+	if code, out, _ := f.run(t, "hosts", "show", "--id", a1); code != 0 || !strings.Contains(out, a1) {
+		t.Errorf("show by id: %d\n%s", code, out)
+	}
+	if code, _, stderr := f.run(t, "hosts", "show", f.a); code != ExitUsage || !strings.Contains(stderr, "matches 2 hosts") {
+		t.Errorf("show MAC on two ifaces: %d %s", code, stderr)
+	}
+	if code, out, _ := f.run(t, "hosts", "show", f.a, "--interface", "eth1"); code != 0 || !strings.Contains(out, a1) {
+		t.Errorf("show MAC --interface: %d\n%s", code, out)
+	}
+}

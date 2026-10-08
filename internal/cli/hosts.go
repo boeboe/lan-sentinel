@@ -143,16 +143,29 @@ func dash(s string) string {
 }
 
 func (a *app) hostsShowCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "show <host-id>",
-		Short: "Full record of one host, with every address and name over time",
-		Args:  cobra.ExactArgs(1),
+	var q queryFlags
+	var iface string
+	c := &cobra.Command{
+		Use:   "show <query>",
+		Short: "Full record of one current host, with every address and name over time",
+		Long: "Shows one current host by host ID, MAC, IP or hostname (detected in that\n" +
+			"order, as hosts find). When several match (the same MAC on two interfaces),\n" +
+			"it lists them with their host IDs and exits 64; --interface or --id picks one.",
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := onlyFormats(a.g.output, "table", "json"); err != nil {
 				return err
 			}
+			text, kind, err := q.resolve(args)
+			if err != nil {
+				return err
+			}
 			return a.run(cmd, false, func(ctx context.Context, b backend) error {
-				h, err := b.Host(ctx, args[0])
+				cur, err := oneCurrent(ctx, b, text, kind, iface)
+				if err != nil {
+					return err
+				}
+				h, err := b.Host(ctx, cur.HostID)
 				if err != nil {
 					return err
 				}
@@ -164,6 +177,37 @@ func (a *app) hostsShowCmd() *cobra.Command {
 			})
 		},
 	}
+	q.add(c)
+	c.Flags().StringVar(&iface, "interface", "", "the host's interface, when the query matches hosts on several")
+	return c
+}
+
+// finder is what oneCurrent needs: a backend, or the API client of a
+// command that only runs online (hosts set).
+type finder interface {
+	Find(ctx context.Context, q store.FindQuery) (store.FindResult, error)
+}
+
+// oneCurrent resolves a find query to exactly one current host (hosts show,
+// hosts set). Several matches are a usage error so the operator can pick
+// --interface or a host ID.
+func oneCurrent(ctx context.Context, b finder, query string, kind store.QueryKind, iface string) (store.Host, error) {
+	res, err := b.Find(ctx, store.FindQuery{Query: query, Kind: kind, Interface: iface})
+	if err != nil {
+		return store.Host{}, err
+	}
+	switch len(res.Hosts) {
+	case 0:
+		return store.Host{}, failf(ExitDegraded, "no current host matches %s", query)
+	case 1:
+		return res.Hosts[0].Host, nil
+	}
+	var buf strings.Builder
+	fmt.Fprintf(&buf, "%s matches %d hosts; name one with --interface or its host ID:", query, len(res.Hosts))
+	for _, h := range res.Hosts {
+		fmt.Fprintf(&buf, "\n  %s  %s  %s", h.HostID, h.Interface, h.MAC)
+	}
+	return store.Host{}, failf(ExitUsage, "%s", buf.String())
 }
 
 // hostRecord prints a host as in docs/CLI.md §5; at marks the bindings

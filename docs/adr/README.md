@@ -11,7 +11,7 @@ If an ADR and a specification disagree, stop and ask (`AGENTS.md` §2).
 ## Rules
 
 - **Numbering.** One file per decision, `NNNN-short-title.md`, numbered in order. Never renumber.
-- **Changes.** An accepted ADR is not rewritten. To change a decision, add a new ADR that supersedes it and set the old one's status to `Superseded by NNNN`. Typo fixes and link updates are fine.
+- **Changes.** A refinement of an accepted decision (a corrected detail, an added case, a changed limit) is edited into the ADR as a dated amendment: say in the text what changed and when, and add an `Amended:` line to its header. Record the same change, with its date, in `REQUIREMENTS.md` §5. Reversing a decision, or part of one, takes a new ADR that supersedes it: set the old one's status to `Superseded by NNNN`, or mark the superseded part inline (as ADR 0008 does for its identification bullet). Typo fixes and link updates need no amendment line.
 - **Who decides.** A new ADR needs the maintainer's decision. An agent may draft one only to record a decision the user has made, and adds the `REQUIREMENTS.md` §5 row in the same change.
 - **Format.** Keep each short: Status, Date, Context, Decision, Consequences, Ruled out. Link to the specification sections instead of repeating them.
 

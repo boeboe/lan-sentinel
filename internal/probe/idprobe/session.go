@@ -3,9 +3,11 @@ package idprobe
 import (
 	"io"
 	"net"
+	"time"
 )
 
 // session wraps a connection and stops writes and reads past Limits.
+// It is a net.Conn so probes that need one (TLS) can type-assert.
 type session struct {
 	conn      net.Conn
 	writes    int
@@ -13,6 +15,8 @@ type session struct {
 	read      int
 	maxRead   int
 }
+
+var _ net.Conn = (*session)(nil)
 
 func newSession(conn net.Conn, lim Limits) *session {
 	if lim.MaxWrites < 0 {
@@ -43,3 +47,12 @@ func (s *session) Read(p []byte) (int, error) {
 	s.read += n
 	return n, err
 }
+
+func (s *session) Close() error { return s.conn.Close() }
+
+func (s *session) LocalAddr() net.Addr  { return s.conn.LocalAddr() }
+func (s *session) RemoteAddr() net.Addr { return s.conn.RemoteAddr() }
+
+func (s *session) SetDeadline(t time.Time) error      { return s.conn.SetDeadline(t) }
+func (s *session) SetReadDeadline(t time.Time) error  { return s.conn.SetReadDeadline(t) }
+func (s *session) SetWriteDeadline(t time.Time) error { return s.conn.SetWriteDeadline(t) }

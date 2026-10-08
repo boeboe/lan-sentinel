@@ -171,7 +171,7 @@ func TestReadCommands(t *testing.T) {
 		{"db info json", []string{"-o", "json", "db", "info"}, 0, []string{fmt.Sprintf(`"schema_version": %d`, store.LatestSchemaVersion())}},
 		{"db check", []string{"db", "check"}, 0, []string{"ok"}},
 		{"db check json", []string{"-o", "json", "db", "check"}, 0, []string{`"ok": true`}},
-		{"show json", []string{"-o", "json", "hosts", "show", "00000000-0000-0000-0000-000000000000"}, 2, nil},
+		{"show json", []string{"-o", "json", "hosts", "show", "00000000-0000-0000-0000-000000000000"}, 1, nil},
 		{"status degraded is not set", []string{"daemon", "status"}, 0, []string{"Version:    1.2.3 (linux/arm64)   PID 412   up 3d 4h", "DISABLED (PLC fault)", "41 MB", "1 active, 2 stale", "operation not permitted",
 			"         arp        running     afpacket    last pass 2m ago: 253 swept, 14 replied (26 s)\n",
 			"         icmp       running     ping socket last pass 1h ago: 9 probed, 7 replied, 2 blocked (67 min, cut short)\n",
@@ -206,6 +206,20 @@ func TestReadCommands(t *testing.T) {
 	if !strings.Contains(out, "Device:      Printer\n") || !strings.Contains(out, "  device_type=Printer  mdns  confidence 0.70  5h ago\n") ||
 		strings.Contains(out, "Media player") {
 		t.Errorf("hosts show identification:\n%s", out)
+	}
+	// The query is the same as hosts find: IP, MAC, or an explicit --ip.
+	if code, out, _ := f.run(t, "hosts", "show", "192.168.110.52"); code != 0 || !strings.Contains(out, hosts[a]) ||
+		!strings.Contains(out, "192.168.110.52") {
+		t.Errorf("hosts show by IP: %d\n%s", code, out)
+	}
+	if code, out, _ := f.run(t, "hosts", "show", a); code != 0 || !strings.Contains(out, hosts[a]) {
+		t.Errorf("hosts show by MAC: %d\n%s", code, out)
+	}
+	if code, out, _ := f.run(t, "hosts", "show", "--ip", "192.168.110.52"); code != 0 || !strings.Contains(out, hosts[a]) {
+		t.Errorf("hosts show --ip: %d\n%s", code, out)
+	}
+	if code, _, stderr := f.run(t, "hosts", "show", "192.168.110.250"); code != ExitDegraded || !strings.Contains(stderr, "no current host") {
+		t.Errorf("hosts show miss: %d %s", code, stderr)
 	}
 	_, out, _ = f.run(t, "hosts", "evidence", hosts[a], "--since", "30d")
 	if !strings.Contains(out, " *device_type=Printer  mdns  confidence 0.70") || !strings.Contains(out, "  device_type=Media player  mdns  confidence 0.60") ||

@@ -2,34 +2,44 @@ package idprobe
 
 import (
 	"context"
-	"crypto/rand"
 	"crypto/sha256"
+	"crypto/tls"
 	"crypto/x509"
-	"encoding/binary"
 	"encoding/hex"
 	"fmt"
-	"io"
+	"net"
 	"strings"
 
 	"lan-sentinel/internal/probe"
 )
 
-// TLS records the peer certificate from one ClientHello on tcp/443
-// (ADR 0011). No SNI, no trust validation, no completed handshake:
-// one write, then parse unencrypted TLS 1.2 Certificate messages.
+// TLS records the peer certificate from one crypto/tls handshake on
+// tcp/443 (ADR 0011). TLS 1.2 and 1.3, no SNI, no trust validation.
+// The engine closes the TCP socket; this probe must not Close the
+// tls.Conn (close_notify would be a write past MaxWrites).
 type TLS struct{}
 
 const (
-	tlsPort        = 443
-	tlsBudgetCost  = 4 // 3 TCP + 1 write
-	tlsMaxRead     = 16 << 10
-	tlsConfidence  = 0.7
-	tlsHSClient    = 1
-	tlsHSServer    = 2
-	tlsHSCert      = 11
-	tlsRecordHS    = 22
-	tlsRecordAlert = 21
+	tlsPort = 443
+	// A handshake writes the ClientHello and one final flight; a
+	// HelloRetryRequest (the server wants a key share for another group)
+	// adds a compatibility ChangeCipherSpec and a second ClientHello, each
+	// written alone by crypto/tls: 4 writes at most. With 3, such a
+	// working server was recorded as malformed, its only attempt used up.
+	tlsMaxWrites  = 4
+	tlsBudgetCost = 3 + tlsMaxWrites // TCP setup and close plus the writes
+	tlsMaxRead    = 16 << 10
+	tlsConfidence = 0.7
+	// tlsMaxClientHello bounds the ClientHello: one TCP segment with room.
+	tlsMaxClientHello = 512
 )
+
+// tlsCurves are the key-exchange groups offered, X25519 first (its key
+// share goes in the ClientHello), P-256 second (a HelloRetryRequest away).
+// Naming them leaves out Go's default post-quantum hybrid share, which
+// grows the ClientHello to about 1.5 KB, past one TCP segment; old
+// embedded TLS stacks on OT devices handle a split ClientHello badly.
+var tlsCurves = []tls.CurveID{tls.X25519, tls.CurveP256}
 
 var errTLS = fmt.Errorf("%w: tls", errExchange)
 
@@ -46,130 +56,41 @@ func (TLS) Port() uint16 { return tlsPort }
 func (TLS) BudgetCost() int { return tlsBudgetCost }
 
 // Limits implements Probe.
-func (TLS) Limits() Limits { return Limits{MaxWrites: 1, MaxRead: tlsMaxRead} }
+func (TLS) Limits() Limits { return Limits{MaxWrites: tlsMaxWrites, MaxRead: tlsMaxRead} }
 
 // Exchange implements Probe.
 func (TLS) Exchange(ctx context.Context, s Session) (Response, error) {
 	if err := ctx.Err(); err != nil {
 		return Response{}, err
 	}
-	hello, err := encodeClientHello()
-	if err != nil {
-		return Response{}, err
+	conn, ok := s.(net.Conn)
+	if !ok {
+		return Response{}, fmt.Errorf("%w: session is not a net.Conn", errTLS)
 	}
-	if _, err := s.Write(hello); err != nil {
-		return Response{}, err
-	}
-	raw, err := io.ReadAll(io.LimitReader(s, tlsMaxRead))
-	if err != nil && !isBenignRead(err) {
-		return Response{}, err
-	}
-	return parseTLS(raw)
-}
-
-func encodeClientHello() ([]byte, error) {
-	random := make([]byte, 32)
-	if _, err := rand.Read(random); err != nil {
-		return nil, err
-	}
-	suites := []uint16{0x002f, 0x0035, 0x009c, 0xc013, 0xc014, 0xc02f, 0xc030}
-	var body []byte
-	body = append(body, 0x03, 0x03)
-	body = append(body, random...)
-	body = append(body, 0)                                            // session_id
-	body = binary.BigEndian.AppendUint16(body, uint16(len(suites)*2)) //nolint:gosec
-	for _, c := range suites {
-		body = binary.BigEndian.AppendUint16(body, c)
-	}
-	body = append(body, 1, 0) // compression null
-	hs := make([]byte, 4+len(body))
-	hs[0] = tlsHSClient
-	putUint24(hs[1:], len(body))
-	copy(hs[4:], body)
-	rec := make([]byte, 5+len(hs))
-	rec[0] = tlsRecordHS
-	rec[1], rec[2] = 0x03, 0x01
-	binary.BigEndian.PutUint16(rec[3:5], uint16(len(hs))) //nolint:gosec
-	copy(rec[5:], hs)
-	return rec, nil
-}
-
-func parseTLS(raw []byte) (Response, error) {
-	var hs []byte
-	off := 0
-	tlsVer := ""
-	for off+5 <= len(raw) {
-		typ := raw[off]
-		n := int(binary.BigEndian.Uint16(raw[off+3 : off+5]))
-		off += 5
-		if n < 0 || off+n > len(raw) {
-			break
+	c := tls.Client(conn, &tls.Config{
+		InsecureSkipVerify: true, //nolint:gosec // ADR 0011: claims are the peer certificate
+		MinVersion:         tls.VersionTLS12,
+		MaxVersion:         tls.VersionTLS13,
+		CurvePreferences:   tlsCurves,
+	})
+	if err := c.HandshakeContext(ctx); err != nil {
+		if isTimeout(err) {
+			return Response{}, err
 		}
-		frag := raw[off : off+n]
-		off += n
-		switch typ {
-		case tlsRecordAlert:
-			return Response{}, fmt.Errorf("%w: alert", errTLS)
-		case tlsRecordHS:
-			hs = append(hs, frag...)
-		}
+		return Response{}, fmt.Errorf("%w: %w", errTLS, err)
 	}
-	ident := map[string]string{}
-	for len(hs) >= 4 {
-		mlen := int(hs[1])<<16 | int(hs[2])<<8 | int(hs[3])
-		if 4+mlen > len(hs) {
-			break
-		}
-		msg, rest := hs[:4+mlen], hs[4+mlen:]
-		hs = rest
-		switch msg[0] {
-		case tlsHSServer:
-			if len(msg) >= 6 {
-				tlsVer = tlsVersionName(msg[4], msg[5])
-				if msg[4] == 0x03 && msg[5] == 0x04 {
-					return Response{}, fmt.Errorf("%w: tls 1.3 encrypts the certificate", errTLS)
-				}
-			}
-		case tlsHSCert:
-			if err := certClaims(msg[4:], ident); err != nil {
-				return Response{}, err
-			}
-		}
-	}
-	if ident["fingerprint"] == "" {
+	state := c.ConnectionState()
+	if len(state.PeerCertificates) == 0 {
 		return Response{}, fmt.Errorf("%w: no certificate", errTLS)
 	}
-	if tlsVer != "" {
-		ident["tls_version"] = tlsVer
-	}
-	conf := map[string]float64{}
-	for f := range ident {
-		conf[f] = tlsConfidence
-	}
-	return Response{Identity: ident, Confidence: conf}, nil
+	return certFromX509(state.PeerCertificates[0], tlsVersionLabel(state.Version))
 }
 
-func certClaims(p []byte, ident map[string]string) error {
-	if len(p) < 3 {
-		return fmt.Errorf("%w: short certificate list", errTLS)
+func certFromX509(cert *x509.Certificate, version string) (Response, error) {
+	if cert == nil {
+		return Response{}, fmt.Errorf("%w: no certificate", errTLS)
 	}
-	total := int(p[0])<<16 | int(p[1])<<8 | int(p[2])
-	p = p[3:]
-	if total > len(p) {
-		p = p[:min(total, len(p))]
-	}
-	if len(p) < 3 {
-		return fmt.Errorf("%w: empty certificate list", errTLS)
-	}
-	n := int(p[0])<<16 | int(p[1])<<8 | int(p[2])
-	p = p[3:]
-	if n <= 0 || n > len(p) {
-		return fmt.Errorf("%w: truncated certificate", errTLS)
-	}
-	cert, err := x509.ParseCertificate(p[:n])
-	if err != nil {
-		return fmt.Errorf("%w: %w", errTLS, err)
-	}
+	ident := map[string]string{}
 	if cn := sanitize([]byte(cert.Subject.CommonName)); cn != "" {
 		ident["subject_cn"] = cn
 	}
@@ -200,7 +121,14 @@ func certClaims(p []byte, ident map[string]string) error {
 	ident["not_after"] = cert.NotAfter.UTC().Format("2006-01-02T15:04:05Z")
 	sum := sha256.Sum256(cert.Raw)
 	ident["fingerprint"] = hex.EncodeToString(sum[:])
-	return nil
+	if version != "" {
+		ident["tls_version"] = version
+	}
+	conf := map[string]float64{}
+	for f := range ident {
+		conf[f] = tlsConfidence
+	}
+	return Response{Identity: ident, Confidence: conf}, nil
 }
 
 func firstOrg(orgs []string) string {
@@ -210,25 +138,17 @@ func firstOrg(orgs []string) string {
 	return sanitize([]byte(orgs[0]))
 }
 
-func tlsVersionName(maj, min byte) string {
-	if maj != 0x03 {
-		return fmt.Sprintf("%d.%d", maj, min)
-	}
-	switch min {
-	case 1:
+func tlsVersionLabel(v uint16) string {
+	switch v {
+	case tls.VersionTLS10:
 		return "1.0"
-	case 2:
+	case tls.VersionTLS11:
 		return "1.1"
-	case 3:
+	case tls.VersionTLS12:
 		return "1.2"
-	case 4:
+	case tls.VersionTLS13:
 		return "1.3"
+	default:
+		return fmt.Sprintf("0x%04x", v)
 	}
-	return fmt.Sprintf("1.%d", min-1)
-}
-
-func putUint24(b []byte, n int) {
-	b[0] = byte(n >> 16)
-	b[1] = byte(n >> 8)
-	b[2] = byte(n)
 }

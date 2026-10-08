@@ -46,7 +46,7 @@ The daemon runs as root with `UMask=0027` and the data directory is `0750 root:r
 | `daemon run` | Run the service in the foreground | `--config`, `--log-level` | 0 |
 | `daemon status` | Version, platform, PID, uptime, DB health, interfaces, host counts, kill-switch state, clock synchronisation, last scan, and per-interface collector state (`running`/`disabled`/`unsupported`/`failed`, backend or error); for each probe its last periodic pass, e.g. `arp running afpacket last pass 2m ago: 253 swept, 14 replied (26 s)` (blocked probes and `cut short` when they apply). Passes are shown here only, never logged | `-o json`; `--quiet` exit codes | 3 |
 | `hosts list` | Inventory: MAC, IP, hostname, vendor, device type, interface, presence, last seen, description. `--active`: live hosts (ACTIVE or RECENT); `--stale`: the others (STALE or MISSING); `--port`: an OPEN service on that port; `--vendor`: substring of vendor or manufacturer; `--device`: substring of the device type (the most confident identification, `DATA_MODEL.md` §5.7); `--description`: substring of the description | `--interface`, `--active`, `--stale`, `--vendor`, `--device`, `--description`, `--port`, `--seen-within` | 3 (device type from 6) |
-| `hosts show <host-id>` | Full record of one host: the device type, the description and the current identifications (most confident first per field, with last seen) | | 3 (identification from 6) |
+| `hosts show <query>` | Full record of one current host: the device type, the description and the current identifications (most confident first per field, with last seen). The query is the same as `hosts find` and must match exactly one current host | `--interface`, `--ip`/`--mac`/`--hostname`/`--id` | 3 (identification from 6) |
 | `identify run <host> --probe NAME` | Force one more identification probe on a host (bypasses only the once-per-MAC latch; the kill switch, budget and freshness rule still apply). Names: `modbus`, `http`, `tls`, `snmp`, `ssh-banner`, `telnet`, `ftp` | `--interface`, `--ip`/`--mac`/`--hostname`/`--id`, `--probe` (required) | 6 |
 | `hosts find <query>` | Current or point-in-time holder(s) with addresses, names and services and their sources; exit 1 when nothing matches | `--interface`, `--at <time>`, `--ip`/`--mac`/`--hostname`/`--id` | 3 |
 | `hosts history <query>` | Event timeline for a host, MAC, IP or name | `--interface`, `--since`, `--until`, `--ip`/`--mac`/`--hostname`/`--id` | 3 |
@@ -76,9 +76,13 @@ Deferred past v1: `neighbors list`, `interfaces show`, `scan status`, `db vacuum
 
 ## 4. Behaviour details
 
-### Query auto-detection (`hosts find`, `hosts history`, `hosts evidence`)
+### Query auto-detection (`hosts find`, `hosts show`, `hosts history`, `hosts evidence`)
 
-The argument is classified in this order: host UUID → MAC (any of `aa:bb:..`, `aa-bb-..`, `aabb.ccdd.eeff`) → IPv4 → IPv6 → hostname. Instead of the argument, one of `--ip`, `--mac`, `--hostname`, `--id` gives the query with an explicit kind (e.g. `--hostname cafe.babe.f00d` for a name that looks like a MAC); a value that is not of that kind is a usage error (exit 64). Hostnames match case-insensitively. Multiple matches (e.g. the same IP or MAC on two interfaces) are all shown, grouped by interface, unless `--interface` is given.
+The argument is classified in this order: host UUID → MAC (any of `aa:bb:..`, `aa-bb-..`, `aabb.ccdd.eeff`) → IPv4 → IPv6 → hostname. Instead of the argument, one of `--ip`, `--mac`, `--hostname`, `--id` gives the query with an explicit kind (e.g. `--hostname cafe.babe.f00d` for a name that looks like a MAC); a value that is not of that kind is a usage error (exit 64). Hostnames match case-insensitively. Multiple matches (e.g. the same IP or MAC on two interfaces) are all shown, grouped by interface, unless `--interface` is given. `hosts show` (and `hosts set`) require exactly one current host: several matches list them with their host IDs and exit 64.
+
+### `hosts show`
+
+`hosts show <query>` prints the full record of one current host (addresses, names, services, the device type, the description and the current identifications). The query is the same as `hosts find` and must match exactly one current host: several matches list them with their host IDs and exit 64, and `--interface` or `--id` picks one; no match is exit 1. `hosts list` does not print host IDs.
 
 ### `hosts find`
 
@@ -160,7 +164,7 @@ One row per DHCP server identity, relay and sender seen in a reply on an interfa
 | Code | Meaning |
 | --- | --- |
 | 0 | Success / healthy |
-| 1 | Degraded (`daemon status`, e.g. a configured collector not running), or no results for `find` |
+| 1 | Degraded (`daemon status`, e.g. a configured collector not running), no results for `find`, or no host for `hosts show` and `hosts set` |
 | 2 | Unhealthy (`daemon status`), command error, or scan refused |
 | 3 | Daemon unreachable (online mode) |
 | 64 | Usage error |

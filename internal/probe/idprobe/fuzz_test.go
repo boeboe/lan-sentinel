@@ -1,6 +1,9 @@
 package idprobe
 
-import "testing"
+import (
+	"crypto/x509"
+	"testing"
+)
 
 func fuzzNoEmptyClaims(t *testing.T, ident map[string]string) {
 	t.Helper()
@@ -33,11 +36,18 @@ func FuzzParseHTTP(f *testing.F) {
 	})
 }
 
-func FuzzParseTLS(f *testing.F) {
-	f.Add([]byte{tlsRecordHS, 0x03, 0x03, 0, 0})
+func FuzzCertClaims(f *testing.F) {
 	f.Add([]byte{})
 	f.Fuzz(func(t *testing.T, b []byte) {
-		r, _ := parseTLS(b)
+		cert, err := x509.ParseCertificate(b)
+		if err != nil {
+			_, _ = certFromX509(nil, "1.2")
+			return
+		}
+		r, err := certFromX509(cert, "1.3")
+		if err != nil {
+			return
+		}
 		fuzzNoEmptyClaims(t, r.Identity)
 	})
 }

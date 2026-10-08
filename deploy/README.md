@@ -67,6 +67,8 @@ Then run the commands of step 2: they install the new binary and unit, keep the 
 
 From the release that adds identification probes (ADR 0011, migrations `0008_identify_attempts.sql` and `0009_identify_ran.sql`): existing site configs send no identification traffic until an interface lists a probe under `active.identify`. A default or omitted list is empty. Allow-listed names are `modbus`, `http`, `tls`, `snmp`, `ssh-banner`, `telnet` and `ftp`. SNMPv2c sends one configured community in the clear on one `GetRequest`; there is no compiled default, so `{name: snmp}` without a community fails `config validate`. `identify run` is the only way to repeat a probe on a host the daemon has already tried, and is recorded as `IDENTIFY_RAN` with the calling user.
 
+The TLS probe completes a TLS 1.2 or 1.3 handshake (`BudgetCost` 7, no SNI, X25519 and P-256 only). A host already recorded as `tls` `malformed` from the earlier ClientHello-only exchange stays latched; retry it with `sudo lan-sentinel identify run <host> --probe tls`.
+
 To roll back, stop the service, put the previous binary and the copied database back, and start it. `lan-sentinel --offline` refuses a database whose schema differs from the binary's until the daemon has migrated it.
 
 ## Cutting a release
