@@ -9,7 +9,7 @@ Reference files for running LAN Sentinel under systemd (docs/ARCHITECTURE.md §8
 
 Releases are reproducible: `make package VERSION=vX.Y.Z` on the tagged commit gives the same checksums. `config.dev.yaml` is for local development (`make run-dev`).
 
-Targets: Debian 11 (systemd 247), 12 (252) and 13 (257), kernel 5.10 or newer; `make test-systemd` runs this unit on each. On Debian 11 the unit runs without `PrivateIPC=` (not in systemd 247; the journal shows a warning). Debian 11's regular security support ended in August 2026.
+Targets: Debian 11 (systemd 247), 12 (252) and 13 (257), kernel 5.10 or newer; `make test-systemd` runs this unit on each. On Debian 11 the unit runs without `PrivateIPC=` (not in systemd 247; the journal shows a warning). Debian 11's long-term support ended in August 2026.
 
 ## Install
 
@@ -24,7 +24,7 @@ tar -xzf lan-sentinel-vX.Y.Z-linux-arm64.tar.gz && cd lan-sentinel-vX.Y.Z-linux-
 
 ### 2. Install
 
-From the unpacked directory, as a user with `sudo`. The daemon runs as root, limited by the unit to `CAP_NET_RAW` and a read-only view of the system; it needs no user, group or extra directories beyond these. The same commands upgrade an installed release (see Upgrade and rollback): they replace the binary and the unit, keep an existing `/etc/lan-sentinel/config.yaml`, and restart the daemon, which `enable --now` would not do. `make test-systemd` runs exactly this block on Debian 11, 12 and 13, then again over the running daemon.
+From the unpacked directory, as a user with `sudo`. The daemon runs as root, limited by the unit to `CAP_NET_RAW` and a read-only view of the system; it needs no user, group or extra directories beyond these. The same commands upgrade an installed release (see Upgrade and rollback): they replace the binary and the unit, keep an existing `/etc/lan-sentinel/config.yaml`, and restart the daemon, which `enable --now` would not do. `make test-systemd` runs exactly this block on Debian 11, 12 and 13, then again over the running daemon, and checks that the top-level `README.md` install section repeats it unchanged.
 
 ```bash
 sha256sum --check SHA256SUMS
@@ -46,7 +46,7 @@ Then check:
 
 | Check | Command | Expect |
 | --- | --- | --- |
-| Healthy | `sudo lan-sentinel daemon status` | `State: ok` (exit 0); every collector of a configured interface `running` |
+| Healthy | `sudo lan-sentinel daemon status` | `State: OK` (exit 0); every collector of a configured interface `running` |
 | Clock | same | `Clock: synced` once chrony has synchronised; events written before that are marked `unsynced` (`clock_sync` in `events list -o json`) |
 | Hosts appear | `sudo lan-sentinel hosts list` | the devices of the site within a few minutes |
 | DHCP servers | `sudo lan-sentinel dhcp servers` | the site's DHCP server(s), once a client has asked; then list their identifiers in `interfaces[].dhcp.servers` (or `[]` where none should exist) and `sudo lan-sentinel config reload`, so any other raises `DHCP_SERVER_UNEXPECTED`. On a switched port replies unicast to other clients are not seen: an empty list proves nothing |
@@ -71,6 +71,10 @@ The TLS probe completes a TLS 1.2 or 1.3 handshake (`BudgetCost` 7, no SNI, X255
 
 `identify run` takes several probes from the release that adds `--probe all` (the probes enabled on the host's interface) and comma lists (`--probe http,tls`), with `--sni NAME` for tls. Its `-o json` output is now an array with one entry per probe, not a single object: a script that read `.result` reads `.[0].result`. SNI stays off unless an interface sets `{name: tls, sni: auto}` or `identify run --sni` names it.
 
+From the release that adds the LAN discovery protocols, passive capture also decodes NetBIOS, CDP, SSDP and WS-Discovery, receive only and on by default (`passive.protocols.netbios`, `cdp`, `ssdp`, `wsd`; each identifier under `identity.identifiers`). A site config that lists `passive.protocols` without these keys gets them on; set one to `false` to keep it off (a restart applies it: the protocols are compiled into the capture filter). `interfaces list` gains a `NEIGHBOR` column: the switch and port the box is plugged into, from LLDP or CDP. NetBIOS names come last in the default `identity.hostname_preference`, so no preferred name changes; a site config with its own list keeps it.
+
+From v0.1.0 (feature-frozen; no migration, no config change): an operator command the daemon cannot confirm within 8 seconds because it is backlogged (`active disable`/`enable`, `hosts set`/`unset`, the record of `scan run` or `identify run`) fails with `the daemon is busy, so the change is not confirmed …` (API status 503, CLI exit 2) instead of a bare server error; the change may still be recorded, so check `events list` before repeating it. `hosts list --description` now filters online as it did with `--offline`. `config reload` lists `neighbor.resync_interval`, `identity.oui_override` and the probe concurrency caps as needing a restart (they were reported as applied but only ever took effect at start-up). `identify run` on an interface that is down answers `not sent` (API 409 `identify_refused`) instead of a server error. The documentation adds `docs/USER_GUIDE.md`.
+
 To roll back, stop the service, put the previous binary and the copied database back, and start it. `lan-sentinel --offline` refuses a database whose schema differs from the binary's until the daemon has migrated it.
 
 ## Cutting a release
@@ -79,7 +83,7 @@ Releases are made from `main` only, by the **release** workflow (`.github/workfl
 
 1. GitHub → Actions → **release** → **Run workflow**, on branch `main`.
 2. Choose the bump: `patch` (v0.0.1 → v0.0.2), `minor` (→ v0.1.0) or `major` (→ v1.0.0). The next version follows the highest `vX.Y.Z` tag (`build/next-version.sh`; pre-release tags are ignored); the first release is v0.0.1 whatever the bump.
-3. The workflow refuses any branch but `main` and a version whose tag exists already, runs the same gates as CI on the commit (`make mod-verify check`, `make fuzz`, `make test-net`, `make test-systemd`), builds the tarballs twice and compares their checksums, checks that the binary reports the version, creates the annotated tag `vX.Y.Z` on the tested commit and publishes the GitHub Release with the two tarballs and `SHA256SUMS`, with notes generated from the commits.
+3. The workflow refuses any branch but `main` and a version whose tag exists already, runs the same gates as CI on the commit (`make mod-verify check`, `make fuzz`, `make test-net`, `make test-systemd`, `make chaos`, `make stress`), builds the tarballs twice and compares their checksums, checks that the binary reports the version, creates the annotated tag `vX.Y.Z` on the tested commit and publishes the GitHub Release with the two tarballs and `SHA256SUMS`, with notes generated from the commits.
 
 Runs are serialised, so two releases never pick the same version. If a run fails after the tag was pushed (the release step), delete the tag before running it again, or the next run picks the following version.
 

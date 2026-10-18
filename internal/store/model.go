@@ -200,6 +200,25 @@ type InterfaceInfo struct {
 	Hosts     int       `json:"hosts"`
 	FirstSeen time.Time `json:"first_seen"`
 	LastSeen  time.Time `json:"last_seen"`
+	// Neighbors are the devices advertising over LLDP or CDP on the
+	// interface now: on a switch port, the switch, and the port the box is
+	// plugged into.
+	Neighbors []Neighbor `json:"neighbors,omitempty"`
+}
+
+// Neighbor is a device whose LLDP or CDP advertisements reach an interface,
+// from the latest one it sent (docs/DATA_MODEL.md §2).
+type Neighbor struct {
+	Protocol        string    `json:"protocol"` // lldp or cdp
+	HostID          string    `json:"host_id,omitempty"`
+	MAC             string    `json:"mac"`
+	Name            string    `json:"name,omitempty"`
+	Port            string    `json:"port,omitempty"` // the neighbour's port this interface is plugged into
+	PortDescription string    `json:"port_description,omitempty"`
+	Platform        string    `json:"platform,omitempty"`    // CDP
+	Description     string    `json:"description,omitempty"` // LLDP system description
+	ManagementIP    string    `json:"management_ip,omitempty"`
+	LastSeen        time.Time `json:"last_seen"`
 }
 
 // DBInfo describes the database (`db info`).

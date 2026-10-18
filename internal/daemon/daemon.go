@@ -311,6 +311,22 @@ var restartOnly = []struct {
 	{"metrics", func(c *config.Config) any { return c.Metrics }, func(o, n *config.Config) { n.Metrics = o.Metrics }},
 	{"logging.format", func(c *config.Config) any { return c.Logging.Format }, func(o, n *config.Config) { n.Logging.Format = o.Logging.Format }},
 	{"replay", func(c *config.Config) any { return c.Replay }, func(o, n *config.Config) { n.Replay = o.Replay }},
+	// Read once at start-up: the neighbour collector's resync ticker, the
+	// vendor table, and the probe semaphores (probe.Budget.SetLimits keeps
+	// them), so a reload must not report them as applied.
+	{"neighbor", func(c *config.Config) any { return c.Neighbor }, func(o, n *config.Config) { n.Neighbor = o.Neighbor }},
+	{"identity.oui_override", func(c *config.Config) any { return c.Identity.OUIOverride },
+		func(o, n *config.Config) { n.Identity.OUIOverride = o.Identity.OUIOverride }},
+	{"active.max_concurrent_probes", func(c *config.Config) any { return c.Active.MaxConcurrentProbes },
+		func(o, n *config.Config) { n.Active.MaxConcurrentProbes = o.Active.MaxConcurrentProbes }},
+	{"active.budgets.tcp.max_concurrent_per_interface", func(c *config.Config) any { return c.Active.Budgets.TCP.MaxConcurrentPerInterface },
+		func(o, n *config.Config) {
+			n.Active.Budgets.TCP.MaxConcurrentPerInterface = o.Active.Budgets.TCP.MaxConcurrentPerInterface
+		}},
+	{"active.budgets.tcp.max_concurrent_per_host", func(c *config.Config) any { return c.Active.Budgets.TCP.MaxConcurrentPerHost },
+		func(o, n *config.Config) {
+			n.Active.Budgets.TCP.MaxConcurrentPerHost = o.Active.Budgets.TCP.MaxConcurrentPerHost
+		}},
 }
 
 // interfaceShape is the restart-only part of the interfaces: all but each

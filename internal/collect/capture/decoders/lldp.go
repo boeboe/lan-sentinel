@@ -3,6 +3,7 @@ package decoders
 import (
 	"net"
 	"net/netip"
+	"strconv"
 	"strings"
 
 	"lan-sentinel/internal/identify"
@@ -74,6 +75,7 @@ func (f *frame) lldp(b []byte) {
 				return
 			}
 			haveTTL = true
+			meta["ttl"] = strconv.Itoa(int(be16(v)))
 		case lldpPortDesc:
 			setText(meta, "port_description", v)
 		case lldpSystemName:

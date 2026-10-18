@@ -343,3 +343,42 @@ func TestIdentifyAttemptAndPerClaimConfidence(t *testing.T) {
 		})
 	expect(t, "modbus claim", ids, []string{"vendor=ACME modbus 0.95"})
 }
+
+// An identification result for an address that now has two holders is
+// recorded on the host it was sent to, so its attempt latches, but it
+// confirms no binding and no presence (§5.1 rule 2).
+func TestIdentifyFallbackConfirmsNothing(t *testing.T) {
+	h := newHarness(t)
+	h.obs(0, observation.PassiveARP, "eth1", plc, "10.1.0.50")
+	h.obs(time.Minute, observation.PassiveARP, "eth1", "00:1b:1b:aa:bb:02", "10.1.0.50") // a duplicate IP
+	str := func(r *sql.Rows) string {
+		var s string
+		_ = r.Scan(&s)
+		return s
+	}
+	id := h.query(`SELECT host_id FROM hosts WHERE mac = '`+plc+`'`, str)[0]
+	state := func() []string {
+		return h.query(`SELECT a.host_id || ' ' || a.last_seen || ' ' || a.conflict || ' ' || h.last_seen FROM addresses a
+			JOIN hosts h USING (host_id) WHERE a.ended_at IS NULL ORDER BY a.host_id`, str)
+	}
+	before := state()
+	h.probeObs(2*time.Minute, observation.Observation{
+		Source: observation.IdentifyProbe, IP: netip.MustParseAddr("10.1.0.50"),
+		Service: &observation.ServiceResult{Proto: "tcp", Port: 502, State: observation.ServiceOpen},
+		Meta: map[string]string{
+			observation.MetaProbe: "modbus", observation.MetaResult: observation.ResultOK,
+			observation.MetaTrigger: observation.TriggerScheduled, observation.MetaHostID: id,
+			observation.MetaIdentityPrefix + "vendor": "ACME",
+		},
+	})
+	expect(t, "attempt", h.query(`SELECT host_id || ' ' || probe FROM identify_attempts`, str), []string{id + " modbus"})
+	expect(t, "bindings and presence", state(), before)
+	if n := h.query(`SELECT count(*) FROM address_sources WHERE source = 'identify_probe'`, str); n[0] != "0" {
+		t.Errorf("identify_probe confirmed a binding: %v", n)
+	}
+	for _, q := range []string{`SELECT count(*) FROM services`, `SELECT count(*) FROM identifications WHERE source = 'modbus'`} {
+		if n := h.query(q, str); n[0] != "0" {
+			t.Errorf("%s = %v: the ambiguous answer changed state", q, n)
+		}
+	}
+}

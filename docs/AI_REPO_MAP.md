@@ -33,9 +33,12 @@ Where each concern lives, what to read before changing it, and which tests cover
 | Configuration | `internal/config` (`types.go`, `defaults.go`, `validate.go`, `load.go`, `summary.go`) | `ARCHITECTURE.md` §6 | `config_test.go`, `fuzz_test.go`; `TestDeployConfigs` |
 | Metrics | `internal/metrics`; values gathered in `internal/daemon` | `API.md` (Metrics); AGENTS.md rule 9 | `metrics_test.go` |
 | systemd, sd_notify, journald | `internal/service`, `deploy/lan-sentinel.service` | `ARCHITECTURE.md` §8 | `service` tests; `test/systemd/run.sh` |
-| Install, upgrade, rollout | `deploy/README.md` (its install block is run by `test/systemd/run.sh`) | `deploy/README.md` | `make test-systemd` |
+| Install, upgrade, rollout | `deploy/README.md` (its install block is run by `test/systemd/run.sh`; `README.md` repeats it) | `deploy/README.md` | `make test-systemd` |
+| Operator documentation | `docs/USER_GUIDE.md` (real CLI and journal output), `README.md` | `CLI.md`, `ARCHITECTURE.md` §7 | — |
+| What is not built | `docs/BACKLOG.md` | `REQUIREMENTS.md` §4, §5 | — |
 | Board privilege audit | `tools/capcheck` (its README audit block is run by `test/systemd/run.sh`) | `tools/capcheck/README.md`; `ARCHITECTURE.md` §8 | `make test-net`, `make test-systemd` |
-| Build, CI, release | `Makefile`, `build/*.sh`, `.github/workflows/{ci,release}.yml` | `ARCHITECTURE.md` §4 (Tooling); `README.md` (Releases) | CI itself |
+| Build, CI, release | `Makefile`, `build/*.sh`, `.github/workflows/{ci,release}.yml` | `ARCHITECTURE.md` §4 (Tooling); `deploy/README.md` (Cutting a release) | CI itself |
+| Chaos and stress testing | `test/chaos` (build tag `chaos`), `Makefile` (`chaos`, `stress`) | `ARCHITECTURE.md` §9 | `make chaos`, `make stress` |
 | Hardware validation | `docs/TEST_PLAN.md` | `IMPLEMENTATION_PLAN.md` (Open hardware and field checks) | manual, on boards |
 
 ## Common tasks: files to touch
@@ -52,4 +55,5 @@ The steps are in `AGENTS.md` §10. These are the files each task usually touches
 | Config key | `internal/config/{types,defaults,validate,summary}.go`, `testdata/architecture-example.yaml`, `deploy/config.yaml`; the consumer; `ARCHITECTURE.md` §6 |
 | Metric | `internal/metrics` (label allow-list), gathering in `internal/daemon`; `API.md`, `ARCHITECTURE.md` §3 (Metrics) |
 | Probe engine fix | `internal/probe/<engine>`, `internal/probe` (budget, plan), `internal/probe/scheduler`; `test/net/active_test.go`; `ARCHITECTURE.md` §3, §5 |
-| Unit or install change | `deploy/lan-sentinel.service`, `deploy/README.md`, `tools/capcheck/README.md`, `test/systemd/run.sh`; `ARCHITECTURE.md` §8 |
+| Unit or install change | `deploy/lan-sentinel.service`, `deploy/README.md` (and the same block in `README.md`), `tools/capcheck/README.md`, `test/systemd/run.sh`; `ARCHITECTURE.md` §8 |
+| CLI output or event change | the code, `CLI.md`, and the affected examples in `USER_GUIDE.md` |

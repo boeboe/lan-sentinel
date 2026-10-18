@@ -77,6 +77,28 @@ func TestPassiveIdentificationIsSticky(t *testing.T) {
 	})
 }
 
+// A device's report of its current state (CDP's software version) replaces
+// the source's value when it changes, unlike the sticky claims: after a
+// firmware upgrade the new firmware is current. Its device type stays sticky.
+func TestReplacingClaimFollowsTheDevice(t *testing.T) {
+	h := newHarness(t)
+	sw, _ := net.ParseMAC(printer)
+	cdp := func(caps, software string) observation.Observation {
+		return observation.Observation{Source: observation.PassiveCDP, MAC: sw, Hostname: "sw-1", NameType: observation.NameLLDP,
+			Meta: map[string]string{"capabilities": caps, "software": software}}
+	}
+	h.probeObs(0, cdp("switch", "IOS 15.2(7)E4"))
+	h.probeObs(time.Minute, cdp("router", "IOS 15.2(8)E1")) // upgraded; a router claim as convincing as the switch one
+	expect(t, "events", h.identEvents(), []string{
+		"0s VENDOR_IDENTIFIED host-01 >device_type=Switch",
+		"0s VENDOR_IDENTIFIED host-01 >firmware=IOS 15.2(7)E4",
+		"1m0s VENDOR_IDENTIFIED host-01 firmware=IOS 15.2(7)E4>firmware=IOS 15.2(8)E1",
+	})
+	if got := h.deviceType(); got != "Switch" {
+		t.Errorf("device_type = %s", got)
+	}
+}
+
 // hosts.device_type is the most confident current claim of any source: a
 // probe's word beats a passive guess, and a weaker one never displaces it.
 func TestDeviceTypeAcrossSources(t *testing.T) {

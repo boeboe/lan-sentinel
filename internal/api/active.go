@@ -67,6 +67,10 @@ var (
 	ErrIdentifyRefused = errors.New("identification probe refused")
 )
 
+// ErrBusy means the daemon did not commit an operator change in time: the
+// pipeline is backlogged. The change may still be recorded (503).
+var ErrBusy = errors.New("the daemon is busy")
+
 // ErrConfigRejected means the configuration file did not load or
 // validate; nothing changed (422).
 var ErrConfigRejected = errors.New("configuration rejected; the running configuration is unchanged")

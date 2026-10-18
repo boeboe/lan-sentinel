@@ -28,6 +28,10 @@ cp deploy/lan-sentinel.service deploy/config.yaml deploy/README.md "$work/"
 # The install commands of the runbook, the block after "### 2. Install".
 install_block=$(awk '/^### 2\. Install/ { f = 1; next } f && /^```bash/ { p = 1; next } p && /^```/ { exit } p' deploy/README.md)
 [ -n "$install_block" ] || { echo "test-systemd: no install block in deploy/README.md" >&2; exit 2; }
+# The README's quick install runs the same commands: its second block under
+# "Install the latest release" (the first downloads the release).
+readme_block=$(awk '/^## Install the latest release/ { f = 1; next } f && /^## / { exit } f && /^```bash/ { n++; if (n == 2) p = 1; next } p && /^```/ { exit } p' README.md)
+[ "$readme_block" = "$install_block" ] || { echo "test-systemd: the install commands in README.md differ from deploy/README.md" >&2; exit 2; }
 # The board audit, the block after "## On a target board".
 audit_block=$(awk '/^## On a target board/ { f = 1; next } f && /^```bash/ { p = 1; next } p && /^```/ { exit } p' tools/capcheck/README.md)
 [ -n "$audit_block" ] || { echo "test-systemd: no board audit block in tools/capcheck/README.md" >&2; exit 2; }

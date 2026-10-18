@@ -64,12 +64,16 @@ func (c *Correlator) observe(ctx context.Context, o observation.Observation) {
 			c.seen(ctx, h, o, ev)
 		}
 	}
-	hostID := ""
+	hostID, fallback := "", false
 	if h != nil {
 		hostID = h.id
 	} else if hid := o.Meta[observation.MetaHostID]; hid != "" {
+		// An identification result whose address has no holder or several
+		// is recorded on the host it was sent to, so its attempt latches
+		// (§5.5); which device answered is unknown, so it changes nothing
+		// else (§5.1 rule 2).
 		if found := c.hostByID(hid); found != nil {
-			h, hostID = found, hid
+			h, hostID, fallback = found, hid, true
 		}
 	}
 	if h == nil {
@@ -82,6 +86,9 @@ func (c *Correlator) observe(ctx context.Context, o observation.Observation) {
 	}
 	if o.Source == observation.IdentifyProbe {
 		c.recordIdentifyAttempt(ctx, h, o, obsID)
+	}
+	if fallback {
+		return
 	}
 	if ip.IsValid() && present {
 		c.attribute(ctx, h, ip, o, obsID, ev, discovered)
@@ -235,10 +242,14 @@ func (c *Correlator) attribute(ctx context.Context, h *host, ip netip.Addr, o ob
 
 	// Takeover from hosts that are no longer live; conflict with live ones.
 	var rivals []*host
+	var takenFrom *host // a holder in conflict that the takeover closed
 	for _, g := range append([]*binding(nil), c.st.holders[k]...) {
 		if c.presenceAt(g.host.lastSeen, o.Time).live() {
 			rivals = append(rivals, g.host)
 			continue
+		}
+		if g.conflict {
+			takenFrom = g.host
 		}
 		c.close(g, o.Time)
 		e := hostEvent(events.IPRemoved, o.Time, g.host, cause, ev)
@@ -298,6 +309,14 @@ func (c *Correlator) attribute(ctx context.Context, h *host, ip netip.Addr, o ob
 		}
 		e := hostEvent(events.DuplicateIPDetected, o.Time, h, cause, ev)
 		e.New, e.RelatedHostID, e.RelatedMAC, e.ObservationID = ip.String(), rivals[0].id, rivals[0].mac.String(), obsID
+		c.emit(ctx, e)
+	}
+
+	if takenFrom != nil && len(rivals) == 0 {
+		// The takeover ended the conflict: the address has one holder again
+		// (§5.3, conflict ends after any close).
+		e := hostEvent(events.DuplicateIPResolved, o.Time, h, cause, ev)
+		e.New, e.RelatedHostID, e.RelatedMAC, e.ObservationID = ip.String(), takenFrom.id, takenFrom.mac.String(), obsID
 		c.emit(ctx, e)
 	}
 

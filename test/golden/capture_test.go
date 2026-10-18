@@ -116,6 +116,7 @@ func TestCaptureScenario(t *testing.T) {
 		"2s HOST_DISCOVERED SW >mac",
 		"2s HOSTNAME_ADDED SW >lldp:plant-sw-01",
 		"2s VENDOR_IDENTIFIED SW >device_type=Switch",
+		"2s VENDOR_IDENTIFIED SW >system_description=Industrial Ethernet Switch",
 		"10m0s HOST_DISCOVERED SRV >mac",
 		"10m1s HOST_DISCOVERED HMI >mac",
 		"10m1s HOSTNAME_ADDED HMI >dhcp:HMI-LINE3",
@@ -161,7 +162,7 @@ func TestCaptureScenario(t *testing.T) {
 		}
 		return fmt.Sprintf("%s %s=%s (%s %.1f)", label[mac], field, value, source, conf)
 	})
-	expect(t, "identifications", idents, []string{"HMI os=Windows (dhcp 0.6)", "SW device_type=Switch (lldp 0.8)"})
+	expect(t, "identifications", idents, []string{"HMI os=Windows (dhcp 0.6)", "SW device_type=Switch (lldp 0.8)", "SW system_description=Industrial Ethernet Switch (lldp 0.8)"})
 	types := rows(`SELECT mac, device_type FROM hosts WHERE device_type IS NOT NULL ORDER BY mac`, func(r *sql.Rows) string {
 		var mac, typ string
 		_ = r.Scan(&mac, &typ)

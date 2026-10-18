@@ -35,19 +35,28 @@ const (
 	PassiveMDNS       Source = "passive_mdns"
 	PassiveDNS        Source = "passive_dns"
 	PassiveLLDP       Source = "passive_lldp"
-	KernelNeighbor    Source = "kernel_neighbor"
-	ARPScan           Source = "arp_scan"
-	ICMPScan          Source = "icmp_scan"
-	NDPProbe          Source = "ndp_probe"
-	TCPConnect        Source = "tcp_connect"
-	UDPProbe          Source = "udp_probe"
-	IdentifyProbe     Source = "identify_probe"
+	// PassiveNetBIOS is a NetBIOS name registration, a positive name query
+	// answer or a browser announcement; PassiveCDP a Cisco Discovery
+	// Protocol advertisement; PassiveSSDP an SSDP NOTIFY or M-SEARCH answer;
+	// PassiveWSD a WS-Discovery Hello or Probe/Resolve match (DATA_MODEL.md §2).
+	PassiveNetBIOS Source = "passive_netbios"
+	PassiveCDP     Source = "passive_cdp"
+	PassiveSSDP    Source = "passive_ssdp"
+	PassiveWSD     Source = "passive_wsd"
+	KernelNeighbor Source = "kernel_neighbor"
+	ARPScan        Source = "arp_scan"
+	ICMPScan       Source = "icmp_scan"
+	NDPProbe       Source = "ndp_probe"
+	TCPConnect     Source = "tcp_connect"
+	UDPProbe       Source = "udp_probe"
+	IdentifyProbe  Source = "identify_probe"
 )
 
 // Sources lists every valid source.
 var Sources = []Source{
 	PassiveARP, PassiveIPv4, PassiveIPv6, PassiveNDP, PassiveDHCP, PassiveDHCPLease, PassiveDHCPServer, PassiveMDNS,
-	PassiveDNS, PassiveLLDP, KernelNeighbor, ARPScan, ICMPScan, NDPProbe, TCPConnect, UDPProbe, IdentifyProbe,
+	PassiveDNS, PassiveLLDP, PassiveNetBIOS, PassiveCDP, PassiveSSDP, PassiveWSD, KernelNeighbor, ARPScan, ICMPScan,
+	NDPProbe, TCPConnect, UDPProbe, IdentifyProbe,
 }
 
 // Valid reports whether s is a known source.

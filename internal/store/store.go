@@ -77,6 +77,8 @@ const (
 	reqFlush
 	reqPing
 	reqView
+	reqHold
+	reqRelease
 )
 
 type request struct {
@@ -221,6 +223,21 @@ func (s *Store) Submit(ctx context.Context, op Op) error {
 	return s.send(ctx, request{kind: reqOp, op: op})
 }
 
+// Group keeps the ops fn submits in one batch: the writer commits neither
+// on size nor on its interval in the middle of fn, so neither a reader nor
+// a crash ever sees part of one correlation step (an observation's
+// bindings, conflict flags and events, DATA_MODEL.md §5.3). A Flush or View
+// from another goroutine waits until fn has returned. One goroutine groups
+// at a time (the correlator), and fn must not wait for a commit.
+func (s *Store) Group(ctx context.Context, fn func()) {
+	if err := s.send(ctx, request{kind: reqHold}); err != nil {
+		fn()
+		return
+	}
+	defer func() { _ = s.send(context.WithoutCancel(ctx), request{kind: reqRelease}) }()
+	fn()
+}
+
 // Flush commits everything queued before it and waits for the commit.
 func (s *Store) Flush(ctx context.Context) error {
 	return s.roundTrip(ctx, reqFlush)
@@ -303,9 +320,15 @@ func (s *Store) writer(flushInterval time.Duration, maxBatch int) {
 	defer close(s.exited)
 	ticker := s.clock.NewTicker(flushInterval)
 	defer ticker.Stop()
-	var pending []Op
+	var (
+		pending  []Op
+		held     bool      // inside a Group: no commit
+		due      bool      // a size or interval commit waits for the Group to end
+		deferred []request // flushes and views that arrived inside a Group
+	)
 
 	commit := func() error {
+		due = false
 		if len(pending) == 0 {
 			return nil
 		}
@@ -313,19 +336,41 @@ func (s *Store) writer(flushInterval time.Duration, maxBatch int) {
 		pending = pending[:0]
 		return err
 	}
-	handle := func(r request) {
+	var handle func(r request)
+	release := func() {
+		held = false
+		if due {
+			_ = commit()
+		}
+		for _, r := range deferred {
+			handle(r)
+		}
+		deferred = deferred[:0]
+	}
+	handle = func(r request) {
 		switch r.kind {
 		case reqOp:
 			pending = append(pending, r.op)
 			if len(pending) >= maxBatch {
-				_ = commit()
+				if held {
+					due = true
+				} else {
+					_ = commit()
+				}
 			}
-		case reqFlush:
-			r.reply <- commit()
+		case reqHold:
+			held = true
+		case reqRelease:
+			release()
 		case reqPing:
 			r.reply <- nil
-		case reqView:
-			if err := commit(); err != nil {
+		case reqFlush, reqView:
+			if held {
+				deferred = append(deferred, r)
+				return
+			}
+			err := commit()
+			if r.kind == reqFlush || err != nil {
 				r.reply <- err
 				return
 			}
@@ -338,14 +383,20 @@ func (s *Store) writer(flushInterval time.Duration, maxBatch int) {
 		case r := <-s.reqs:
 			handle(r)
 		case <-ticker.C():
-			_ = commit()
+			if held {
+				due = true
+			} else {
+				_ = commit()
+			}
 		case <-s.done:
-			// No new requests can arrive once done is closed; drain the rest.
+			// No new requests can arrive once done is closed; drain the
+			// rest. A Group cut short by shutdown ends here.
 			for {
 				select {
 				case r := <-s.reqs:
 					handle(r)
 				default:
+					release()
 					_ = commit()
 					return
 				}

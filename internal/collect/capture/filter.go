@@ -23,9 +23,11 @@ const packetOutgoing = 4
 const vlanIDMask = 0x0fff
 
 // Filter returns the classic-BPF program for the enabled protocols
-// (docs/ARCHITECTURE.md §3): ARP, LLDP, NDP, DHCP (67/68), mDNS (5353) and
-// DNS responses (from 53) in full, other IPv4 and IPv6 frames truncated to
-// their headers when source learning is on, everything else dropped; never
+// (docs/ARCHITECTURE.md §3): ARP, LLDP, CDP (802.3 LLC/SNAP), NDP, DHCP
+// (67/68), NetBIOS (from 137 and 138), mDNS (from 5353), DNS responses (from
+// 53), SSDP (to or from 1900) and WS-Discovery (to or from 3702) in full,
+// other IPv4 and IPv6 frames truncated to their headers when source learning
+// is on, everything else dropped; never
 // the host's own outgoing frames, and never frames of a VLAN (out of scope
 // in v1). The kernel strips 802.1Q tags before the filter runs, so the
 // VLAN is checked through the tag extensions; priority-tagged frames
@@ -56,12 +58,23 @@ func assemble(p decoders.Protocols, kernel bool) ([]bpf.RawInstruction, error) {
 	if p.LLDP {
 		a.jeq(decoders.EtherTypeLLDP, "full")
 	}
-	v4 := p.IPv4 || p.DHCP || p.MDNS || p.DNS
+	udp4 := p.DHCP || p.MDNS || p.DNS || p.NetBIOS || p.SSDP || p.WSD
+	udp6 := p.MDNS || p.DNS || p.SSDP || p.WSD
+	v4 := p.IPv4 || udp4
 	if v4 {
 		a.jeq(decoders.EtherTypeIPv4, "ipv4")
 	}
 	if p.IPv6 {
 		a.jeq(decoders.EtherTypeIPv6, "ipv6")
+	}
+	if p.CDP {
+		// A type/length field of at most 1500 is an 802.3 length; CDP
+		// follows an LLC/SNAP header with the Cisco OUI and protocol 0x2000.
+		a.jgt(decoders.MaxLength802, "drop")
+		a.ins(bpf.LoadAbsolute{Off: 14, Size: 4})
+		a.jne(0xaaaa0300, "drop") // SNAP SAPs, UI, first OUI byte
+		a.ins(bpf.LoadAbsolute{Off: 18, Size: 4})
+		a.jeq(0x000c2000, "full") // the rest of the Cisco OUI, protocol 0x2000
 	}
 	a.ins(bpf.RetConstant{Val: 0})
 
@@ -71,7 +84,7 @@ func assemble(p decoders.Protocols, kernel bool) ([]bpf.RawInstruction, error) {
 	}
 	if v4 {
 		a.label("ipv4")
-		if p.DHCP || p.MDNS || p.DNS {
+		if udp4 {
 			// Fragments after the first have no UDP header.
 			a.ins(bpf.LoadAbsolute{Off: 20, Size: 2})
 			a.jset(0x1fff, ipv4Header)
@@ -80,10 +93,9 @@ func assemble(p decoders.Protocols, kernel bool) ([]bpf.RawInstruction, error) {
 			a.ins(bpf.LoadMemShift{Off: 14})
 			a.ins(bpf.LoadIndirect{Off: 14, Size: 2}) // source port
 			a.udpPorts(p, true)
-			if p.DHCP {
+			if p.DHCP || p.SSDP || p.WSD {
 				a.ins(bpf.LoadIndirect{Off: 16, Size: 2}) // destination port
-				a.jeq(decoders.PortDHCPServer, "full")
-				a.jeq(decoders.PortDHCPClient, "full")
+				a.udpDestinationPorts(p, true)
 			}
 		}
 		a.jump(ipv4Header)
@@ -92,7 +104,7 @@ func assemble(p decoders.Protocols, kernel bool) ([]bpf.RawInstruction, error) {
 		a.label("ipv6")
 		a.ins(bpf.LoadAbsolute{Off: 20, Size: 1}) // next header
 		a.jeq(58, "icmpv6")
-		if p.MDNS || p.DNS {
+		if udp6 {
 			a.jeq(17, "udp6")
 		}
 		a.jump("header")
@@ -101,10 +113,14 @@ func assemble(p decoders.Protocols, kernel bool) ([]bpf.RawInstruction, error) {
 		a.jlt(133, "header")
 		a.jgt(137, "header")
 		a.jump("full")
-		if p.MDNS || p.DNS {
+		if udp6 {
 			a.label("udp6")
-			a.ins(bpf.LoadAbsolute{Off: 54, Size: 2})
+			a.ins(bpf.LoadAbsolute{Off: 54, Size: 2}) // source port
 			a.udpPorts(p, false)
+			if p.SSDP || p.WSD {
+				a.ins(bpf.LoadAbsolute{Off: 56, Size: 2}) // destination port
+				a.udpDestinationPorts(p, false)
+			}
 			a.jump("header")
 		}
 	}
@@ -117,18 +133,44 @@ func assemble(p decoders.Protocols, kernel bool) ([]bpf.RawInstruction, error) {
 	return a.assemble()
 }
 
-// udpPorts jumps to full for the mDNS and DNS source ports (and DHCP's on
-// IPv4) in the accumulator.
+// udpPorts jumps to full for the source ports in the accumulator: mDNS,
+// DNS, the answers of SSDP and WS-Discovery, and on IPv4 DHCP and NetBIOS.
 func (a *asm) udpPorts(p decoders.Protocols, v4 bool) {
 	if v4 && p.DHCP {
 		a.jeq(decoders.PortDHCPServer, "full")
 		a.jeq(decoders.PortDHCPClient, "full")
+	}
+	if v4 && p.NetBIOS {
+		a.jeq(decoders.PortNBNS, "full")
+		a.jeq(decoders.PortNBDatagram, "full")
 	}
 	if p.MDNS {
 		a.jeq(decoders.PortMDNS, "full")
 	}
 	if p.DNS {
 		a.jeq(decoders.PortDNS, "full")
+	}
+	if p.SSDP {
+		a.jeq(decoders.PortSSDP, "full")
+	}
+	if p.WSD {
+		a.jeq(decoders.PortWSD, "full")
+	}
+}
+
+// udpDestinationPorts jumps to full for the destination ports in the
+// accumulator: DHCP's on IPv4, and the SSDP and WS-Discovery multicast
+// announcements, which may come from any port.
+func (a *asm) udpDestinationPorts(p decoders.Protocols, v4 bool) {
+	if v4 && p.DHCP {
+		a.jeq(decoders.PortDHCPServer, "full")
+		a.jeq(decoders.PortDHCPClient, "full")
+	}
+	if p.SSDP {
+		a.jeq(decoders.PortSSDP, "full")
+	}
+	if p.WSD {
+		a.jeq(decoders.PortWSD, "full")
 	}
 }
 

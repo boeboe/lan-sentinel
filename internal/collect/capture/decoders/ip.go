@@ -57,7 +57,9 @@ func (f *frame) ipv6(b []byte) {
 	f.source(observation.PassiveIPv6, src)
 }
 
-// udp dispatches DHCP (IPv4 only), mDNS responses and DNS responses.
+// udp dispatches DHCP and NetBIOS (IPv4 only), mDNS responses, DNS
+// responses, SSDP and WS-Discovery. SSDP and WS-Discovery announcements go
+// to their port from any port; answers to a search come from it.
 func (f *frame) udp(src netip.Addr, b []byte) {
 	if len(b) < 8 {
 		return
@@ -74,5 +76,13 @@ func (f *frame) udp(src netip.Addr, b []byte) {
 		f.mdns(src, payload)
 	case f.p.DNS && sport == PortDNS:
 		f.dns(payload)
+	case f.p.NetBIOS && src.Is4() && sport == PortNBNS:
+		f.nbns(src, payload)
+	case f.p.NetBIOS && src.Is4() && sport == PortNBDatagram:
+		f.nbDatagram(src, payload)
+	case f.p.SSDP && (dport == PortSSDP || sport == PortSSDP):
+		f.ssdp(src, payload)
+	case f.p.WSD && (dport == PortWSD || sport == PortWSD):
+		f.wsd(src, payload)
 	}
 }

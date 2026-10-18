@@ -188,9 +188,9 @@ func TestDecode(t *testing.T) {
 			SystemName: "plant-sw-01", SystemDesc: "Industrial Ethernet Switch\x00", PortDesc: "PLC line 3", Caps: 0x14,
 			MgmtIP: "192.168.110.2"}.Frame(), All,
 			[]string{"passive_lldp mac=00:1e:c9:00:00:01 name=lldp:plant-sw-01 capabilities=bridge,router chassis_id=00:1e:c9:00:00:01 " +
-				"management_ip=192.168.110.2 port_description=PLC line 3 port_id=ge-0/0/23 system_description=Industrial Ethernet Switch"}},
+				"management_ip=192.168.110.2 port_description=PLC line 3 port_id=ge-0/0/23 system_description=Industrial Ethernet Switch ttl=120"}},
 		{"lldp with a local chassis id", frames.LLDP{Source: swPort, ChassisText: "SN1234", PortID: "X1 P1", TTL: 20}.Frame(), All,
-			[]string{"passive_lldp mac=00:1e:c9:00:00:17 chassis_id=SN1234 port_id=X1 P1"}},
+			[]string{"passive_lldp mac=00:1e:c9:00:00:17 chassis_id=SN1234 port_id=X1 P1 ttl=20"}},
 		{"lldp shutdown", frames.LLDP{Source: swPort, ChassisMAC: sw, PortID: "1", TTL: 0, SystemName: "x"}.Frame(), All, nil},
 		{"lldp disabled", frames.LLDP{Source: swPort, ChassisMAC: sw, PortID: "1", TTL: 120}.Frame(), Protocols{ARP: true}, nil},
 

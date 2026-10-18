@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"math"
 	"net/netip"
 	"slices"
@@ -411,11 +412,11 @@ func printScan(w io.Writer, res scheduler.ScanResult) {
 		}
 		sort.Slice(keys, func(i, j int) bool { return probeOrder(keys[i]) < probeOrder(keys[j]) })
 		for _, k := range keys {
-			states := make([]string, 0, len(r.Counts[k]))
-			for st, n := range r.Counts[k] {
-				states = append(states, fmt.Sprintf("%d %s", n, st))
+			names := slices.Sorted(maps.Keys(r.Counts[k])) // by state, not by the formatted count
+			states := make([]string, 0, len(names))
+			for _, st := range names {
+				states = append(states, fmt.Sprintf("%d %s", r.Counts[k][st], st))
 			}
-			sort.Strings(states)
 			fmt.Fprintf(w, "  %-*s  %s\n", width, k, strings.Join(states, ", "))
 		}
 	}

@@ -428,3 +428,16 @@ logging: { format: text }
 		t.Errorf("config validate: exit %d\n%s%s", code, out, stderr)
 	}
 }
+
+// Counts are listed by state name, whatever their numbers.
+func TestPrintScanOrdersStates(t *testing.T) {
+	var b strings.Builder
+	printScan(&b, scheduler.ScanResult{Interfaces: []scheduler.InterfaceResult{{
+		Interface: "eth1", Seconds: 27, Responders: 15,
+		Counts: map[string]map[string]int{"arp": {"reply": 15, "no_reply": 237}, "tcp/502": {"REFUSED": 12, "OPEN": 3}},
+	}}})
+	want := "eth1: done in 27 s; 15 hosts answered ARP\n  arp      237 no_reply, 15 reply\n  tcp/502  3 OPEN, 12 REFUSED\n"
+	if b.String() != want {
+		t.Errorf("printScan:\n%s\nwant:\n%s", b.String(), want)
+	}
+}

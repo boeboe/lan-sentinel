@@ -17,8 +17,9 @@ func Defaults() *Config {
 	return &Config{
 		Version: 1,
 		Passive: PassiveConfig{
-			Protocols: PassiveProtocols{ARP: true, IPv4: true, IPv6: false, DHCP: true, MDNS: true, DNS: true, LLDP: true},
-			RingSize:  2 << 20,
+			Protocols: PassiveProtocols{ARP: true, IPv4: true, IPv6: false, DHCP: true, MDNS: true, DNS: true, LLDP: true,
+				NetBIOS: true, CDP: true, SSDP: true, WSD: true},
+			RingSize: 2 << 20,
 		},
 		Neighbor: NeighborConfig{ResyncInterval: Duration(10 * time.Minute)},
 		Active: ActiveConfig{
@@ -49,12 +50,12 @@ func Defaults() *Config {
 			Stale:  Duration(24 * time.Hour),
 		},
 		Identity: IdentityConfig{
-			HostnamePreference: []string{"mdns", "dhcp", "dns_ptr", "lldp"},
+			HostnamePreference: []string{"mdns", "dhcp", "dns_ptr", "lldp", "netbios"},
 			AddressOverlap:     Duration(5 * time.Minute),
 			AddressExpiry:      Duration(24 * time.Hour),
 			NameExpiry:         Duration(168 * time.Hour),
 			ProxyARPThreshold:  16,
-			Identifiers:        IdentifierToggles{MDNS: true, DHCP: true, Hostname: true, LLDP: true},
+			Identifiers:        AllIdentifiers,
 		},
 		Storage: StorageConfig{
 			Path: DefaultDBPath,

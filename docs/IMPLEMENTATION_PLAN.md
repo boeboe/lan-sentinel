@@ -1,12 +1,12 @@
 # LAN Sentinel — Implementation Plan
 
-Six phases, each ending in a shippable build. Passive discovery lands before any active probing so the first field deployments cannot disturb OT equipment. LAN Sentinel and its code base are Linux only; every build and test runs in a Linux dev container via `make`, on Linux or macOS development machines. Estimates assume one experienced Go engineer: 15–19 weeks of build plus about 4 weeks of pilot and soak time that overlaps later phases.
+Six phases, each ending in a shippable build. The functionality is frozen at **v0.1.0** (`REQUIREMENTS.md` §5, Feature freeze, 16 Oct 2026): the open boxes below are hardware and field checks, and what is not built is in `BACKLOG.md`. Passive discovery lands before any active probing so the first field deployments cannot disturb OT equipment. LAN Sentinel and its code base are Linux only; every build and test runs in a Linux dev container via `make`, on Linux or macOS development machines. Estimates assume one experienced Go engineer: 15–19 weeks of build plus about 4 weeks of pilot and soak time that overlaps later phases.
 
 | Phase | Scope | Estimate | Exit gate |
 | --- | --- | --- | --- |
 | 0 | Foundations, platform layer, test infrastructure | 2–3 weeks | Daemon runs under systemd with only `CAP_NET_RAW` and reloads on SIGHUP |
 | 1 | Observation pipeline, interfaces, neighbours | 2–3 weeks | Hosts appear from the neighbour table with vendor, scoped per interface |
-| 2 | Passive capture | 3–4 weeks | **v0.1 field release:** passive only, 7-day pilot on 3 sites |
+| 2 | Passive capture | 3–4 weeks | Passive-only pilot: 7 days on 3 sites |
 | 3 | API, CLI and metrics | 2–3 weeks | Historical-reconstruction acceptance test passes through the CLI |
 | 4 | Active discovery with OT safety | 3–4 weeks | No faults in OT device soak; packet-rate limits verified |
 | 5 | Release builds, hardening, rollout | 2 weeks | **v1.0** on the full fleet; active discovery enabled per site |
@@ -20,7 +20,7 @@ Deferred checks that need real hardware or data from real sites. Each closes a p
 | --- | --- | --- | --- | --- |
 | [ ] | `tools/capcheck` under the reference unit on each target board (RevPi Connect, amd64 edge box): every row passes with only `CAP_NET_RAW` | Phase 0 exit | `make test-net` (capcheck with and without `CAP_NET_RAW`), `make test-systemd` (capcheck under the unit's sandbox) | `ARCHITECTURE.md` §8 table; passed on a Raspberry Pi CM4 with Debian 11 (6 Oct 2026) |
 | [ ] | Daemon on a target board on a real test LAN: hosts appear from the kernel neighbour table alone, with vendor and per-interface scoping (config with `passive: { enabled: false }`) | Phase 1 exit | `TestDaemonFindsHosts` in `make test-net`: two networks, real-OUI vendor, same MAC on both networks as two hosts with `MAC_MOVED` | Phase 1 exit note below |
-| [ ] | pcap captures from the pilot sites (ARP, DHCP, mDNS, LLDP, NDP from real OT devices) added to `test/fixtures` with decoder table tests | Phase 2 task | Synthetic `test/fixtures/site-a-eth1.pcapng` (`make fixtures`) replayed by `TestCaptureScenario`; decoder tests on gopacket-built frames; fuzz targets | `test/fixtures`, decoder tests |
+| [ ] | pcap captures from the pilot sites (ARP, DHCP, DNS, mDNS, LLDP, CDP, NetBIOS, SSDP, WS-Discovery, NDP from real OT devices) added to `test/fixtures` with decoder table tests | Phase 2 task | Synthetic `test/fixtures/site-a-eth1.pcapng` (`make fixtures`) replayed by `TestCaptureScenario`; decoder tests on gopacket-built frames; fuzz targets | `test/fixtures`, decoder tests |
 | [ ] | `systemd-analyze security lan-sentinel` and `capcheck` (every row, including the `adjtimex` read) under the reference unit on each target board, on its Debian release | Phase 5 task | `make test-systemd` on Debian 11, 12 and 13 in containers: exposure 2.3, capcheck passes under the unit's sandbox | `ARCHITECTURE.md` §8 table; passed on a Raspberry Pi CM4 with Debian 11, exposure 2.3 (6 Oct 2026) |
 | [ ] | 7-day soak against real OT devices (PLC, inverter, HMI) with active discovery enabled: no device faults | Phase 4 exit | `TestActiveDiscovery` in `make test-net` (budgets per one-second window, excludes, spacing, kill switch) | Phase 4 status note |
 | [ ] | Passive-only build for 7 days on 3 pilot sites: < 5% CPU and < 50 MB RSS on a RevPi; an injected IP change and duplicate IP reconstructed | Phase 2 exit | `TestCaptureScenario` (IP change, takeover, duplicate IP and its resolution reconstructed from frames through the daemon); capture tests in `make test-net` | Phase 2 exit note below |
@@ -124,6 +124,7 @@ Plugin interface in `internal/identify` taking a host's evidence and returning (
 
 - [x] Plugin interface (`identify.Identifier`: a name and `Identify(observation) []Claim`) applied by the correlator to every observation of a present host, each identifier switchable on reload (`identity.identifiers`); a source's value changes only to a more confident claim, the adopted one is marked `current` (migration 0006) and `hosts.device_type` is the most confident claim of any source (`DATA_MODEL.md` §5.7) — *started 7 Oct 2026*
 - [x] Passive identifiers, sending nothing: mDNS service types and `_device-info` model, DHCP fingerprint (vendor class, the iOS/macOS request list), hostname patterns, LLDP capabilities; `hosts show` shows the device type and current claims, `hosts evidence` every claim
+- [x] LAN discovery protocols, passive (requested 16 Oct 2026, FR-PA-8 to FR-PA-11): NetBIOS names, workgroups, roles and OS versions; CDP (Cisco, Rockwell Stratix) and the LLDP system description, with the switch and port each interface is plugged into in `interfaces list`; SSDP device types and `SERVER` headers; WS-Discovery types and ONVIF camera models. Each a decoder with a fuzz target, a `passive.protocols` switch and an identifier; a device's report of its firmware, system description or workgroup replaces the old value. What a site's switches let through: `TEST_PLAN.md` B9
 - [x] Active identifiers: Modbus Device Identification (FC 43/14) — *opt-in, once per MAC (ADR 0011, 8 Oct 2026)*
 - [x] Active identifiers: HTTP `Server` and title, TLS certificate subject, SNMPv2c `sysDescr`, SSH banner, Telnet banner, FTP SYST — *opt-in, once per MAC (ADR 0011, 8 Oct 2026)*
 
@@ -131,7 +132,7 @@ Plugin interface in `internal/identify` taking a host's evidence and returning (
 
 | Layer | How | What it proves |
 | --- | --- | --- |
-| Decoders | Table tests over captured pcaps from real sites (ARP, DHCP, mDNS, LLDP, NDP) | Parsing of real OT device traffic, including malformed frames |
+| Decoders | Table tests over captured pcaps from real sites (ARP, DHCP, DNS, mDNS, LLDP, CDP, NetBIOS, SSDP, WS-Discovery, NDP) | Parsing of real OT device traffic, including malformed frames |
 | Replay | Site pcaps replayed through the daemon with a simulated clock, compared with expected inventories | End-to-end behaviour on any machine, reproducible field issues |
 | Toolchain | Dev container for every make target, locally and in CI | Identical Go, lint and test environment on every machine |
 | Correlator | Golden tests: observation sequence in → expected bindings and events out, starting with the reconstruction scenario (`DATA_MODEL.md` §10) | IP change, takeover, duplicate IP and resolution, MAC move, NIC swap (new host), same IP on two interfaces, routed source IPs ignored, unbound probe results |
@@ -140,6 +141,8 @@ Plugin interface in `internal/identify` taking a host's evidence and returning (
 | Fuzzing | `go test -fuzz` on every decoder | No panics on hostile input |
 | Soak | Simulated first (`make soak`: 90 days of a 50-host LAN through the correlator and store on a simulated clock, hourly compaction at the default retention, the size cap off), then 7 days on a lab rig with real PLC, inverter and HMI | Memory stable, no device faults, DB growth within budget |
 | Acceptance | Scripted: change an IP, swap a device, inject a duplicate, then `hosts find --at` and `hosts history` | The reconstruction requirement |
+| Chaos | `make chaos`: the whole daemon in-process on the platform fakes and a simulated clock, under seeded concurrent traffic (corrupt and late frames, bursts), LAN changes, link changes, operator actions, reloads and clock jumps, with the stored model's invariants checked every two seconds and online and `--offline` answers compared at the end; in CI for 3 minutes | No crash, hang, leak or inconsistent committed state under concurrency; a failing seed replays |
+| Stress | `make stress`: every test package with the race detector, in random order, repeated at 1 and 4 CPUs; in CI twice | No order dependence, flaky timing or data race in the tests themselves |
 
 Performance budgets on a RevPi Connect: < 5% average CPU, < 50 MB RSS, DB < 200 MB after 90 days on a 50-host LAN.
 

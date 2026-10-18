@@ -1,8 +1,8 @@
 # LAN Sentinel — Status
 
-Snapshot as of **8 Oct 2026**: `main` at a6e9eee, latest release **v0.0.6** (v0.0.5 = 5cb80c4, v0.0.4 = e222d3b). Update this file whenever an area changes state.
+Snapshot as of **17 Oct 2026**: latest release **v0.0.9** (a437a22; v0.0.8 = b473d0b, v0.0.7 = 137e2da). The next release, **v0.1.0**, is feature-frozen (`REQUIREMENTS.md` §5, Feature freeze): from it on, changes are fixes, tests and documentation. Update this file whenever an area changes state.
 
-`IMPLEMENTATION_PLAN.md` remains the authority for tasks and exit criteria; this page summarises it and adds what the plan does not hold: deferred work, blocked items, open questions and rejected proposals.
+`IMPLEMENTATION_PLAN.md` remains the authority for tasks and exit criteria; this page summarises what is built and how it is validated. What is not built is in [`BACKLOG.md`](BACKLOG.md).
 
 ## Summary
 
@@ -14,21 +14,23 @@ Snapshot as of **8 Oct 2026**: `main` at a6e9eee, latest release **v0.0.6** (v0.
 
 | Area | Status | Notes | Validated by |
 | --- | --- | --- | --- |
-| Passive capture and decoders (ARP, IPv4, IPv6/NDP, DHCP, mDNS, DNS PTR, LLDP) | Done | Synthetic site capture only; real site captures pending | Decoder tests and fuzz targets, `test/net` capture tests, `TestCaptureScenario` |
+| Passive capture and decoders (ARP, IPv4, IPv6/NDP, DHCP, mDNS, DNS PTR, LLDP, CDP, NetBIOS, SSDP, WS-Discovery) | Done | Synthetic site capture only; real site captures pending | Decoder tests and fuzz targets, `test/net` capture tests, `TestCaptureScenario` |
 | Kernel neighbour table, interfaces, contexts | Done | | `test/net` netlink tests |
 | Correlator, golden reconstruction scenario | Done | Also passes after a simulated 7-day compaction | `TestScenarios`, `TestCLIReconstruction` |
-| Store: WAL writer, retention, compaction, integrity, quarantine | Done | 158.8 MB after 90 simulated days (budget 200 MB) | `test/crash` (in `make check`), `make soak` |
+| Store: WAL writer, retention, compaction, integrity, quarantine | Done | 158.8 MB after 90 simulated days (budget 200 MB). One correlation step commits in one batch (`store.Group`, 17 Oct 2026) | `test/crash` (in `make check`), `make soak`, `make chaos` |
+| Robustness under concurrency | Done | `make chaos`: the daemon under a seeded storm with invariants checked as it runs (CI: 3 minutes). `make stress`: every package shuffled, repeated at 1 and 4 CPUs with the race detector (CI: twice). Found and fixed on 17 Oct 2026: a batch commit splitting one observation's writes, operator timeouts answered as 500, `hosts list --description` ignored online, and a pass stopped by the kill switch logged as failed after a quick re-enable. Found by the documentation audit and fixed: a failed identification probe on a contested address refreshing a binding, a takeover ending a conflict without `DUPLICATE_IP_RESOLVED`, start-up-only settings reported as reloaded, `identify run` on a down interface answering 500, the identify collector's replies never counted, and `scan run` counts ordered by text | `make chaos`, `make stress`, unit tests |
+| Documentation drift | Done | Tests fail when a CLI command or flag is missing from `CLI.md`, a metric or label from `API.md`, an event type from `DATA_MODEL.md` §7, or when the README install commands differ from `deploy/README.md` | `TestCLIDocumented`, `TestMetricsDocumented`, `TestCatalogueDocumented`, `make test-systemd` |
 | API, CLI (online and `--offline`), metrics | Done | | `internal/{api,cli}` tests, `test/golden/cli_test.go` |
 | Active discovery: ARP sweep, ICMP, bare TCP connect, UDP NTP and ListIdentity | Done in Docker | Off by default; budgets measured on the wire | `TestActiveDiscovery` (`make test-net`) |
 | Kill switch, `scan plan`, `scan run` | Done | | `make test-net` |
 | Config reload (`config reload`, SIGHUP) | Done | Interfaces' `active` and `dhcp` reload; passive settings need a restart | `internal/daemon` tests, `make test-systemd` |
 | DHCP server monitoring | Done | Receive only, DHCPv4 | `TestCaptureScenario`, `make test-net` |
 | Host descriptions (`hosts set` / `hosts unset`) | Done | | `internal/{cli,api,daemon,correlate,store}` tests |
-| Passive identification (mDNS, DHCP, hostname, LLDP), device type in `hosts list` | Done | | `internal/identify`, `internal/correlate` tests |
+| Passive identification (mDNS, DHCP, hostname, LLDP, NetBIOS, CDP, SSDP, WS-Discovery), device type in `hosts list`, LLDP/CDP neighbour in `interfaces list` | Done | Which of SSDP and WS-Discovery a site's switches let through: `TEST_PLAN.md` B9 | `internal/identify`, `internal/correlate` tests |
 | Active identification: Modbus, HTTP, TLS, SNMP, SSH banner, Telnet, FTP | Done in Docker | Opt-in per interface, once per MAC; `identify run` is the only retry. TLS is a 1.2/1.3 handshake (`BudgetCost` 7); SNI is opt-in (`sni: auto` or `identify run --sni`). Hosts already latched `tls` `malformed` need `identify run --probe tls` | `internal/probe/idprobe`, `make test-net` |
 | Identification probes on the OT rig | **Pending (hardware)** | One named probe at a time; do not tick from Docker | `TEST_PLAN.md` I1 |
 | Clock-sync marking of events | Done | Read-only `adjtimex` | `make test-systemd` |
-| Release pipeline (tarballs, checksums, manual `release` workflow) | Done | | CI, releases v0.0.1–v0.0.6 |
+| Release pipeline (tarballs, checksums, manual `release` workflow) | Done | | CI, releases v0.0.1–v0.0.9 |
 | Unit hardening, root with `CAP_NET_RAW` bounding set | Done in containers and on a CM4 | Exposure 2.3 on Debian 11, 12 and 13 | `make test-systemd`; CM4 row in `ARCHITECTURE.md` §8 |
 | Board audits: RevPi Connect, amd64 edge box | **Pending (hardware)** | | `TEST_PLAN.md` A1–A4 |
 | Neighbour-only run on a real test LAN | **Pending (hardware)** | Phase 1 exit | `TEST_PLAN.md` B1 |
@@ -37,27 +39,9 @@ Snapshot as of **8 Oct 2026**: `main` at a6e9eee, latest release **v0.0.6** (v0.
 | 7-day OT soak with active discovery (PLC, inverter, HMI) | **Pending (field)** | Phase 4 exit | `TEST_PLAN.md` H1 |
 | Staged fleet rollout | **Pending (field)** | Runbook in `deploy/README.md` | — |
 
-## Deferred: decided, do not build
+## Not built
 
-| Item | Why | Recorded in |
-| --- | --- | --- |
-| IPv6 active probing (NDP solicitation) | v1 is IPv4-first; passive IPv6/NDP decoding stays | `REQUIREMENTS.md` §5 (IPv4-first), AGENTS.md rule 12 |
-| SSH key exchange identification (`ssh-kex`) | Not specified; ADR 0011 reads only the server identification line | `REQUIREMENTS.md` §5 (Active identification), ADR 0011 |
-| DHCPv6 monitoring; synthetic DHCP requests | DHCPv6 needs its own decoder and identity model; requests would change server state | `REQUIREMENTS.md` §5 (DHCP server monitoring) |
-| VLAN tagging, web UI, any data leaving the box | Out of scope for v1 | `REQUIREMENTS.md` §4, AGENTS.md rule 11 |
-
-## Blocked on the maintainer
-
-- The hardware and field checks above. The maintainer runs `TEST_PLAN.md` on the boards; agents record the results they are given (`ARCHITECTURE.md` §8 table, plan checkboxes) and never tick these from Docker results.
-- `ssh-kex` if it is ever requested: a new bounded exchange under ADR 0011, not a scaffold of the banner probe.
-
-## Open questions and rejected proposals
-
-- **Throwaway mDNS names.** On a lab LAN (6 Oct 2026), browsers announced `<uuid>.local` names during WebRTC calls (several `HOSTNAME_CHANGED` events within a second), and Android phones rotated `Android_XXXXXXXX` names.
-  - Two proposals were rejected by the maintainer:
-    - the mDNS decoder ignoring a name that is exactly a UUID plus `.local`;
-    - leaving Android names alone and counting them first.
-  - No approach has been decided. Do not re-propose either. Ask before changing how names are handled.
+Deferred features, out-of-scope items, open decisions (including rejected proposals not to re-propose) and housekeeping are listed once, in [`BACKLOG.md`](BACKLOG.md). The hardware and field checks above are also listed there with their `TEST_PLAN.md` procedure; the maintainer runs them, and agents record the results they are given (`ARCHITECTURE.md` §8 table, plan checkboxes) and never tick them from Docker results.
 
 ## Known caveats
 

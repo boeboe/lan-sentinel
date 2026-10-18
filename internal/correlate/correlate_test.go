@@ -268,6 +268,29 @@ func TestTakeoverFromHostThatIsNotLive(t *testing.T) {
 	})
 }
 
+// A takeover that closes every holder of a conflict ends it: the address
+// has one holder again, so DUPLICATE_IP_RESOLVED follows (§5.3).
+func TestTakeoverEndsConflict(t *testing.T) {
+	h := newHarness(t)
+	h.obs(0, observation.PassiveARP, "eth0", macA, "10.0.0.5")
+	h.obs(time.Second, observation.PassiveARP, "eth0", macB, "10.0.0.5") // duplicate IP
+	h.obs(time.Hour, observation.PassiveARP, "eth0", macC, "10.0.0.5")   // both STALE: takeover
+	expect(t, "events", hostEvents(h.events()), []string{
+		"0s HOST_DISCOVERED host-01 >00:1b:1b:00:00:0a",
+		"1s HOST_DISCOVERED host-02 >00:1b:1b:00:00:0b",
+		"1s DUPLICATE_IP_DETECTED host-02 >10.0.0.5",
+		"1h0m0s HOST_DISCOVERED host-03 >00:1b:1b:00:00:0c",
+		"1h0m0s IP_REMOVED host-01 10.0.0.5>",
+		"1h0m0s IP_REMOVED host-02 10.0.0.5>",
+		"1h0m0s DUPLICATE_IP_RESOLVED host-03 >10.0.0.5",
+	})
+	expect(t, "bindings", h.bindings(), []string{
+		"host-01 10.0.0.5 [0s,1h0m0s) c=1",
+		"host-02 10.0.0.5 [1s,1h0m0s) c=1",
+		"host-03 10.0.0.5 [1h0m0s,open) c=0",
+	})
+}
+
 func TestUnboundWhenHolderIsAmbiguous(t *testing.T) {
 	h := newHarness(t)
 	h.obs(0, observation.PassiveARP, "eth0", macA, "10.0.0.5")

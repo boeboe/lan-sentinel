@@ -13,7 +13,7 @@ import (
 // identifierSources lists the passive identifiers' source names as an SQL
 // list, for loading their identifications.
 var identifierSources = func() string {
-	all := identify.Identifiers(config.IdentifierToggles{MDNS: true, DHCP: true, Hostname: true, LLDP: true})
+	all := identify.Identifiers(config.AllIdentifiers)
 	q := make([]string, len(all))
 	for i, id := range all {
 		q[i] = "'" + id.Name() + "'"
@@ -39,8 +39,10 @@ func (c *Correlator) identify(ctx context.Context, h *host, o observation.Observ
 // current value for a field changes only to a more convincing claim, so a
 // device whose packets say different things does not flip between them:
 // the same value refreshes its row, and an equally or less confident other
-// value is recorded but not adopted. Adopting a value marks it current and
-// emits VENDOR_IDENTIFIED; a device type also updates hosts.device_type.
+// value is recorded but not adopted. A replacing claim (a device's report
+// of its current firmware, description or workgroup) is adopted whatever
+// its confidence, as a probe's result is. Adopting a value marks it current
+// and emits VENDOR_IDENTIFIED; a device type also updates hosts.device_type.
 func (c *Correlator) claim(ctx context.Context, h *host, source string, cl identify.Claim, o observation.Observation, obsID int64, ev events.Evidence) {
 	if cl.Field == "" || cl.Value == "" {
 		return
@@ -61,7 +63,7 @@ func (c *Correlator) claim(ctx context.Context, h *host, source string, cl ident
 			}
 		}
 		return
-	case known && cl.Confidence <= h.identConf[key]:
+	case known && cl.Confidence <= h.identConf[key] && !cl.Replace:
 		return
 	}
 	h.idents[key], h.identConf[key] = cl.Value, cl.Confidence

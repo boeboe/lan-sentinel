@@ -8,8 +8,8 @@ lan-sentinel [global options] <command> <subcommand> [options]
 
 ## 1. How commands reach data
 
-- **Online (default):** commands talk to the running daemon over `/run/lan-sentinel/api.sock`. This gives consistent reads and is required for `scan run`, `identify run`, `active enable|disable`, `config reload`, `watch` and `daemon status`.
-- **Offline (`--offline`):** the CLI opens the database directly, read-only. Read commands (`hosts`, `events`, `observations`, `services`, `interfaces`, `db`, `scan plan`) still work when the daemon will not start. Commands that need the daemon refuse `--offline` with exit 64 and a clear message.
+- **Online (default):** commands talk to the running daemon over `/run/lan-sentinel/api.sock`. This gives consistent reads and is required for `scan run`, `identify run`, `active enable|disable`, `hosts set`, `hosts unset`, `config reload`, `watch` and `daemon status`.
+- **Offline (`--offline`):** the CLI opens the database directly, read-only. Read commands (the `hosts` reads, `events`, `observations`, `services`, `dhcp servers`, `interfaces`, `db`, `scan plan`) still work when the daemon will not start. Commands that need the daemon refuse `--offline` with exit 64 and a clear message.
 
 `lan-sentinel daemon run` stays in the foreground; systemd owns the process. No double-fork daemonisation.
 
@@ -31,13 +31,13 @@ The daemon runs as root with `UMask=0027` and the data directory is `0750 root:r
 | --- | --- |
 | `--config PATH` | Config file (default `$LAN_SENTINEL_CONFIG`, else `/etc/lan-sentinel/config.yaml`) |
 | `--db PATH` | Database path for `--offline` (default from config) |
-| `--socket PATH` | API socket (default `/run/lan-sentinel/api.sock`) |
+| `--socket PATH` | API socket (default the config's `api.socket`, else `/run/lan-sentinel/api.sock`) |
 | `-o`, `--output table\|json\|jsonl\|csv` | Output format (default `table`) |
-| `--no-color` | Disable colour |
+| `--no-color` | Disable colour (accepted; the CLI prints no colour anyway) |
 | `--log-level trace\|debug\|info\|warn\|error` | Log level |
-| `--timeout DURATION` | Client timeout |
+| `--timeout DURATION` | Client timeout per request (default `10s`); the scan itself in `scan run` and the `watch` stream are not bound by it |
 | `--offline` | Read the database directly, read-only |
-| `--quiet` | Minimal output; rely on exit code |
+| `--quiet` | Minimal output; rely on exit code. Normal output is suppressed, except `config show` and the `-o json` output of `config validate` and `version`, which still print |
 
 ## 3. v1 commands
 
@@ -45,7 +45,7 @@ The daemon runs as root with `UMask=0027` and the data directory is `0750 root:r
 | --- | --- | --- | --- |
 | `daemon run` | Run the service in the foreground | `--config`, `--log-level` | 0 |
 | `daemon status` | Version, platform, PID, uptime, DB health, interfaces, host counts, kill-switch state, clock synchronisation, last scan, and per-interface collector state (`running`/`disabled`/`unsupported`/`failed`, backend or error); for each probe its last periodic pass, e.g. `arp running afpacket last pass 2m ago: 253 swept, 14 replied (26 s)` (blocked probes and `cut short` when they apply). Passes are shown here only, never logged | `-o json`; `--quiet` exit codes | 3 |
-| `hosts list` | Inventory: MAC, IP, hostname, vendor, device type, interface, presence, last seen, description. `--active`: live hosts (ACTIVE or RECENT); `--stale`: the others (STALE or MISSING); `--port`: an OPEN service on that port; `--vendor`: substring of vendor or manufacturer; `--device`: substring of the device type (the most confident identification, `DATA_MODEL.md` §5.7); `--description`: substring of the description | `--interface`, `--active`, `--stale`, `--vendor`, `--device`, `--description`, `--port`, `--seen-within` | 3 (device type from 6) |
+| `hosts list` | Inventory: MAC, IP, hostname, vendor, device type, interface, presence, last seen, description. `IP` is the first open address (IPv4 first, in numeric order), with `(+N)` when the host holds N more. `--active`: live hosts (ACTIVE or RECENT); `--stale`: the others (STALE or MISSING); `--port`: an OPEN service on that port; `--vendor`: substring of vendor or manufacturer; `--device`: substring of the device type (the most confident identification, `DATA_MODEL.md` §5.7); `--description`: substring of the description | `--interface`, `--active`, `--stale`, `--vendor`, `--device`, `--description`, `--port`, `--seen-within` | 3 (device type from 6) |
 | `hosts show <query>` | Full record of one current host: the device type, the description and the current identifications (most confident first per field, with last seen). The query is the same as `hosts find` and must match exactly one current host | `--interface`, `--ip`/`--mac`/`--hostname`/`--id` | 3 (identification from 6) |
 | `identify run <host> --probe NAME` | Force identification probes on a host (bypasses only the once-per-MAC latch; the kill switch, budget and freshness rule still apply). `--probe` is `all` (the probes enabled on the host's interface), one name, or a comma-separated list: `modbus`, `http`, `tls`, `snmp`, `ssh-banner`, `telnet`, `ftp` | `--interface`, `--ip`/`--mac`/`--hostname`/`--id`, `--probe` (required), `--sni NAME` (when tls is in the list) | 6 |
 | `hosts find <query>` | Current or point-in-time holder(s) with addresses, names and services and their sources; exit 1 when nothing matches | `--interface`, `--at <time>`, `--ip`/`--mac`/`--hostname`/`--id` | 3 |
@@ -57,18 +57,19 @@ The daemon runs as root with `UMask=0027` and the data directory is `0750 root:r
 | `events list` | Events on this box, the latest `--limit` (default 1000) in time order | `--since`, `--until`, `--type`, `--interface`, `--mac`, `--ip`, `--limit` | 3 |
 | `services list` | Probe results per host and port | `--port`, `--state`, `--interface` | 3 (data from 4) |
 | `dhcp servers` | DHCP servers seen: identity (option 54), relay, sender MAC and IP, allowlist verdict, advertised router, DNS servers and mask, last seen | `--interface`, `--status` | 5 |
-| `interfaces list` | State, MAC, current prefixes, passive/active per interface | | 3 |
+| `interfaces list` | State, MAC, current prefixes, passive/active (`PASSIVE` is `replay` in replay mode) and the LLDP/CDP neighbour per interface (`NEIGHBOR`: the switch and the port the box is plugged into, `(+N)` when there are more; `-o json` lists them all) | | 3 |
 | `watch` | Live event stream | `--interface`, `--type`, `--port` | 3 |
 | `active disable` | Kill switch: stop all active probing now; persists across restarts | `--reason TEXT` (required) | 4 |
 | `active enable` | Clear the kill switch | `--reason TEXT` | 4 |
 | `scan plan` | Dry run: what a scan would do, sending nothing | same as `scan run` | 4 |
-| `scan run` | Operator-triggered scan, bound by the same safety controls | `--interface`, `--network` (repeatable), `--arp`, `--icmp`, `--tcp <port>` (repeatable), `--udp <probe>` (`ntp`, `enip`; repeatable), `--profile`, `--allow-wide` | 4 |
+| `scan run` | Operator-triggered scan, bound by the same safety controls | `--interface` (repeatable), `--network` (repeatable), `--arp`, `--icmp`, `--tcp <port>` (repeatable), `--udp <probe>` (`ntp`, `enip`; repeatable), `--profile`, `--allow-wide`; `--interface`, `--network`, `--tcp` and `--udp` also take comma-separated lists | 4 |
 | `config show` | Effective config after merging defaults, file, env and flags | `--sources` | 0 |
 | `config validate` | Validate a config before rollout | `--config` | 0 |
 | `config reload` | Make the running daemon re-read its configuration file and print what took effect and what needs a restart | `-o json` | 5 |
 | `db info` | Path, schema version, journal mode, size, WAL size, row counts | | 3 |
 | `db check` | SQLite integrity check | | 3 |
 | `version` | Version, commit, commit date (release builds are reproducible), Go version, architecture; `--quiet` prints the version alone | | 0 |
+| `completion bash\|zsh\|fish\|powershell` | Print a shell completion script (cobra's built-in command) | | - |
 
 There are no merge or split commands: within an interface a host is its MAC (`DATA_MODEL.md` §1).
 
@@ -104,7 +105,7 @@ For a MAC or name query, `--at` shows the host and the addresses and names in ef
 
 ### `hosts evidence`
 
-For each attribute (each address, name, service, identification) the sources that confirmed it, with first/last seen per source (from `address_sources` and roll-ups) and observation counts within roll-up retention. Identifications are grouped by source; weaker and earlier claims are included, with `*` on the value each source holds now (`hosts show` lists only those, `DATA_MODEL.md` §5.7). Then the host's events with their `evidence_json` snapshots, which remain after raw observations are pruned.
+For each attribute (each address, name, service, identification) the sources that confirmed it, with first/last seen per source (from `address_sources` and roll-ups) and observation counts within roll-up retention. Identifications are grouped by source; weaker and earlier claims are included, each with its confidence, with `*` on the value each source holds now (`hosts show` lists only those, `DATA_MODEL.md` §5.7). Then the host's events with their `evidence_json` snapshots, which remain after raw observations are pruned.
 
 ### `observations list`
 
@@ -127,47 +128,53 @@ Accepts the same options as `scan run`, sends nothing, and prints:
 - per-protocol rates, the TCP concurrency caps and the global budget
 - estimated packets (a TCP connect counts 3, its most) and two durations, labelled: the **estimated typical duration** and the **estimated no-response duration**
 - the assumptions behind the estimate: probes paced at the rates shown and at least the target spacing apart, sending and answering taking no time; for the typical duration, that known hosts answer at once while most swept addresses are empty, so only the ARP sweep waits out its reply timeout; for the no-response duration, that nothing answers, so every phase waits out its reply timeout (named per probe); and that hosts that first answer the sweep are probed too, which adds to a run
-- verdict: `ALLOWED` or `REFUSED` with every reason (kill switch set, active discovery disabled on the interface, interface not configured, network outside the interface's configured networks or not IPv4, prefix wider than `max_auto_scan_prefix_v4`, a sweep beyond `active.max_sweep_targets`, a sweep of more than 65,536 addresses without `--allow-wide`, unknown profile or UDP probe, no targets left)
+- verdict: `ALLOWED` or `REFUSED` with every reason (kill switch set, no interface has active discovery enabled, active discovery disabled on the interface, interface not configured, network outside the interface's configured networks or not IPv4, none of the requested networks is configured on the interface, prefix wider than `max_auto_scan_prefix_v4` unless `active.allow_wide_scan` is set, a sweep beyond `active.max_sweep_targets`, a sweep of more than 65,536 addresses without `--allow-wide`, unknown profile or UDP probe, TCP port N is out of range, no targets left)
 
 With no probe given (no `--arp`, `--icmp`, `--tcp`, `--udp` and no profile) the scan is an ARP sweep; probes given are added to the profile's. A sweep of more than 65,536 addresses (possible only with the expert override `active.max_sweep_targets`) is refused until the plan is repeated with `--allow-wide`: the refused plan is the preview, with the target count and both durations. Without `--interface` every interface with active discovery is planned. Exit 0 if allowed, 2 if refused. Online, the daemon computes the plan from its effective config, the kill switch, the live interface addresses and the known hosts. With `--offline`, the CLI computes it from the config file, the persisted kill switch and `LAN_SENTINEL_ACTIVE_DISABLED`, and the known hosts in the database; the interfaces' own addresses are unknown offline, so they count as sweep targets. The ARP responders of a run are probed as well, so a run can probe more hosts than its plan counts.
 
+The plan also counts the never-attempted identification exchanges that the interfaces' `active.identify` opt-in would send (ADR 0011): JSON has `identify_jobs` per interface and `estimate.identify_probes`, and their packets are in the packet estimate (the table shows them only there), not in the durations. An interface with such exchanges has targets left. `scan run` does not send them: the identification loop does.
+
 ### `scan run`
 
-Computes the same plan, prints it, and refuses (exit 2) if `scan plan` would. Otherwise it runs through the daemon's scheduler and budgets, interface by interface: the ARP sweep, then ICMP, TCP port by port and UDP probe by probe on the known hosts and the ARP responders. It prints the estimated typical duration while it runs and returns when the scan completes, with per interface the duration, how many hosts answered the sweep and the results per probe; exit 2 if the scan was aborted (the kill switch was set meanwhile), refused by the daemon, or done but not recorded. Only one operator scan runs at a time; interrupting `scan run` (Ctrl-C) aborts the scan, which is recorded as aborted. Each interface's scan is recorded as a `scans` row with `SCAN_STARTED` and `SCAN_COMPLETED` events; periodic passes are not. Needs the daemon.
+Computes the same plan, prints it, and refuses (exit 2) if `scan plan` would. Otherwise it runs through the daemon's scheduler and budgets, interface by interface: the ARP sweep, then ICMP, TCP port by port and UDP probe by probe on the known hosts and the ARP responders. It prints the estimated typical duration while it runs and returns when the scan completes, with per interface the duration, how many hosts answered the sweep and the results per probe (the count of each state, in order of state name); exit 2 if the scan was aborted (the kill switch was set meanwhile), refused by the daemon, or done but not recorded. Only one operator scan runs at a time; interrupting `scan run` (Ctrl-C) aborts the scan, which is recorded as aborted. Each interface's scan is recorded as a `scans` row with `SCAN_STARTED` and `SCAN_COMPLETED` events; periodic passes are not. Needs the daemon.
 
 ### `identify run`
 
-`identify run <host> --probe NAME` sends identification probes to a host that has already been attempted, or that the scheduled look has not reached yet (ADR 0011). The host is resolved as for `hosts set` (exactly one current host). `--probe` is `all` (the probes the running configuration enables on the host's interface, `interfaces[].active.identify`, in catalogue order; none enabled is exit 2), one of `modbus`, `http`, `tls`, `snmp`, `ssh-banner`, `telnet`, `ftp`, or a comma-separated list of those names (`http,tls,telnet`; spaces around commas are allowed; duplicates keep the first; `all` cannot be mixed with other names). `--sni NAME` is valid when `tls` is in the list (with `all`, when `tls` is enabled on the interface) and sends that DNS name on the tls exchange even when config is empty (ADR 0011: SNI is off by default). A name that is not a DNS name (has a dot, RFC 1123 labels, not an IP) is exit 64. Without `--sni`, `sni: auto` sends `preferred_name` when it is a DNS name. Each name is sent as its own exchange. A listed name that is not enabled on the interface, or that the kill switch, budget, excludes, configured networks or the fresh unambiguous-binding rule refuse, prints `not sent` and the others still run; exit 2 only when none were sent. Any other failure (the daemon unreachable, say) stops the run with its exit code, after printing the attempts already made, in JSON too. A send is recorded as `IDENTIFY_RAN` with the calling user. Offline is exit 64. `-o json` prints an array of attempts (`probe`, `result`, `trigger`, `actor`; `error` when that name was not sent).
+`identify run <host> --probe NAME` sends identification probes to a host that has already been attempted, or that the scheduled look has not reached yet (ADR 0011). The host is resolved as for `hosts set` (exactly one current host). `--probe` is `all` (the probes the running configuration enables on the host's interface, `interfaces[].active.identify`, in catalogue order; none enabled is exit 2), one of `modbus`, `http`, `tls`, `snmp`, `ssh-banner`, `telnet`, `ftp`, or a comma-separated list of those names (`http,tls,telnet`; spaces around commas are allowed; duplicates keep the first; `all` cannot be mixed with other names). `--sni NAME` is valid when `tls` is in the list (with `all`, when `tls` is enabled on the interface) and sends that DNS name on the tls exchange even when config is empty (ADR 0011: SNI is off by default). A name that is not a DNS name (has a dot, RFC 1123 labels, not an IP) is exit 64. Without `--sni`, `sni: auto` sends `preferred_name` when it is a DNS name. Each name is sent as its own exchange. A listed name that is not enabled on the interface, or that the daemon refuses (API 409 `identify_refused`: the interface is not configured, active discovery is disabled on it, the interface is down or absent, the host has no open IPv4 binding, the probe is blocked by policy, or the kill switch, budget, excludes, configured networks or the fresh unambiguous-binding rule refuse it), prints `not sent` and the others still run; exit 2 only when none were sent. Any other failure (the daemon unreachable, say) stops the run with its exit code, after printing the attempts already made, in JSON too. A send is recorded as `IDENTIFY_RAN` with the calling user. Offline is exit 64. `-o json` prints an array of attempts (`probe`, `result`, `attempted_at`, `trigger`, `actor`; when that name was not sent, `error`, with a zero `attempted_at` and empty `result` and `trigger`).
 
 ### Time arguments
 
-`--since`/`--seen-within` accept durations (`24h`, `7d`, `90m`) counted back from now, or timestamps. `--at`/`--until` accept `YYYY-MM-DD`, `YYYY-MM-DD HH:MM[:SS]` (local time) or RFC 3339. Tables show local time.
+`--since`/`--seen-within` accept durations (`24h`, `7d`, `90m`) counted back from now, or timestamps. `--at`/`--until` accept `YYYY-MM-DD`, `YYYY-MM-DD HH:MM[:SS]` or `YYYY-MM-DDTHH:MM[:SS]` (local time) or RFC 3339. Tables show local time.
 
 ### Output formats
 
-Lists (`hosts list`, `hosts history`, `observations list`, `events list`, `services list`, `interfaces list`) support all four formats; `json` is the API's objects (`API.md`), `csv` uses RFC 3339 UTC times and empty cells for missing values. Event tables flag the time of an event written before the system clock was synchronised with `*` and one written while that was unknown with `?`, with a legend below; event CSV has a `CLOCK_SYNC` column and JSON the `clock_sync` field. Hostnames and other text come from the network, so a CSV cell starting with `=`, `+`, `-`, `@`, tab or carriage return is prefixed with `'` to keep spreadsheets from running it as a formula. Records (`hosts show`, `hosts find`, `daemon status`, `db info`, `db check`) support `table` and `json`; `hosts evidence` also `jsonl`; `watch` prints a line per event or, with `-o jsonl`/`json`, the event objects. `--quiet` prints nothing and leaves the answer to the exit code.
+Lists (`hosts list`, `hosts history`, `observations list`, `events list`, `services list`, `interfaces list`, `dhcp servers`) and `config show --sources` support all four formats; `json` is the API's objects (`API.md`), `csv` uses RFC 3339 UTC times and empty cells for missing values. In `hosts list` CSV the IP column holds every open IP, space-separated. Event tables flag the time of an event written before the system clock was synchronised with `*` and one written while that was unknown with `?`, with a legend below; event CSV has a `CLOCK_SYNC` column and JSON the `clock_sync` field. Hostnames and other text come from the network, so a CSV cell starting with `=`, `+`, `-`, `@`, tab or carriage return is prefixed with `'` to keep spreadsheets from running it as a formula. Records (`hosts show`, `hosts find`, `daemon status`, `db info`, `db check`) support `table` and `json`; `hosts evidence` also `jsonl`; `scan plan`, `scan run`, `config validate`, `config reload`, `config show` (without `--sources`), `hosts set`/`hosts unset`, `identify run` and `version` support `table` and `json` only. `scan plan -o json` prints the plan bare; `scan run -o json` wraps it as `{"plan": …, "interfaces": […]}`. `watch` prints a line per event or, with `-o jsonl`/`json`, the event objects. An `-o` format a command does not support is exit 64. `--quiet` suppresses normal output and leaves the answer to the exit code, except `config show` and the `-o json` output of `config validate` and `version`, which still print.
 
 ### Online reads
 
 Online, the daemon answers from what its single writer has committed, at most one 5-second batch behind; `watch` is live. Offline and online answers come from the same queries, and each command is one snapshot (`hosts evidence` included). `--mac` and `--ip` filters accept any written form. A socket the caller may not open is exit 2 with a hint to run with `sudo` (the daemon may be running); no daemon on the socket is exit 3.
 
+### Unconfirmed operator changes
+
+An operator command (`active disable|enable`, `hosts set`, `hosts unset`, `scan run`, `identify run`) whose change the daemon cannot confirm within 8 s (the record of a finished scan: 10 s) answers `the daemon is busy, so the change is not confirmed …` (API 503, exit 2). The change may still be recorded: check `events list` before you retry.
+
 ### `dhcp servers`
 
-One row per DHCP server identity, relay and sender seen in a reply on an interface (`DATA_MODEL.md` §5.6): `SERVER ID` is option 54 (`unknown` when a reply had none or an invalid one), `RELAY` the `giaddr` of relayed replies, `MAC` and `IP` the sender (the server, or the relay), `STATUS` the allowlist verdict at the last reply (`allowed`, `unexpected`, or `unchecked` when the interface has no `dhcp.servers`), then what the server last advertised. Known identities come first, the latest sender of each first. The allowlist matches the advertised identifier and does not authenticate a server; two senders for one identity show as two rows (`DHCP_SERVER_MAC_CHANGED`). On a switched port many replies are unicast to the client and never seen, so an empty list does not prove there is no DHCP server. Works offline; all four output formats.
+One row per DHCP server identity, relay and sender seen in a reply on an interface (`DATA_MODEL.md` §5.6): `SERVER ID` is option 54 (`unknown` when a reply had none or an invalid one), `RELAY` the `giaddr` of relayed replies, `MAC` and `IP` the sender (the server, or the relay), `IFACE` the interface, `STATUS` the allowlist verdict at the last reply (`allowed`, `unexpected`, or `unchecked` when the interface has no `dhcp.servers`), then what the server last advertised. Known identities come first, the latest sender of each first. The allowlist matches the advertised identifier and does not authenticate a server; two senders for one identity show as two rows (`DHCP_SERVER_MAC_CHANGED`). On a switched port many replies are unicast to the client and never seen, so an empty list does not prove there is no DHCP server. Works offline; all four output formats.
 
 ### Event type names
 
-`--type` takes the kebab-case CLI names from `DATA_MODEL.md` §7, e.g. `ip-changed`, `duplicate-ip`, `mac-moved`, `dhcp-server-unexpected`, `identify-ran`. Repeatable.
+`--type` takes the kebab-case CLI names from `DATA_MODEL.md` §7, e.g. `ip-changed`, `duplicate-ip`, `mac-moved`, `dhcp-server-unexpected`, `identify-ran`, or the spec names such as `IP_CHANGED`, in any case. Repeatable, and each value may be a comma-separated list. An unknown name is exit 64, with the list of names.
 
 ### Exit codes
 
 | Code | Meaning |
 | --- | --- |
 | 0 | Success / healthy |
-| 1 | Degraded (`daemon status`, e.g. a configured collector not running), no results for `find`, or no host for `hosts show` and `hosts set` |
-| 2 | Unhealthy (`daemon status`), command error, or scan refused |
+| 1 | Degraded (`daemon status`, e.g. a configured collector not running), no results for `find` or `hosts evidence`, or no host for `hosts show`, `hosts set`, `hosts unset` and `identify run` |
+| 2 | Unhealthy (`daemon status`), command error, scan refused, a failed `db check`, or `identify run` when nothing was sent or no probe is enabled |
 | 3 | Daemon unreachable (online mode) |
-| 64 | Usage error |
+| 64 | Usage error, including an `-o` format the command does not support |
 
 ### `config validate` output
 
@@ -175,7 +182,7 @@ Prints interfaces with passive/active mode, the DHCP server allowlist (`no allow
 
 ### `config reload`
 
-Makes the daemon re-read the configuration file it was started with, exactly as `systemctl reload lan-sentinel` (SIGHUP) does, through `POST /v1/config/reload` (`API.md`); `--config` does not change which file. The reload is all or nothing: a file that does not load or validate changes nothing, and the command prints the per-key errors and exits 2. Otherwise it prints the keys whose new values took effect (key, old, new) and the changed keys that need a restart (key, running value, value in the file), which keep their running values; with neither, `No changes.` Exit 0 in both cases. What a reload applies and what needs a restart is FR-CFG-3: each interface's `active` settings (enabling or disabling active discovery, networks, excludes) and `dhcp` allowlist, the probes and their intervals, budgets, presence thresholds, identity settings and the log level apply at once; adding, removing or renaming interfaces, their passive settings, `passive`, `storage`, `api`, `metrics`, `logging.format` and `replay` need a restart. Keys are named as in `config show --sources`. The daemon logs the reload with the calling Unix user and the applied keys; its message says what active discovery now runs (`configuration reloaded; active discovery: arp every 5m on eth0 (192.168.0.0/24)`). Check the file first with `config validate`, and preview a newly enabled interface's sweep with `scan plan`. Needs the daemon; `-o json` prints `ReloadResult`.
+Makes the daemon re-read the configuration file it was started with, exactly as `systemctl reload lan-sentinel` (SIGHUP) does, through `POST /v1/config/reload` (`API.md`); `--config` does not change which file. The reload is all or nothing: a file that does not load or validate changes nothing, and the command prints the per-key errors and exits 2. Otherwise it prints the keys whose new values took effect (key, old, new) and the changed keys that need a restart (key, running value, value in the file), which keep their running values; with neither, `No changes.` Exit 0 in both cases. What a reload applies and what needs a restart is FR-CFG-3: each interface's `active` settings (enabling or disabling active discovery, networks, excludes) and `dhcp` allowlist, the probes and their intervals, budgets, presence thresholds, identity settings and the log level apply at once; adding, removing or renaming interfaces, their passive settings, `passive`, `storage`, `api`, `metrics`, `logging.format` and `replay` need a restart, as do these keys, which are read only at start-up: `neighbor.resync_interval`, `identity.oui_override`, `active.max_concurrent_probes`, `active.budgets.tcp.max_concurrent_per_interface` and `active.budgets.tcp.max_concurrent_per_host`. Keys are named as in `config show --sources`. The daemon logs the reload with the calling Unix user and the applied keys; its message says what active discovery now runs (`configuration reloaded; active discovery: arp every 5m on eth0 (192.168.0.0/24)`). Check the file first with `config validate`, and preview a newly enabled interface's sweep with `scan plan`. Needs the daemon; `-o json` prints `ReloadResult`.
 
 ### `config show --sources`
 
@@ -187,11 +194,11 @@ The host, history, event, evidence and service outputs are from the golden recon
 
 ```bash
 $ lan-sentinel hosts list
-MAC                IP              HOSTNAME     VENDOR              IFACE  STATE   LAST SEEN
-00:1e:c9:00:00:01  -               plant-sw-01  Dell Inc.           eth0   ACTIVE  58m ago
-00:0c:26:aa:bb:03  192.168.110.51  -            Weintek Labs. Inc.  eth1   STALE   2h ago
-00:1b:1b:aa:bb:01  192.168.110.52  -            Siemens AG          eth1   STALE   1h ago
-00:1b:1b:aa:bb:02  192.168.110.50  plc-b.local  Siemens AG          eth1   ACTIVE  59m ago
+MAC                IP              HOSTNAME     VENDOR              DEVICE  IFACE  STATE   LAST SEEN  DESCRIPTION
+00:1e:c9:00:00:01  -               plant-sw-01  Dell Inc.           -       eth0   ACTIVE  58m ago
+00:0c:26:aa:bb:03  192.168.110.51  -            Weintek Labs. Inc.  -       eth1   STALE   2h ago
+00:1b:1b:aa:bb:01  192.168.110.52  -            Siemens AG          -       eth1   STALE   1h ago
+00:1b:1b:aa:bb:02  192.168.110.50  plc-b.local  Siemens AG          -       eth1   ACTIVE  59m ago
 ```
 
 ```bash
@@ -277,7 +284,7 @@ Addresses:
 
 Identification:
   oui  (0.70)  3h ago
-    *manufacturer  Weintek Labs. Inc.  {"mac":"00:0c:26:aa:bb:03","registry":"IEEE"}
+    *manufacturer  Weintek Labs. Inc.  (0.70)  {"mac":"00:0c:26:aa:bb:03","registry":"IEEE"}
   (* current: the value each source holds now)
 
 Observations (raw and roll-ups):
@@ -336,9 +343,9 @@ IP              MAC                IFACE  PORT     STATE  LAST CHECK
 
 ```bash
 $ lan-sentinel interfaces list
-NAME  STATE  MAC                PREFIXES          PASSIVE  ACTIVE  HOSTS
-eth0  up     00:c0:08:9a:41:02  -                 on       off     1
-eth1  up     00:c0:08:9a:41:03  192.168.110.0/24  on       on      3
+NAME  STATE  MAC                PREFIXES          PASSIVE  ACTIVE  HOSTS  NEIGHBOR
+eth0  up     00:c0:08:9a:41:02  -                 on       off     1      -
+eth1  up     00:c0:08:9a:41:03  192.168.110.0/24  on       on      3      plant-sw-01 ge-0/0/23
 ```
 
 ```bash

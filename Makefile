@@ -20,6 +20,11 @@ TEST_BIN := .build/test
 FUZZTIME ?= 30s
 # Minimum coverage of internal/ in percent (make coverage, make check).
 COVER_MIN ?= 90
+# make chaos: how long the storm lasts, and the seed to replay (empty: a new one).
+CHAOS_DURATION ?= 60s
+CHAOS_SEED ?=
+# make stress: how often every test package runs at each CPU count.
+STRESS_COUNT ?= 5
 
 # Dev container: the image tag follows the Dockerfile's content, caches live on
 # a named volume, and commands run as the calling user so files in the
@@ -32,7 +37,7 @@ RUN       := docker run --rm -v "$(CURDIR)":/src -w /src -v $(CACHE_VOL):/cache 
 
 .DEFAULT_GOAL := help
 .PHONY: help all dev-image shell build release tools package oui fixtures fmt fmt-check tidy tidy-check mod-verify vet lint vuln \
-	test coverage cover fuzz soak test-net test-systemd check check-all run-dev clean clean-cache
+	test coverage cover fuzz soak chaos stress test-net test-systemd check check-all run-dev clean clean-cache
 
 help: ## This help
 	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z0-9_-]+:.*?## / {printf "\033[36m%-30s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -98,9 +103,9 @@ vet: dev-image ## Run go vet
 	@echo "Running go vet on $(PKGS)"
 	@$(RUN) go vet $(PKGS)
 
-lint: dev-image ## Run golangci-lint (includes staticcheck), including the nettest-tagged tests
+lint: dev-image ## Run golangci-lint (includes staticcheck), including the nettest-, chaos- and soak-tagged tests
 	@echo "Running golangci-lint"
-	@$(RUN) golangci-lint run --build-tags nettest $(PKGS)
+	@$(RUN) golangci-lint run --build-tags nettest,chaos,soak $(PKGS)
 
 vuln: dev-image ## Run govulncheck (pinned as a tool in go.mod)
 	@echo "Running govulncheck"
@@ -129,6 +134,14 @@ fuzz: dev-image ## Run every Fuzz* target back to back for FUZZTIME each (defaul
 
 soak: dev-image ## 90 simulated days of a 50-host LAN: database size, retention, heap and CPU (several minutes)
 	@$(RUN) go test -tags soak -run TestNinetyDays -v -timeout 60m ./test/soak/
+
+# The race detector needs cgo; the code under test stays cgo-free.
+chaos: dev-image ## The daemon under a seeded storm of traffic, kernel events, operator actions, reloads and time jumps, invariants checked throughout (CHAOS_DURATION, CHAOS_SEED)
+	@$(RUN) env CGO_ENABLED=1 LS_CHAOS_DURATION=$(CHAOS_DURATION) LS_CHAOS_SEED=$(CHAOS_SEED) \
+		go test -race -tags chaos -run TestChaos -v -count=1 -timeout 60m ./test/chaos/
+
+stress: dev-image ## Every test package in random order, STRESS_COUNT times at 1 and 4 CPUs, with the race detector: order and timing bugs
+	@$(RUN) env CGO_ENABLED=1 go test -race -shuffle=on -count=$(STRESS_COUNT) -cpu=1,4 -timeout 120m ./internal/... ./test/golden/ ./test/crash/
 
 test-net: dev-image ## Network integration tests in Docker on a test network (CAP_NET_RAW only)
 	@$(RUN) build/test-bins.sh $(TEST_BIN)

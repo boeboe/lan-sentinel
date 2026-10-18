@@ -39,6 +39,7 @@ Fill in **PASS**, **FAIL** or **SKIP** (with the reason) and copy the per-test n
 | B6 Passive identification | FR-VD-3 on hardware | | |
 | B7 Point-in-time queries | Phase 3 exit on hardware | | |
 | B8 Host descriptions | FR-MD-1 on hardware | | |
+| B9 LAN discovery protocols | FR-PA-8 to FR-PA-11: what the site switches let through | | |
 | C1 Reload | FR-CFG-3 on hardware | | |
 | C2 Restart and clean stop | NFR-REL-1 | | |
 | C3 Watchdog | NFR-REL-1 | | |
@@ -227,7 +228,7 @@ sudo lan-sentinel hosts show <host-id of a printer, a phone, a laptop>
 sudo lan-sentinel hosts evidence <MAC>
 ```
 
-**Expect:** `Device:` and `Identification:` for devices that announce themselves (printers over mDNS, Windows and Android over DHCP, switches over LLDP, Apple models over mDNS); `hosts evidence` lists every claim with `*` on the current ones. Note every wrong label: that is what the rules need.
+**Expect:** `Device:` and `Identification:` for devices that announce themselves (printers over mDNS, Windows and Android over DHCP, switches over LLDP and CDP, Apple models over mDNS, Windows hosts over NetBIOS, routers and media devices over SSDP, ONVIF cameras and printers over WS-Discovery); `hosts evidence` lists every claim with `*` on the current ones. Note every wrong label: that is what the rules need.
 
 | | RevPi Connect | amd64 edge box |
 | --- | --- | --- |
@@ -263,6 +264,26 @@ sudo lan-sentinel hosts set <MAC> --description "x" --offline
 | | RevPi Connect | amd64 edge box |
 | --- | --- | --- |
 | Result | | |
+
+### B9 LAN discovery protocols: what the switch lets through
+
+Passive capture joins no multicast group, so a switch with IGMP snooping keeps SSDP and WS-Discovery (239.255.255.250) from the box unless the port is mirrored; LLDP and CDP only ever show the switch the box is plugged into. Check what reaches the box on each site's switch, with nothing changed on the switch:
+
+```bash
+sudo lan-sentinel interfaces list
+sudo lan-sentinel observations list --source passive_netbios --since 1h
+sudo lan-sentinel observations list --source passive_cdp --since 1h
+sudo lan-sentinel observations list --source passive_ssdp --since 1h
+sudo lan-sentinel observations list --source passive_wsd --since 1h
+sudo lan-sentinel hosts show <a Windows HMI, an IP camera, a router>
+```
+
+**Expect:** `NEIGHBOR` names the switch and the port the box is plugged into when the switch runs LLDP or CDP (Cisco and Rockwell Stratix switches often run only CDP); NetBIOS names and workgroups from Windows hosts; SSDP and WS-Discovery only where the switch floods 239.255.255.250 (note whether it runs IGMP snooping); an ONVIF camera's model under `Identification:` (`model`, source `wsd`); a switch's `firmware` (CDP) or `system_description` (LLDP) following an upgrade. Note any device shown with a wrong name or type.
+
+| | Site switch (model, IGMP snooping) | NEIGHBOR | NetBIOS | CDP | SSDP | WS-Discovery |
+| --- | --- | --- | --- | --- | --- | --- |
+| RevPi Connect | | | | | | |
+| amd64 edge box | | | | | | |
 
 ---
 
@@ -485,7 +506,7 @@ sudo lan-sentinel events list --since 7d -o csv > /tmp/events.csv
 At a pilot site (with permission), capture 30 minutes of discovery traffic on the monitored interface:
 
 ```bash
-sudo tcpdump -i <iface> -w /tmp/site-<name>.pcap 'arp or (udp port 67 or udp port 68) or udp port 5353 or ether proto 0x88cc or icmp6'
+sudo tcpdump -i <iface> -w /tmp/site-<name>.pcap 'arp or (udp port 67 or udp port 68) or udp port 53 or udp port 5353 or udp port 137 or udp port 138 or udp port 1900 or udp port 3702 or ether proto 0x88cc or ether dst 01:00:0c:cc:cc:cc or icmp6'
 ```
 
 Check what it gives by replaying it through a separate daemon (its own database and socket, the live one keeps running):

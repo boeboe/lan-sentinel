@@ -36,6 +36,21 @@ jobs:
       - name: systemd unit test (privileged container)
         run: make test-systemd
 
+  chaos:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: The daemon under a seeded storm for 3 minutes (race detector)
+        run: make chaos CHAOS_DURATION=3m
+      - name: Every test package in random order, twice at 1 and 4 CPUs (race detector)
+        run: make stress STRESS_COUNT=2
+      - if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: chaos
+          path: .build/chaos/
+          if-no-files-found: ignore
+
   release:
     runs-on: ubuntu-latest
     steps:

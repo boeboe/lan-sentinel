@@ -58,6 +58,16 @@ func TestFilter(t *testing.T) {
 	na := frames.NeighborAdvertisement(plc, "fe80::1", "fd5e:5e:1::50", 0x20)
 	lldp := frames.LLDP{Source: sw, ChassisMAC: sw, PortID: "1", TTL: 120}.Frame()
 	stp := frames.Build(frames.Ethernet(sw, frames.MAC("01:80:c2:00:00:00"), layers.EthernetType(0x0026)), gopacket.Payload(big))
+	nbns := frames.NBNSRegistration(hmi, "192.168.110.20", "HMI-LINE3", 0x00, false)
+	browser := frames.Browser{Source: hmi, IP: "192.168.110.20", Name: "HMI-LINE3", Workgroup: "PLANT", Opcode: 0x01}.Frame()
+	cdp := frames.CDP{Source: sw, Holdtime: 180, DeviceID: "sw-1", Platform: "cisco"}.Frame()
+	snapOther := append(append([]byte{}, cdp[:14]...), 0xaa, 0xaa, 0x03, 0x00, 0x00, 0x00, 0x08, 0x00) // SNAP, not Cisco CDP
+	ssdpNotify := frames.SSDPNotify(plc, "192.168.110.50", "upnp:rootdevice", "uuid:x::upnp:rootdevice", "Linux", "http://192.168.110.50/d.xml")
+	ssdpAnswer := frames.SSDPResponse(plc, hmi, "192.168.110.50", "192.168.110.20", "upnp:rootdevice", "uuid:x", "Linux", "http://192.168.110.50/d.xml")
+	ssdp6 := frames.UDP6(plc, frames.MAC("33:33:00:00:00:0c"), "fe80::1", "ff02::c", 50123, 1900, gopacket.Payload("NOTIFY * HTTP/1.1\r\n\r\n"))
+	wsd := frames.WSDHello(plc, "192.168.110.50", "urn:uuid:x", "dn:NetworkVideoTransmitter", "", "")
+	noCDP := decoders.All
+	noCDP.CDP = false
 
 	const (
 		full   = snapFull
@@ -89,6 +99,19 @@ func TestFilter(t *testing.T) {
 		{"mdns over ipv6", decoders.All, mdns6, full},
 		{"ipv6 disabled", decoders.Protocols{ARP: true, IPv4: true, MDNS: true}, na, drop},
 		{"other ethertype", decoders.All, stp, drop},
+		{"netbios name service", decoders.Protocols{NetBIOS: true}, nbns, full},
+		{"netbios browser announcement", decoders.Protocols{NetBIOS: true}, browser, full},
+		{"netbios disabled", decoders.Protocols{IPv4: true}, nbns, header},
+		{"cdp", decoders.Protocols{CDP: true}, cdp, full},
+		{"cdp disabled", noCDP, cdp, drop},
+		{"snap other than cdp", decoders.All, snapOther, drop},
+		{"stp with cdp on", decoders.Protocols{CDP: true}, stp, drop},
+		{"ssdp notify to 1900 from any port", decoders.Protocols{SSDP: true}, ssdpNotify, full},
+		{"ssdp answer from 1900", decoders.Protocols{SSDP: true}, ssdpAnswer, full},
+		{"ssdp over ipv6", decoders.Protocols{IPv6: true, SSDP: true}, ssdp6, full},
+		{"ssdp disabled", decoders.Protocols{IPv4: true, WSD: true}, ssdpNotify, header},
+		{"wsd hello", decoders.Protocols{WSD: true}, wsd, full},
+		{"wsd disabled", decoders.Protocols{IPv4: true, SSDP: true}, wsd, header},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

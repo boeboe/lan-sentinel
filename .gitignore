@@ -10,3 +10,4 @@ coverage.out
 /.build/
 coverage.html
 .vscode/
+.DS_Store

@@ -7,7 +7,7 @@ By default it captures and opens sockets but **transmits nothing**. Each transmi
 | Flag | Sends |
 | --- | --- |
 | `--arp-target IP` | one ARP request |
-| `--ndp-target IPv6` | one neighbour solicitation |
+| `--ndp-target IPv6` | one neighbour solicitation (optional; NDP probing itself is deferred, so this only checks feasibility) |
 | `--icmp-target IP` | one ICMP echo |
 | `--tcp-target IP:PORT` | one TCP connect, closed immediately, no payload |
 

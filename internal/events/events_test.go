@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"io/fs"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -180,5 +181,20 @@ func TestSubscribe(t *testing.T) {
 	}
 	if err := e.Emit(ctx, ev); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// Every event type is in the catalogue of docs/DATA_MODEL.md §7 with its CLI
+// name and severity, the table operators filter by.
+func TestCatalogueDocumented(t *testing.T) {
+	b, err := os.ReadFile("../../docs/DATA_MODEL.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range All() {
+		row := "| `" + string(s.Type) + "` | `" + s.CLIName + "` | " + string(s.Severity) + " |"
+		if !strings.Contains(string(b), row) {
+			t.Errorf("docs/DATA_MODEL.md §7 has no row %q", row)
+		}
 	}
 }

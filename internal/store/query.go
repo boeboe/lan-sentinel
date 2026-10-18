@@ -9,8 +9,11 @@ import (
 	"net/netip"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
+
+	"lan-sentinel/internal/observation"
 )
 
 // ErrNotFound is returned for an unknown host ID.
@@ -999,10 +1002,62 @@ func (r *Reader) Interfaces(ctx context.Context) ([]InterfaceInfo, error) {
 			if err := ps.Err(); err != nil {
 				return err
 			}
+			if out[k].Neighbors, err = r.neighbors(ctx, tx, id); err != nil {
+				return err
+			}
 		}
 		return nil
 	})
 	return out, err
+}
+
+// Neighbours are current while their advertisement holds: its TTL (LLDP)
+// or holdtime (CDP), plus the capture's refresh interval, since identical
+// advertisements are stored once per capture.RefreshInterval. Looking back
+// neighborLookback is enough: a neighbour sends every 30 to 60 seconds.
+const (
+	neighborRefresh  = 2 * time.Minute // capture.RefreshInterval
+	neighborTTL      = 120 * time.Second
+	neighborLookback = 15 * time.Minute
+)
+
+// neighbors returns the LLDP and CDP neighbours of a context: per protocol
+// and MAC the latest advertisement, while it holds.
+func (r *Reader) neighbors(ctx context.Context, tx *sql.Tx, contextID int64) ([]Neighbor, error) {
+	now := r.now()
+	rows, err := tx.QueryContext(ctx, `SELECT source, coalesce(mac, ''), coalesce(hostname, ''), coalesce(meta_json, ''), max(ts), coalesce(host_id, '')
+		FROM observations WHERE context_id = ? AND source IN (?, ?) AND ts >= ?
+		GROUP BY source, mac ORDER BY source, mac`,
+		contextID, observation.PassiveLLDP, observation.PassiveCDP, msOf(now.Add(-neighborLookback)))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Neighbor
+	for rows.Next() {
+		var source, mac, name, metaJSON, hostID string
+		var ts int64
+		if err := rows.Scan(&source, &mac, &name, &metaJSON, &ts, &hostID); err != nil {
+			return nil, err
+		}
+		meta := map[string]string{}
+		if metaJSON != "" {
+			_ = json.Unmarshal([]byte(metaJSON), &meta) // a bad row is a neighbour without details
+		}
+		ttl := neighborTTL
+		if s, err := strconv.Atoi(meta["ttl"]); err == nil && s > 0 {
+			ttl = time.Duration(s) * time.Second
+		}
+		if timeOf(ts).Add(ttl + neighborRefresh).Before(now) {
+			continue
+		}
+		out = append(out, Neighbor{
+			Protocol: strings.TrimPrefix(source, "passive_"), HostID: hostID, MAC: mac, Name: name,
+			Port: meta["port_id"], PortDescription: meta["port_description"], Platform: meta["platform"],
+			Description: meta["system_description"], ManagementIP: meta["management_ip"], LastSeen: timeOf(ts),
+		})
+	}
+	return out, rows.Err()
 }
 
 // countedTables are the tables `db info` counts.

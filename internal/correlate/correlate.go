@@ -184,15 +184,21 @@ func (c *Correlator) Run(ctx context.Context, bus *observation.Bus) error {
 		case m := <-bus.C():
 			c.Handle(ctx, m)
 		case <-tick:
-			c.advance(ctx, c.clock.Now())
-			c.flushContexts(ctx)
+			c.store.Group(ctx, func() {
+				c.advance(ctx, c.clock.Now())
+				c.flushContexts(ctx)
+			})
 		}
 	}
 }
 
 // Handle processes one bus message. Run calls it; tests may call it
-// directly.
+// directly. Its writes and events are committed together (store.Group).
 func (c *Correlator) Handle(ctx context.Context, m observation.Message) {
+	c.store.Group(ctx, func() { c.handle(ctx, m) })
+}
+
+func (c *Correlator) handle(ctx context.Context, m observation.Message) {
 	switch {
 	case m.Barrier != nil:
 		c.flushContexts(ctx)

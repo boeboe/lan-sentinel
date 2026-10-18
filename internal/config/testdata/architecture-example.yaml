@@ -9,9 +9,13 @@ interfaces:
       enabled: true
       networks: [192.168.110.0/24]
       exclude:  [192.168.110.1]
-      identify: []                   # empty: no identification payload; names: modbus, http, tls, snmp, ssh-banner, telnet, ftp
+      identify: []                   # opt-in objects, none by default; names: modbus, http, tls, snmp, ssh-banner, telnet, ftp
+      #  - { name: modbus }
+      #  - { name: tls, sni: auto }
+    # dhcp:
+    #   servers: [192.168.110.1]     # allowed DHCP server identifiers (option 54); unset: unchecked; []: none expected
 passive:
-  protocols: { arp: true, ipv4: true, ipv6: false, dhcp: true, mdns: true, dns: true, lldp: true }
+  protocols: { arp: true, ipv4: true, ipv6: false, dhcp: true, mdns: true, dns: true, lldp: true, netbios: true, cdp: true, ssdp: true, wsd: true }
   ring_size: 2MiB                   # AF_PACKET ring per captured interface (256KiB-256MiB)
 neighbor:
   resync_interval: 10m              # full neighbour-table dump in addition to notifications
@@ -33,7 +37,7 @@ active:
   arp:  { enabled: true,  interval: 5m }
   icmp: { enabled: false, interval: 10m }
   tcp:
-    enabled: true
+    enabled: true                  # default false
     interval: 5m
     targets:
       - { port: 502, name: modbus, timeout: 750ms }
@@ -41,8 +45,8 @@ active:
     enabled: false
     interval: 15m
     probes: [ntp, enip]            # NTP (123), EtherNet/IP ListIdentity (44818)
-  identify:
-    interval: 1h
+  identify:                        # payload identification; off until an interface names a probe
+    interval: 1h                   # how often to look for hosts never attempted
     timeout: 2s
     host_max_age: 30m
     probes:
@@ -52,17 +56,19 @@ active:
 profiles:
   modbus:
     arp: true
+    icmp: false
     tcp: [502]
   identify:
     udp: [enip]
 presence: { active: 5m, recent: 30m, stale: 24h }
 identity:
-  hostname_preference: [mdns, dhcp, dns_ptr, lldp]
+  hostname_preference: [mdns, dhcp, dns_ptr, lldp, netbios]
   address_overlap: 5m         # older open IPv4 binding is replaced, not kept alongside
   address_expiry: 24h         # unconfirmed binding closed while host is otherwise seen
   name_expiry: 168h           # names not confirmed this long show as stale; they are never closed by time
   proxy_arp_threshold: 16
   oui_override: ""            # optional path
+  identifiers: { mdns: true, dhcp: true, hostname: true, lldp: true, netbios: true, cdp: true, ssdp: true, wsd: true }   # passive identification, DATA_MODEL.md §5.7
 storage:
   path: /data/lan-sentinel/hosts.db
   retention:
@@ -72,7 +78,7 @@ storage:
     max_db_size: 200MB    # prune observations, then roll-ups, then oldest events
 api:
   socket: /run/lan-sentinel/api.sock
-  listen: ""              # e.g. 127.0.0.1:9734 (also serves /metrics)
+  listen: ""              # loopback only, e.g. 127.0.0.1:9734 (reads, and /metrics when enabled)
 metrics: { enabled: true }
 logging:
   level: info               # trace | debug | info | warn | error

@@ -26,7 +26,7 @@ interfaces:
   #     #   - { name: ftp }                          # 220, SYST, QUIT on tcp/21
 
 passive:
-  protocols: { arp: true, ipv4: true, ipv6: false, dhcp: true, mdns: true, dns: true, lldp: true }
+  protocols: { arp: true, ipv4: true, ipv6: false, dhcp: true, mdns: true, dns: true, lldp: true, netbios: true, cdp: true, ssdp: true, wsd: true }
 
 # Probes on interfaces with active.enabled (defaults shown; budgets and
 # limits: lan-sentinel config show --sources). Stop all probing at once:

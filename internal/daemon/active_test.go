@@ -345,6 +345,38 @@ func TestReloadAppliesDHCPAllowlist(t *testing.T) {
 	}
 }
 
+// Settings read only at start-up are reported as needing a restart and
+// keep their running values; a reload never claims to have applied them.
+func TestReloadStartupOnlySettings(t *testing.T) {
+	h := startWith(t, testConfig("$DIR", "info", activeConfig), 0, activeLinks)
+	defer h.stop()
+	h.writeConfig(testConfig(h.dir, "info", "neighbor: { resync_interval: 5m }\nidentity: { oui_override: /etc/lan-sentinel/oui.txt }\n"+
+		"active: { startup_delay: 24h, max_concurrent_probes: 4, budgets: { tcp: { max_concurrent_per_interface: 2, max_concurrent_per_host: 1 } } }\n"))
+	res, err := h.d.ReloadConfig(context.Background(), "bart")
+	if err != nil {
+		t.Fatal(err)
+	}
+	notApplied := map[string]bool{}
+	for _, c := range res.NotApplied {
+		notApplied[c.Key] = true
+	}
+	for _, k := range []string{"neighbor.resync_interval", "identity.oui_override", "active.max_concurrent_probes",
+		"active.budgets.tcp.max_concurrent_per_interface"} {
+		if !notApplied[k] {
+			t.Errorf("%s not reported as needing a restart: %+v", k, res.NotApplied)
+		}
+	}
+	for _, c := range res.Applied {
+		if strings.HasPrefix(c.Key, "neighbor.") || c.Key == "identity.oui_override" || strings.Contains(c.Key, "max_concurrent") {
+			t.Errorf("reported as applied: %+v", c)
+		}
+	}
+	cfg := h.d.Config()
+	if cfg.Neighbor.ResyncInterval.D() == 5*time.Minute || cfg.Identity.OUIOverride != "" || cfg.Active.MaxConcurrentProbes == 4 {
+		t.Errorf("running config changed: %+v %+v %d", cfg.Neighbor, cfg.Identity.OUIOverride, cfg.Active.MaxConcurrentProbes)
+	}
+}
+
 // The running values a reload keeps must validate with the new file: an
 // interface that is still monitored keeps its wide network, which the new
 // file no longer allows, so the reload is rejected.

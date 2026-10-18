@@ -282,7 +282,8 @@ func (s *Scheduler) summarise(iface string, p probe.Protocol, results []probe.Re
 		case probe.Blocked:
 			sum.Blocked += r.N()
 			continue
-		case probe.Reply, string(observation.ServiceOpen), string(observation.ServiceRefused):
+		case probe.Reply, string(observation.ServiceOpen), string(observation.ServiceRefused),
+			observation.ResultOK, observation.ResultRefused, observation.ResultMalformed: // identify: the device answered
 			sum.Replied += r.N()
 		}
 		sum.Probed += r.N()
@@ -483,12 +484,12 @@ func (s *Scheduler) wait(ctx context.Context, timer <-chan time.Time, reload, ch
 
 // passContext is cancelled when the kill switch is set.
 func (s *Scheduler) passContext(ctx context.Context) (context.Context, context.CancelFunc) {
-	pctx, cancel := context.WithCancel(ctx)
+	pctx, cancel := context.WithCancelCause(ctx)
 	go func() {
 		for {
 			ch := s.o.Switch.Changed()
 			if s.o.Switch.Disabled() {
-				cancel()
+				cancel(probe.ErrDisabled) // the cause outlives a quick enable
 				return
 			}
 			select {
@@ -498,7 +499,7 @@ func (s *Scheduler) passContext(ctx context.Context) (context.Context, context.C
 			}
 		}
 	}()
-	return pctx, cancel
+	return pctx, func() { cancel(nil) }
 }
 
 func (s *Scheduler) newPass(ctx context.Context, iface string) (probe.Pass, bool) {
@@ -525,13 +526,14 @@ func (s *Scheduler) pass(ctx context.Context, cfg *config.Config, iface string, 
 	pctx, cancel := s.passContext(ctx)
 	defer cancel()
 	results, err = s.periodic(pctx, cfg, ic, pass, p, interval)
-	return results, true, s.stopped(err)
+	return results, true, s.stopped(pctx, err)
 }
 
 // stopped reports a pass cut short by the kill switch as ErrDisabled, not
-// as the cancellation it saw.
-func (s *Scheduler) stopped(err error) error {
-	if err != nil && s.o.Switch.Disabled() {
+// as the cancellation it saw, even when the switch was cleared again before
+// the pass returned (pctx from passContext).
+func (s *Scheduler) stopped(pctx context.Context, err error) error {
+	if err != nil && (s.o.Switch.Disabled() || errors.Is(context.Cause(pctx), probe.ErrDisabled)) {
 		return probe.ErrDisabled
 	}
 	return err
@@ -659,7 +661,7 @@ func (s *Scheduler) IdentifyRun(ctx context.Context, iface string, job probe.Ide
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		return nil, fmt.Errorf("%s is down or absent", iface)
+		return nil, fmt.Errorf("%s is %w", iface, ErrLinkDown)
 	}
 	cfg := s.o.Config()
 	pass.ReplyTimeout = cfg.Active.Identify.Timeout.D()
@@ -672,7 +674,7 @@ func (s *Scheduler) IdentifyRun(ctx context.Context, iface string, job probe.Ide
 	defer cancel()
 	results, err := eng.Run(pctx, pass)
 	s.markSent(pass.Identify, results)
-	return results, s.stopped(err)
+	return results, s.stopped(pctx, err)
 }
 
 // noAnswer is a result that counts towards back-off: nothing came back.
@@ -723,6 +725,8 @@ func (s *Scheduler) Plan(ctx context.Context, req probe.Request) (probe.Plan, er
 var (
 	ErrScanRunning = errors.New("an operator scan is already running")
 	ErrScanRefused = errors.New("scan refused")
+	// ErrLinkDown: the interface is down or absent, so nothing was sent.
+	ErrLinkDown = errors.New("down or absent")
 )
 
 // ScanResult is the outcome of an operator scan.
@@ -839,7 +843,7 @@ func (s *Scheduler) runScan(ctx context.Context, ip probe.InterfacePlan, pr prob
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		return fmt.Errorf("%s is down or absent", ip.Interface)
+		return fmt.Errorf("%s is %w", ip.Interface, ErrLinkDown)
 	}
 	pctx, cancel := s.passContext(ctx)
 	defer cancel()
@@ -863,7 +867,7 @@ func (s *Scheduler) runScan(ctx context.Context, ip probe.InterfacePlan, pr prob
 			}
 			r.Counts[key][res.State] += res.N()
 		}
-		return results, s.stopped(err)
+		return results, s.stopped(pctx, err)
 	}
 	known := ip.Known
 	if pr.ARP {

@@ -17,13 +17,22 @@ type Claim struct {
 	Value      string
 	Confidence float64
 	Evidence   map[string]string
+	// Replace marks a device's report of its current state, which changes
+	// over time (firmware, a system description, a workgroup): a new value
+	// replaces the source's current one whatever its confidence, as a
+	// probe's result does. Other claims are sticky (DATA_MODEL.md §5.7).
+	Replace bool
 }
 
 // Identified fields.
 const (
-	FieldDeviceType = "device_type"
-	FieldOS         = "os"
-	FieldModel      = "model"
+	FieldDeviceType        = "device_type"
+	FieldOS                = "os"
+	FieldOSVersion         = "os_version"
+	FieldModel             = "model"
+	FieldFirmware          = "firmware"
+	FieldSystemDescription = "system_description"
+	FieldWorkgroup         = "workgroup"
 )
 
 // Identifier derives claims from one observation of a host. Identifiers
@@ -50,14 +59,35 @@ func Identifiers(t config.IdentifierToggles) []Identifier {
 	if t.LLDP {
 		out = append(out, lldpIdentifier{})
 	}
+	if t.NetBIOS {
+		out = append(out, netbiosIdentifier{})
+	}
+	if t.CDP {
+		out = append(out, cdpIdentifier{})
+	}
+	if t.SSDP {
+		out = append(out, ssdpIdentifier{})
+	}
+	if t.WSD {
+		out = append(out, wsdIdentifier{})
+	}
 	return out
 }
 
 func claim(field, value string, confidence float64, evidence ...string) Claim {
 	c := Claim{Field: field, Value: value, Confidence: confidence, Evidence: map[string]string{}}
 	for i := 0; i+1 < len(evidence); i += 2 {
-		c.Evidence[evidence[i]] = evidence[i+1]
+		if evidence[i+1] != "" {
+			c.Evidence[evidence[i]] = evidence[i+1]
+		}
 	}
+	return c
+}
+
+// current is claim for a value that changes over time (Claim.Replace).
+func current(field, value string, confidence float64, evidence ...string) Claim {
+	c := claim(field, value, confidence, evidence...)
+	c.Replace = true
 	return c
 }
 
@@ -173,8 +203,9 @@ func (dhcpIdentifier) Identify(o observation.Observation) []Claim {
 }
 
 // hostnameIdentifier reads the names devices choose for themselves (mDNS,
-// DHCP, LLDP). Names are set by people, so it claims little; a DNS PTR
-// name is an administrator's, not the device's, and is not read.
+// DHCP, LLDP and CDP, NetBIOS). Names are set by people, so it claims
+// little; a DNS PTR name is an administrator's, not the device's, and is
+// not read.
 type hostnameIdentifier struct{}
 
 func (hostnameIdentifier) Name() string { return "hostname" }
@@ -197,7 +228,7 @@ var hostnamePatterns = []struct {
 
 func (hostnameIdentifier) Identify(o observation.Observation) []Claim {
 	switch o.NameType {
-	case observation.NameMDNS, observation.NameDHCP, observation.NameLLDP:
+	case observation.NameMDNS, observation.NameDHCP, observation.NameLLDP, observation.NameNetBIOS:
 	default:
 		return nil
 	}
@@ -219,7 +250,8 @@ func (hostnameIdentifier) Identify(o observation.Observation) []Claim {
 }
 
 // lldpIdentifier reads the capabilities a device enables in its LLDP
-// advertisements: its own statement of what it does on the network.
+// advertisements, its own statement of what it does on the network, and its
+// system description, which switches fill with model and firmware.
 type lldpIdentifier struct{}
 
 func (lldpIdentifier) Name() string { return "lldp" }
@@ -238,15 +270,21 @@ func (lldpIdentifier) Identify(o observation.Observation) []Claim {
 	if o.Source != observation.PassiveLLDP {
 		return nil
 	}
+	var out []Claim
+	desc := o.Meta["system_description"]
 	caps := strings.Split(o.Meta["capabilities"], ",")
 	for _, r := range lldpRoles {
 		if slices.Contains(caps, r.capability) {
 			ev := []string{"capabilities", o.Meta["capabilities"]}
-			if d := o.Meta["system_description"]; d != "" {
-				ev = append(ev, "system_description", d)
+			if desc != "" {
+				ev = append(ev, "system_description", desc)
 			}
-			return []Claim{claim(FieldDeviceType, r.deviceType, 0.8, ev...)}
+			out = append(out, claim(FieldDeviceType, r.deviceType, 0.8, ev...))
+			break
 		}
 	}
-	return nil
+	if desc != "" {
+		out = append(out, current(FieldSystemDescription, desc, 0.8, "system_description", desc))
+	}
+	return out
 }

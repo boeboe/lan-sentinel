@@ -10,7 +10,9 @@ It is one static Go binary, `lan-sentinel`, which is the daemon, the CLI client,
 
 Data flows one way: collectors and probes emit **observations** onto a bus. A single **correlator** goroutine turns them into hosts, bindings and events. A single SQLite **writer** commits them. The REST API on a Unix socket, the CLI and Prometheus read the result.
 
-Current state of the work: [`docs/STATUS.md`](docs/STATUS.md). Where things live: [`docs/AI_REPO_MAP.md`](docs/AI_REPO_MAP.md).
+Current state of the work: [`docs/STATUS.md`](docs/STATUS.md). What is not built: [`docs/BACKLOG.md`](docs/BACKLOG.md). Where things live: [`docs/AI_REPO_MAP.md`](docs/AI_REPO_MAP.md). How operators use it: [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md).
+
+**The functionality is frozen at v0.1.0** (`REQUIREMENTS.md` §5, Feature freeze, 16 Oct 2026): fixes, tests and documentation only (§9).
 
 Fixed names and paths:
 
@@ -39,7 +41,9 @@ Fixed names and paths:
 | `docs/IMPLEMENTATION_PLAN.md` | Phases, tasks (checkboxes), exit criteria, open hardware checks, testing strategy |
 | `docs/TEST_PLAN.md` | The manual hardware test procedure for the boards |
 | `docs/adr/` | Why the foundational decisions were taken, and what they rule out |
-| `docs/STATUS.md` | A dated snapshot of what is done, partial, deferred and blocked |
+| `docs/STATUS.md` | A dated snapshot of what is done and what waits on hardware or the field |
+| `docs/BACKLOG.md` | Everything not built: deferred features, out of scope, open decisions, field checks, housekeeping |
+| `docs/USER_GUIDE.md` | How operators install, configure and use it: CLI and journal examples |
 | `deploy/README.md` | Install, upgrade, rollback and rollout; `make test-systemd` runs its install block verbatim |
 
 **Precedence when sources disagree**
@@ -48,7 +52,7 @@ Fixed names and paths:
 2. The hard rules in §4.
 3. Recorded decisions: `REQUIREMENTS.md` §5 and the ADRs.
 4. The specifications: `REQUIREMENTS`, `DATA_MODEL`, `CLI`, `API` and `ARCHITECTURE`.
-5. `IMPLEMENTATION_PLAN.md` and `STATUS.md`.
+5. `IMPLEMENTATION_PLAN.md`, `STATUS.md` and `BACKLOG.md`.
 6. The code and tests.
 7. Code comments.
 
@@ -69,10 +73,10 @@ Fixed names and paths:
 | `internal/correlate` | **The only writer of state and events**: host matching, bindings, conflicts, presence, names, services, DHCP servers, identification, operator actions |
 | `internal/events` | The event catalogue (it must match the migration CHECK) and the engine that writes events to the table and journald |
 | `internal/store` | SQLite: migrations, the single writer, batches, compaction, the integrity check, and `Reader` (queries shared by the API and `--offline`); `storetest` seeds test databases |
-| `internal/platform` | **The only code that touches AF_PACKET, netlink or raw sockets**: `Capturer`, `NeighborSource`, `InterfaceMonitor`, `Transmitter`; fakes in `platform/fake` |
+| `internal/platform` | **The only code that touches AF_PACKET, netlink or raw sockets**: `Capturer`, `NeighborSource`, `InterfaceMonitor`, `Transmitter`, and `ClockSource` (read-only `adjtimex`); fakes in `platform/fake` |
 | `internal/service` | sd_notify and the journald handler |
 | `internal/iface` | Interface manager: contexts, prefixes, up and down |
-| `internal/collect/capture` | Passive capture loop and BPF filter; `decoders/` holds pure frame → observation functions (ARP, IP, NDP, DHCP, DNS/mDNS, LLDP) |
+| `internal/collect/capture` | Passive capture loop and BPF filter; `decoders/` holds pure frame → observation functions (ARP, IP, NDP, DHCP, DNS/mDNS, LLDP, CDP, NetBIOS, SSDP, WS-Discovery) |
 | `internal/collect/neighbor` | Kernel neighbour table: dump, watch, resync |
 | `internal/collect/replay` | pcap/pcapng/JSONL replay on a simulated clock |
 | `internal/probe` | What the engines share: the budget, policy, kill switch, targets, back-off, the planner (`Compute`) |
@@ -80,7 +84,7 @@ Fixed names and paths:
 | `internal/probe/idprobe` | Opt-in identification probes (ADR 0011): Modbus FC 43/14, HTTP, TLS, SNMPv2c, SSH banner, Telnet, FTP |
 | `internal/probe/scheduler` | Periodic loops per interface and protocol; operator scans; last-pass summaries |
 | `internal/netrange` | IPv4 range arithmetic and the keyed random walk for sweeps |
-| `internal/identify` | OUI lookup; the passive identifiers (mDNS, DHCP, hostname, LLDP) |
+| `internal/identify` | OUI lookup; the passive identifiers (mDNS, DHCP, hostname, LLDP, NetBIOS, CDP, SSDP, WS-Discovery) |
 | `internal/ouitable` | Format of the precomputed OUI table (`data/oui/oui.bin`) |
 | `internal/clock` | Wall clock and simulated clock: everything that reads time takes a `clock.Clock` |
 | `internal/metrics` | Prometheus text writer with a fixed list of allowed labels |
@@ -92,6 +96,7 @@ Fixed names and paths:
 | `test/net` | Docker network tests (tag `nettest`, `make test-net`), run as uid 65534 with only `CAP_NET_RAW` |
 | `test/systemd` | The daemon under systemd on Debian 11/12/13 (`make test-systemd`) |
 | `test/crash`, `test/soak` | kill -9 during writes (in `make check`); 90 simulated days (tag `soak`, `make soak`) |
+| `test/chaos` | The daemon under a seeded storm of traffic, LAN changes, operator actions, reloads and clock jumps, with invariants checked as it runs (tag `chaos`, `make chaos`) |
 | `tools/capcheck` | Privilege and feasibility check for boards; shipped in the release tarballs |
 | `build/` | The dev container (`dev.Dockerfile`) and the scripts make runs in it |
 | `deploy/` | Reference unit, default config, replay dev config, install guide |
@@ -170,17 +175,17 @@ Fixed names and paths:
   - A server's ACK (`passive_dhcp_lease`) is kept apart from a client's own claim (`passive_dhcp`).
   - The server identity is option 54. If it is missing or invalid, the identity is unknown and never allowlisted.
   - With no allowlist, servers are `unchecked`, never authorised. The allowlist is not authentication.
-- **Identification is sticky.** A source's current value changes only to a more confident claim. `hosts.device_type` is the most confident current claim across sources (`DATA_MODEL.md` §5.7).
+- **Identification is sticky.** A source's current value changes only to a more confident claim, except a replacing claim (`Claim.Replace`: a device's report of its firmware, system description, workgroup or OS version), which follows the device. `hosts.device_type` is the most confident current claim across sources (`DATA_MODEL.md` §5.7).
 - **Reload is all or nothing.**
   - These keys reload: probes, each interface's `active` and `dhcp`, intervals, budgets, thresholds, identity settings and the log level.
-  - These keep their running values and are listed as needing a restart: adding, removing or renaming interfaces, their passive settings and `passive` (compiled into the BPF filter), `storage`, `api`, `metrics`, `logging.format` and `replay` (`ARCHITECTURE.md` §6).
+  - These keep their running values and are listed as needing a restart: adding, removing or renaming interfaces, their passive settings and `passive` (compiled into the BPF filter), `storage`, `api`, `metrics`, `logging.format` and `replay`, and the settings read once at start-up (`neighbor.resync_interval`, `identity.oui_override`, the probe concurrency caps) (`ARCHITECTURE.md` §6, `restartOnly` in `internal/daemon`).
   - The merged configuration is validated again before it applies.
 - **The events catalogue and the schema match.** `internal/events` must list exactly the types in the newest migration's CHECK (`TestCatalogueMatchesSchema`).
 - **Identical observations are suppressed** for 2 minutes per interface (`capture.Decoder`, shared by live capture and pcap replay). Presence (ACTIVE is 5 minutes) depends on that window.
 
 ## 7. Coding standards
 
-- Go 1.26+, standard layout. cobra for the CLI. `log/slog` for logging. `context` and `errgroup` for concurrency: every goroutine stops when its context is cancelled.
+- Go 1.26+, standard layout. cobra for the CLI. `log/slog` for logging. `context` for cancellation and `sync.WaitGroup` to wait: every goroutine stops when its context is cancelled and is waited for.
 - `net/netip` for addresses, `net.HardwareAddr` for MACs.
 - Wrap errors with `%w`. No panics outside `main`.
 - Config: YAML + `LAN_SENTINEL_*` env + flags, with strict validation (unknown keys are errors).
@@ -207,6 +212,8 @@ make test         # unit and golden tests with -race (PKGS=... to narrow)
 make coverage     # tests with coverage of internal/ (coverage.out), fails below 90%; make cover opens the report
 make fuzz         # every Fuzz* target, FUZZTIME each (default 30s)
 make soak         # 90 simulated days of a 50-host LAN: database size, memory, CPU (about 6 minutes)
+make chaos        # the daemon under a seeded storm, invariants checked (CHAOS_DURATION, CHAOS_SEED; failures kept in .build/chaos/)
+make stress       # every test package in random order, STRESS_COUNT times at 1 and 4 CPUs, race detector
 make test-net     # network integration tests in Docker (CAP_NET_RAW only)
 make test-systemd # daemon under systemd in containers (Debian 11, 12, 13) with the deploy/ unit
 make run-dev      # daemon in the dev container on deploy/config.dev.yaml (replay)
@@ -224,14 +231,14 @@ make shell        # shell in the dev container
 | A decoder | `make check`, then `make fuzz FUZZTIME=1m` (or a focused `-fuzz` run in `make shell`) |
 | `internal/platform`, `internal/service`, probes on the wire, `test/net` | `make check-all` (adds `test-net` and `test-systemd`) |
 | `deploy/`, the unit, `deploy/README.md` install block, `tools/capcheck` | `make test-systemd` (and `make check-all`) |
-| The correlator, store retention or compaction | `make check`; consider `make soak` (about 6 minutes) for growth and memory |
+| The correlator, the store, the daemon, the API or the scheduler | `make check`, then `make chaos` (a failure prints its seed: rerun with `CHAOS_SEED`) and `make stress`; consider `make soak` (about 6 minutes) for growth and memory |
 | `test/fixtures/fixtures.go` | `make fixtures`, then `make check` |
 | A dependency | `make tidy`, `make check` |
 
 Notes:
 
 - `make` alone lists every target.
-- CI (`.github/workflows/ci.yml`) runs `make mod-verify check`, `make fuzz`, `make test-net`, `make test-systemd` and `make package`.
+- CI (`.github/workflows/ci.yml`) runs `make mod-verify check`, `make fuzz`, `make test-net`, `make test-systemd`, `make chaos CHAOS_DURATION=3m`, `make stress STRESS_COUNT=2` and `make package`; the `release` workflow runs the same gates.
 - The race detector needs cgo inside the container; the Makefile sets that, and the product stays cgo-free.
 
 ## 9. Working rules for agents
@@ -242,8 +249,9 @@ Notes:
 - **Do not commit, push, tag or release unless the user asks.** Never force-push `main`. Releases are cut by the user from the `release` workflow.
 - **Do not edit generated artifacts by hand** (§11).
 - **Report results faithfully.** If a gate fails, say which, with its output. Do not lower `COVER_MIN`, skip tests or add `//nolint` to get a gate green without the user's agreement.
+- **Feature freeze.** Since v0.1.0 the functionality is frozen: fix bugs, add tests, correct docs, record field results. Do not add a feature, decoder, probe, command, endpoint, event type or config key unless the maintainer asks for that item; it then needs a recorded decision. Unbuilt items live in `docs/BACKLOG.md`.
 - **Stay in scope.** Do not refactor unrelated code. Do not start new features while doing documentation or maintenance work.
-- **Do not re-propose rejected ideas** listed in `docs/STATUS.md` without new evidence.
+- **Do not re-propose rejected ideas** listed in `docs/BACKLOG.md` (Open decisions) without new evidence.
 - **Hardware and site checks are the user's** (`docs/TEST_PLAN.md`). Do not tick their boxes from Docker results.
 
 ## 10. Common tasks
@@ -320,6 +328,8 @@ Which files each task touches: `docs/AI_REPO_MAP.md` (Common tasks).
 | Unit, install or privileges | `ARCHITECTURE.md` §8, `deploy/README.md`, `tools/capcheck/README.md` |
 | A decision | `REQUIREMENTS.md` §5 (with the date); an ADR if foundational |
 | Task progress | `IMPLEMENTATION_PLAN.md` checkbox; `STATUS.md` |
+| Something deferred, dropped or left open | `BACKLOG.md` (and remove it there once built) |
+| Operator-visible behaviour (CLI output, events, journal) | `USER_GUIDE.md` examples |
 | New package or moved responsibility | `ARCHITECTURE.md` §4, §3 of this file, `docs/AI_REPO_MAP.md` |
 
 Style used throughout the docs:
@@ -335,4 +345,4 @@ Style used throughout the docs:
 - **Requirement ids, event types and metric names are public.** Add; do not rename. A rename is a decision for the user.
 - **Released behaviour that operators rely on** needs an entry in `deploy/README.md` (upgrade notes) when it changes: install paths, the unit, config keys, CLI output used in scripts.
 - **Edit docs in place.** Do not reflow or reformat whole files; it makes merges of parallel work painful.
-- **`deploy/README.md` and `tools/capcheck/README.md` are executed by tests.** Keep their fenced blocks runnable, and run `make test-systemd` after editing them.
+- **`deploy/README.md` and `tools/capcheck/README.md` are executed by tests.** Keep their fenced blocks runnable, and run `make test-systemd` after editing them. The top-level `README.md` install section must repeat the deploy install block unchanged; `make test-systemd` checks it.

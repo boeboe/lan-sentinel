@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"fmt"
 	"slices"
 	"strconv"
 	"strings"
@@ -261,8 +262,11 @@ func (a *app) dhcpCmd() *cobra.Command {
 func (a *app) interfacesCmd() *cobra.Command {
 	c := &cobra.Command{Use: "interfaces", Short: "Monitored interfaces"}
 	c.AddCommand(&cobra.Command{
-		Use:     "list",
-		Short:   "State, MAC, current prefixes, passive/active per interface",
+		Use:   "list",
+		Short: "State, MAC, current prefixes, passive/active and LLDP/CDP neighbour per interface",
+		Long: "Lists the monitored interfaces. NEIGHBOR is the device advertising itself\n" +
+			"over LLDP or CDP on the interface, with its port: on a switch port, the\n" +
+			"switch and the port the box is plugged into. -o json lists every neighbour.",
 		Example: "  sudo lan-sentinel interfaces list",
 		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -271,20 +275,41 @@ func (a *app) interfacesCmd() *cobra.Command {
 				if err != nil {
 					return err
 				}
-				header := []string{"NAME", "STATE", "MAC", "PREFIXES", "PASSIVE", "ACTIVE", "HOSTS"}
+				header := []string{"NAME", "STATE", "MAC", "PREFIXES", "PASSIVE", "ACTIVE", "HOSTS", "NEIGHBOR"}
 				rows := make([][]string, 0, len(ifs))
 				for _, i := range ifs {
 					passive := onOff(i.Passive)
 					if i.Replay {
 						passive = "replay"
 					}
-					rows = append(rows, []string{i.Name, i.State, dash(i.MAC), dash(strings.Join(i.Prefixes, " ")), passive, onOff(i.Active), strconv.Itoa(i.Hosts)})
+					rows = append(rows, []string{i.Name, i.State, dash(i.MAC), dash(strings.Join(i.Prefixes, " ")), passive, onOff(i.Active),
+						strconv.Itoa(i.Hosts), neighborText(i.Neighbors)})
 				}
 				return a.listOut(header, rows, ifs, func() error { return writeJSONL(a.output(), ifs) })
 			})
 		},
 	})
 	return c
+}
+
+// neighborText is the first LLDP/CDP neighbour as "name port", and how
+// many more there are.
+func neighborText(ns []store.Neighbor) string {
+	if len(ns) == 0 {
+		return "-"
+	}
+	n := ns[0]
+	s := n.Name
+	if s == "" {
+		s = n.MAC
+	}
+	if n.Port != "" {
+		s += " " + n.Port
+	}
+	if len(ns) > 1 {
+		s += fmt.Sprintf(" (+%d)", len(ns)-1)
+	}
+	return s
 }
 
 func onOff(b bool) string {

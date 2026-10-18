@@ -37,23 +37,37 @@ const (
 	PortDNS        = 53
 	PortDHCPServer = 67
 	PortDHCPClient = 68
+	PortNBNS       = 137 // NetBIOS name service
+	PortNBDatagram = 138 // NetBIOS datagram service (browser announcements)
+	PortSSDP       = 1900
+	PortWSD        = 3702
 	PortMDNS       = 5353
 )
 
-// Protocols selects the decoders (config passive.protocols). IPv6 gates
-// every IPv6 frame, including NDP and mDNS or DNS over IPv6.
+// MaxLength802 is the largest 802.3 length field; a larger value in the
+// type/length field is an EtherType.
+const MaxLength802 = 1500
+
+// Protocols selects the decoders (config passive.protocols, whose fields
+// match these one for one). IPv6 gates every IPv6 frame, including NDP and
+// mDNS, DNS, SSDP or WS-Discovery over IPv6; NetBIOS is IPv4 only.
 type Protocols struct {
-	ARP  bool
-	IPv4 bool
-	IPv6 bool
-	DHCP bool
-	MDNS bool
-	DNS  bool
-	LLDP bool
+	ARP     bool
+	IPv4    bool
+	IPv6    bool
+	DHCP    bool
+	MDNS    bool
+	DNS     bool
+	LLDP    bool
+	NetBIOS bool
+	CDP     bool
+	SSDP    bool
+	WSD     bool
 }
 
 // All enables every decoder.
-var All = Protocols{ARP: true, IPv4: true, IPv6: true, DHCP: true, MDNS: true, DNS: true, LLDP: true}
+var All = Protocols{ARP: true, IPv4: true, IPv6: true, DHCP: true, MDNS: true, DNS: true, LLDP: true,
+	NetBIOS: true, CDP: true, SSDP: true, WSD: true}
 
 // Limits on text copied from frames into observations.
 const (
@@ -104,6 +118,15 @@ func Decode(p Protocols, t time.Time, iface string, data []byte) []observation.O
 	case EtherTypeLLDP:
 		if p.LLDP {
 			f.lldp(payload)
+		}
+	default:
+		// An 802.3 frame: the field is a length, and LLC/SNAP says what
+		// it carries. CDP is the only such protocol decoded.
+		if p.CDP && etherType <= MaxLength802 {
+			if int(etherType) < len(payload) {
+				payload = payload[:etherType] // Ethernet padding
+			}
+			f.cdp(payload)
 		}
 	}
 	return f.out

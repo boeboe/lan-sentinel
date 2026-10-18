@@ -2,6 +2,7 @@
 
 - Status: Accepted
 - Date: 5 Oct 2026 (v1 specification)
+- Amended: 17 Oct 2026 (a batch never splits one correlation step)
 - Specified in: `ARCHITECTURE.md` §2 (Storage, SQLite driver), §3 (Store); `REQUIREMENTS.md` NFR-PERF-1, NFR-PERF-2, FR-ST-*; `DATA_MODEL.md` §4, §9; `CLI.md` §1
 
 ## Context
@@ -12,6 +13,7 @@ The history must survive power cuts on devices with SD cards. Writes must be few
 
 - **Engine.** SQLite through `modernc.org/sqlite` (pure Go), in WAL mode with `synchronous=NORMAL`.
 - **One writer.** A single writer goroutine in `internal/store` commits batched transactions, targeting one every 5 s. The correlator assigns row ids itself, so it can refer to rows not yet committed.
+- **Whole steps** (amended 17 Oct 2026). The writes and events of one correlation step (one bus message, or one presence tick) commit in the same batch (`store.Group`): a batch that reaches its size or its interval inside a step waits for the step to end. The chaos test found a reader seeing two open bindings of one address with only one flagged as a conflict; a crash at that moment would have kept it.
 - **Reads.** The API and `--offline` use the same read-only `store.Reader` queries; `--offline` opens with `mode=ro` under the offline-access contract of `CLI.md` §1.
 - **Migrations.** Numbered and embedded, applied forward only at start-up; an older binary refuses a newer schema.
 - **Integrity.** `PRAGMA quick_check` runs at start-up. A corrupt file is quarantined and recreated (`DATABASE_RECREATED`).
@@ -20,7 +22,7 @@ The history must survive power cuts on devices with SD cards. Writes must be few
 
 - No lock contention, and the order of state changes is deterministic.
 - Reads see committed data at most one batch behind.
-- A crash loses at most the open batch. `test/crash` kills the daemon mid-write five times and checks that nothing committed is lost.
+- A crash loses at most the open batch, and never part of a correlation step. `test/crash` kills the daemon mid-write five times and checks that nothing committed is lost.
 - Released migrations are immutable (AGENTS.md §13). Changing a CHECK constraint means rebuilding the table.
 - 90 simulated days of a worst-case 50-host LAN reach 158.8 MB, within the 200 MB budget (`make soak`, 7 Oct 2026).
 

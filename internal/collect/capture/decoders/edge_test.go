@@ -34,7 +34,7 @@ func TestLLDPIdentifiers(t *testing.T) {
 				tlv(lldpEnd),
 				tlv(lldpSystemName, 'x'), // after the end TLV
 			},
-			"passive_lldp mac=00:00:00:00:00:01 chassis_id=192.168.110.2 management_ip=fd00::2 port_id=00:1e:c9:00:00:17"},
+			"passive_lldp mac=00:00:00:00:00:01 chassis_id=192.168.110.2 management_ip=fd00::2 port_id=00:1e:c9:00:00:17 ttl=120"},
 		{"network-address port id, bad management address",
 			[][]byte{
 				tlv(lldpChassisID, 7, 'S', 'N', '1'),
@@ -43,10 +43,10 @@ func TestLLDPIdentifiers(t *testing.T) {
 				tlv(lldpMgmtAddress, 9, 1, 10, 0),
 				tlv(lldpSysCaps, 0, 0xff),
 			},
-			"passive_lldp mac=00:00:00:00:00:01 chassis_id=SN1 port_id=10.0.0.9"},
+			"passive_lldp mac=00:00:00:00:00:01 chassis_id=SN1 port_id=10.0.0.9 ttl=120"},
 		{"multicast chassis MAC falls back to the frame source",
 			[][]byte{tlv(lldpChassisID, lldpChassisMAC, 0x01, 0, 0x5e, 0, 0, 1), tlv(lldpPortID, 5, 'p'), ttl},
-			"passive_lldp mac=00:00:00:00:00:01 chassis_id=01:00:5e:00:00:01 port_id=p"},
+			"passive_lldp mac=00:00:00:00:00:01 chassis_id=01:00:5e:00:00:01 port_id=p ttl=120"},
 		{"short chassis id", [][]byte{tlv(lldpChassisID, 4), ttl}, ""},
 	}
 	for _, tt := range tests {

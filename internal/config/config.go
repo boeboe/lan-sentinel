@@ -114,15 +114,21 @@ type PassiveConfig struct {
 	RingSize ByteSize `yaml:"ring_size" json:"ring_size"`
 }
 
-// PassiveProtocols enables individual decoders.
+// PassiveProtocols enables individual decoders. Its fields match
+// decoders.Protocols one for one, in order: the daemon converts one into the
+// other.
 type PassiveProtocols struct {
-	ARP  bool `yaml:"arp" json:"arp"`
-	IPv4 bool `yaml:"ipv4" json:"ipv4"`
-	IPv6 bool `yaml:"ipv6" json:"ipv6"`
-	DHCP bool `yaml:"dhcp" json:"dhcp"`
-	MDNS bool `yaml:"mdns" json:"mdns"`
-	DNS  bool `yaml:"dns" json:"dns"`
-	LLDP bool `yaml:"lldp" json:"lldp"`
+	ARP     bool `yaml:"arp" json:"arp"`
+	IPv4    bool `yaml:"ipv4" json:"ipv4"`
+	IPv6    bool `yaml:"ipv6" json:"ipv6"`
+	DHCP    bool `yaml:"dhcp" json:"dhcp"`
+	MDNS    bool `yaml:"mdns" json:"mdns"`
+	DNS     bool `yaml:"dns" json:"dns"`
+	LLDP    bool `yaml:"lldp" json:"lldp"`
+	NetBIOS bool `yaml:"netbios" json:"netbios"`
+	CDP     bool `yaml:"cdp" json:"cdp"`
+	SSDP    bool `yaml:"ssdp" json:"ssdp"`
+	WSD     bool `yaml:"wsd" json:"wsd"`
 }
 
 // NeighborConfig configures the kernel neighbour collector.
@@ -297,13 +303,22 @@ type IdentityConfig struct {
 
 // IdentifierToggles enables each passive identifier: device type, OS and
 // model from mDNS services, DHCP vendor class and request list, hostname
-// patterns and LLDP capabilities.
+// patterns, LLDP capabilities and system description, NetBIOS announcements,
+// CDP platform and software, SSDP device types and WS-Discovery types and
+// ONVIF scopes.
 type IdentifierToggles struct {
 	MDNS     bool `yaml:"mdns" json:"mdns"`
 	DHCP     bool `yaml:"dhcp" json:"dhcp"`
 	Hostname bool `yaml:"hostname" json:"hostname"`
 	LLDP     bool `yaml:"lldp" json:"lldp"`
+	NetBIOS  bool `yaml:"netbios" json:"netbios"`
+	CDP      bool `yaml:"cdp" json:"cdp"`
+	SSDP     bool `yaml:"ssdp" json:"ssdp"`
+	WSD      bool `yaml:"wsd" json:"wsd"`
 }
+
+// AllIdentifiers enables every passive identifier.
+var AllIdentifiers = IdentifierToggles{MDNS: true, DHCP: true, Hostname: true, LLDP: true, NetBIOS: true, CDP: true, SSDP: true, WSD: true}
 
 // StorageConfig configures the SQLite database.
 type StorageConfig struct {

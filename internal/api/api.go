@@ -316,7 +316,7 @@ func (s *Server) fail(w http.ResponseWriter, err error) {
 		status = http.StatusBadRequest
 	case errors.Is(err, store.ErrNotFound):
 		status = http.StatusNotFound
-	case store.IsBusy(err):
+	case store.IsBusy(err), errors.Is(err, ErrBusy):
 		status = http.StatusServiceUnavailable
 	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
 		// The client gave up (Ctrl-C, --timeout): nothing to log.
@@ -429,8 +429,19 @@ func (s *Server) interfaces(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) hosts(w http.ResponseWriter, r *http.Request) {
 	p := &params{r: r}
+	f := hostFilter(p)
+	if p.err != nil {
+		s.fail(w, p.err)
+		return
+	}
+	hosts, err := s.o.Reader.Hosts(r.Context(), f)
+	s.reply(w, nonNil(hosts), err)
+}
+
+// hostFilter reads /v1/hosts parameters; the client's hostQuery writes them.
+func hostFilter(p *params) store.HostFilter {
 	f := store.HostFilter{Interface: p.str("interface"), Query: p.str("q"), QueryKind: p.kind(), Vendor: p.str("vendor"),
-		Device: p.str("device"), Port: p.int("port"), SeenSince: p.time("seen_since")}
+		Device: p.str("device"), Description: p.str("description"), Port: p.int("port"), SeenSince: p.time("seen_since")}
 	switch pr := p.str("presence"); pr {
 	case "", "any":
 	case "live":
@@ -440,12 +451,7 @@ func (s *Server) hosts(w http.ResponseWriter, r *http.Request) {
 	default:
 		p.err = badParam{fmt.Sprintf("presence: want live or notlive, got %q", pr)}
 	}
-	if p.err != nil {
-		s.fail(w, p.err)
-		return
-	}
-	hosts, err := s.o.Reader.Hosts(r.Context(), f)
-	s.reply(w, nonNil(hosts), err)
+	return f
 }
 
 func nonNil[T any](v []T) []T {

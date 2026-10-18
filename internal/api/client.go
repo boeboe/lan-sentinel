@@ -34,7 +34,8 @@ type Error struct {
 func (e *Error) Error() string { return e.Message }
 
 // Unwrap maps 404 and 400 to the store's errors, 422 to
-// ErrConfigRejected, and a 409 identify refusal to ErrIdentifyRefused.
+// ErrConfigRejected, a 409 identify refusal to ErrIdentifyRefused, and 503
+// (the daemon or its database busy) to ErrBusy.
 func (e *Error) Unwrap() error {
 	switch e.Status {
 	case http.StatusNotFound:
@@ -43,6 +44,8 @@ func (e *Error) Unwrap() error {
 		return store.ErrBadQuery
 	case http.StatusUnprocessableEntity:
 		return ErrConfigRejected
+	case http.StatusServiceUnavailable:
+		return ErrBusy
 	case http.StatusConflict:
 		if e.Code == CodeIdentifyRefused {
 			return ErrIdentifyRefused
@@ -242,6 +245,12 @@ func (c *Client) Interfaces(ctx context.Context) ([]store.InterfaceInfo, error) 
 
 // Hosts lists hosts.
 func (c *Client) Hosts(ctx context.Context, f store.HostFilter) ([]store.HostSummary, error) {
+	var out []store.HostSummary
+	return out, c.get(ctx, "/v1/hosts", hostQuery(f), &out)
+}
+
+// hostQuery is the inverse of the server's hostFilter.
+func hostQuery(f store.HostFilter) url.Values {
 	presence := ""
 	switch {
 	case f.Live && !f.NotLive:
@@ -249,10 +258,8 @@ func (c *Client) Hosts(ctx context.Context, f store.HostFilter) ([]store.HostSum
 	case f.NotLive && !f.Live:
 		presence = "notlive"
 	}
-	q := values{}.str("interface", f.Interface).str("q", f.Query).str("kind", string(f.QueryKind)).str("presence", presence).
-		str("vendor", f.Vendor).str("device", f.Device).int("port", f.Port).time("seen_since", f.SeenSince)
-	var out []store.HostSummary
-	return out, c.get(ctx, "/v1/hosts", url.Values(q), &out)
+	return url.Values(values{}.str("interface", f.Interface).str("q", f.Query).str("kind", string(f.QueryKind)).str("presence", presence).
+		str("vendor", f.Vendor).str("device", f.Device).str("description", f.Description).int("port", f.Port).time("seen_since", f.SeenSince))
 }
 
 // Host returns one host.

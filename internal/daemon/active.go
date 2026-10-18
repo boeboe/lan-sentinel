@@ -105,10 +105,11 @@ func (d *Daemon) probeLinks() map[string]probe.Link {
 	return out
 }
 
-// persistTimeout bounds recording a kill-switch change. The change is
+// persistTimeout bounds recording an operator change. The change is
 // recorded even when the client gives up, but never waits for a correlator
-// that has stopped.
-const persistTimeout = 10 * time.Second
+// that has stopped. It is shorter than the CLI's default --timeout (10s),
+// so a backlogged daemon answers api.ErrBusy before the client gives up.
+const persistTimeout = 8 * time.Second
 
 // DisableActive implements api.Control: probes stop at once; the switch
 // is persisted and recorded by the correlator, then committed. Changes of
@@ -150,10 +151,20 @@ func (d *Daemon) EnableActive(ctx context.Context, actor, reason string) (store.
 func (d *Daemon) record(ctx context.Context, op observation.Operator) error {
 	pctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), persistTimeout)
 	defer cancel()
-	if err := d.bus.PublishOperator(pctx, op); err != nil {
-		return err
+	err := d.bus.PublishOperator(pctx, op)
+	if err == nil {
+		err = d.store.Flush(pctx)
 	}
-	return d.store.Flush(pctx)
+	return busy(err)
+}
+
+// busy turns a recording deadline running out into api.ErrBusy: the
+// daemon is backlogged, not broken, and a queued change is still committed.
+func busy(err error) error {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return fmt.Errorf("%w, so the change is not confirmed (%w); it may still be recorded: check events list before you retry", api.ErrBusy, err)
+	}
+	return err
 }
 
 // PlanScan implements api.Control.
@@ -173,6 +184,7 @@ func (d *Daemon) Scan(ctx context.Context, req probe.Request, actor string) (sch
 	if ferr := d.store.Flush(context.WithoutCancel(ctx)); ferr != nil && err == nil {
 		err = ferr
 	}
+	err = busy(err) // the scan ran, its record did not commit in time
 	return res, err
 }
 
@@ -262,7 +274,7 @@ func (d *Daemon) IdentifyRun(ctx context.Context, actor, hostID, probeName, sni 
 	}
 	results, err := d.sched.IdentifyRun(ctx, h.Interface, job)
 	if err != nil {
-		if errors.Is(err, probe.ErrDisabled) || errors.Is(err, probe.ErrRefused) {
+		if errors.Is(err, probe.ErrDisabled) || errors.Is(err, probe.ErrRefused) || errors.Is(err, scheduler.ErrLinkDown) {
 			return store.IdentifyAttempt{}, fmt.Errorf("%w: %w", api.ErrIdentifyRefused, err)
 		}
 		return store.IdentifyAttempt{}, err
@@ -273,10 +285,10 @@ func (d *Daemon) IdentifyRun(ctx context.Context, actor, hostID, probeName, sni 
 	pctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), persistTimeout)
 	defer cancel()
 	if err := d.bus.Barrier(pctx); err != nil {
-		return store.IdentifyAttempt{}, err
+		return store.IdentifyAttempt{}, busy(err)
 	}
 	if err := d.store.Flush(pctx); err != nil {
-		return store.IdentifyAttempt{}, err
+		return store.IdentifyAttempt{}, busy(err)
 	}
 	return d.reader.IdentifyAttemptOf(pctx, hostID, probeName)
 }

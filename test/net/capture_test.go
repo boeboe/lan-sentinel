@@ -37,6 +37,9 @@ var (
 	injHMI  = frames.MAC("02:00:00:00:fb:02")
 	injSRV  = frames.MAC("02:00:00:00:fb:03")
 	injSW   = frames.MAC("02:00:00:00:fb:04")
+	injCAM  = frames.MAC("02:00:00:00:fb:05")
+	injWIN  = frames.MAC("02:00:00:00:fb:06")
+	injCDP  = frames.MAC("02:00:00:00:fb:07")
 	injFake = frames.MAC("02:00:00:00:fb:05")
 )
 
@@ -86,6 +89,12 @@ func discoveryFrames(t *testing.T, runnerMAC net.HardwareAddr, prefix netip.Pref
 		frames.UDP4(injSRV, runnerMAC, ipOf(103), ipOf(2), 53, 40000, frames.DNSResponse(
 			[]layers.DNSResourceRecord{frames.PTR(reverse(ipOf(101)), "plc-test.plant.example.")}, nil)),
 		lldp,
+		frames.NBNSRegistration(injWIN, ipOf(106), "WIN-TEST", 0x00, false),
+		frames.Browser{Source: injSRV, IP: ipOf(103), Name: "SRV-TEST", Workgroup: "PLANT", Opcode: 0x01, OSMajor: 10,
+			ServerType: 0x00009003}.Frame(),
+		frames.CDP{Source: injCDP, Holdtime: 180, DeviceID: "test-cdp-01", PortID: "GigabitEthernet1/0/12", Platform: "cisco IE-4000"}.Frame(),
+		frames.SSDPNotify(injCAM, ipOf(105), "upnp:rootdevice", "uuid:cam-test::upnp:rootdevice", "Linux/4.9 UPnP/1.0", "http://"+ipOf(105)+"/d.xml"),
+		frames.WSDHello(injCAM, ipOf(105), "urn:uuid:cam-test", "dn:NetworkVideoTransmitter", "onvif://www.onvif.org/hardware/TEST-CAM", ""),
 	}
 	if os.Getenv("LS_TEST_IPV6") == "1" {
 		out = append(out, frames.NeighborAdvertisement(injPLC, "fe80::ff:fe00:fb01", "fe80::ff:fe00:fb01", 0x20))
@@ -202,6 +211,11 @@ func TestCaptureDecodesDiscoveryFrames(t *testing.T) {
 		"passive_dns " + ipOf(101) + " dns_ptr:plc-test.plant.example", // DNS answers carry no MAC
 		"passive_ipv4 " + injSRV.String() + " " + ipOf(103),
 		"passive_lldp " + injSW.String() + " lldp:test-sw-01",
+		"passive_netbios " + injWIN.String() + " " + ipOf(106) + " netbios:WIN-TEST",
+		"passive_netbios " + injSRV.String() + " " + ipOf(103) + " netbios:SRV-TEST",
+		"passive_cdp " + injCDP.String() + " lldp:test-cdp-01", // through the 802.3 LLC/SNAP path of the filter
+		"passive_ssdp " + injCAM.String() + " " + ipOf(105),
+		"passive_wsd " + injCAM.String() + " " + ipOf(105),
 	}
 	if os.Getenv("LS_TEST_IPV6") == "1" {
 		want = append(want, "passive_ndp "+injPLC.String()+" fe80::ff:fe00:fb01")

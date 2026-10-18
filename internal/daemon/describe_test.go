@@ -90,3 +90,19 @@ func TestDescribeHostThroughTheDaemon(t *testing.T) {
 		t.Errorf("%s HOST_DESCRIBED events after the restart, want 3", n[0])
 	}
 }
+
+// An operator change the backlogged pipeline did not commit in time is
+// ErrBusy (503), not a server error; other errors pass through.
+func TestBusy(t *testing.T) {
+	if err := busy(context.DeadlineExceeded); !errors.Is(err, api.ErrBusy) {
+		t.Errorf("deadline: %v", err)
+	}
+	if err := busy(nil); err != nil {
+		t.Errorf("busy(nil) = %v", err)
+	}
+	for _, e := range []error{store.ErrClosed, context.Canceled} {
+		if got := busy(e); !errors.Is(got, e) || errors.Is(got, api.ErrBusy) {
+			t.Errorf("busy(%v) = %v", e, got)
+		}
+	}
+}

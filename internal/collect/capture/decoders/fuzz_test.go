@@ -150,5 +150,78 @@ func seedFrames() [][]byte {
 		frames.MDNS4(plc, "192.168.110.50", []layers.DNSResourceRecord{frames.A("plc-1.local", "192.168.110.50")}, nil),
 		frames.NeighborAdvertisement(plc, "fe80::21b:1bff:feaa:bb01", "fd5e:5e:1::50", 0xa0),
 		frames.LLDP{Source: swPort, ChassisMAC: sw, PortID: "1", TTL: 120, SystemName: "sw"}.Frame(),
+		frames.NBNSRegistration(hmi, "192.168.110.20", "HMI-LINE3", 0x00, false),
+		nbBrowserFrame(),
+		cdpFrame(),
+		ssdpFrame(),
+		wsdFrame(),
 	}
+}
+
+func nbBrowserFrame() []byte {
+	return frames.Browser{Source: hmi, IP: "192.168.110.20", Name: "HMI-LINE3", Workgroup: "PLANT", Opcode: 0x01,
+		OSMajor: 6, OSMinor: 1, ServerType: 0x00001003, Comment: "HMI"}.Frame()
+}
+
+func cdpFrame() []byte {
+	return frames.CDP{Source: swPort, Holdtime: 180, DeviceID: "sw-1", PortID: "Gi1/0/1", Software: "IOS 15.2\nmore",
+		Platform: "cisco IE-4000", Caps: 0x28, MgmtIP: "192.168.110.3"}.Frame()
+}
+
+func ssdpFrame() []byte {
+	return frames.SSDPNotify(router, "192.168.110.1", "upnp:rootdevice", "uuid:x::upnp:rootdevice", "Linux/4.14 UPnP/1.0", "http://192.168.110.1/d.xml")
+}
+
+func wsdFrame() []byte {
+	return frames.WSDHello(hmi, "192.168.110.20", "urn:uuid:x", "dn:NetworkVideoTransmitter",
+		"onvif://www.onvif.org/hardware/X onvif://www.onvif.org/type/video_encoder", "http://192.168.110.20/onvif")
+}
+
+// udpPayload is the UDP payload of an Ethernet+IPv4 frame without options.
+func udpPayload(b []byte) []byte { return b[14+20+8:] }
+
+func FuzzNBNS(f *testing.F) {
+	f.Add(udpPayload(frames.NBNSRegistration(hmi, "192.168.110.20", "HMI-LINE3", 0x00, false)))
+	f.Add(udpPayload(frames.NBNSAnswer(hmi, plc, "192.168.110.20", "192.168.110.50", "HMI-LINE3", 0x20, "192.168.110.20")))
+	f.Fuzz(func(t *testing.T, b []byte) {
+		fr := newFrame()
+		fr.nbns(netip.MustParseAddr("192.168.110.20"), b)
+		checkFrame(t, fr)
+	})
+}
+
+func FuzzNBDatagram(f *testing.F) {
+	f.Add(udpPayload(nbBrowserFrame()))
+	f.Fuzz(func(t *testing.T, b []byte) {
+		fr := newFrame()
+		fr.nbDatagram(netip.MustParseAddr("192.168.110.20"), b)
+		checkFrame(t, fr)
+	})
+}
+
+func FuzzCDP(f *testing.F) {
+	f.Add(cdpFrame()[14:])
+	f.Fuzz(func(t *testing.T, b []byte) {
+		fr := newFrame()
+		fr.cdp(b)
+		checkFrame(t, fr)
+	})
+}
+
+func FuzzSSDP(f *testing.F) {
+	f.Add(udpPayload(ssdpFrame()))
+	f.Fuzz(func(t *testing.T, b []byte) {
+		fr := newFrame()
+		fr.ssdp(netip.MustParseAddr("192.168.110.1"), b)
+		checkFrame(t, fr)
+	})
+}
+
+func FuzzWSD(f *testing.F) {
+	f.Add(udpPayload(wsdFrame()))
+	f.Fuzz(func(t *testing.T, b []byte) {
+		fr := newFrame()
+		fr.wsd(netip.MustParseAddr("192.168.110.20"), b)
+		checkFrame(t, fr)
+	})
 }

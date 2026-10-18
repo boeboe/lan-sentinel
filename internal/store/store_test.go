@@ -217,6 +217,81 @@ func TestMaxBatchCommitsEarly(t *testing.T) {
 	}
 }
 
+// A Group's ops commit together: a full batch, the flush interval or
+// another goroutine's Flush waits for the Group to end, so no committed
+// moment holds part of it.
+func TestGroupCommitsWhole(t *testing.T) {
+	sim := clock.NewSim(t0)
+	s := open(t, Options{Clock: sim, FlushInterval: 5 * time.Second, MaxBatch: 2})
+	ctx := context.Background()
+	db := inspect(t, s.Path())
+	flushed := make(chan error, 1)
+	s.Group(ctx, func() {
+		for _, n := range []string{"a", "b", "c", "d", "e"} {
+			if err := s.Submit(ctx, insertContext(n)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		sim.Advance(5 * time.Second)
+		go func() { flushed <- s.Flush(ctx) }()
+		if err := s.Ping(ctx); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(50 * time.Millisecond) // give the Flush time to arrive
+		select {
+		case err := <-flushed:
+			t.Errorf("Flush returned inside the group: %v", err)
+		default:
+		}
+		if s.Commits() != 0 {
+			t.Errorf("%d commits inside the group", s.Commits())
+		}
+	})
+	if err := <-flushed; err != nil {
+		t.Fatal(err)
+	}
+	if got := count(t, db, `SELECT count(*) FROM network_contexts`); got != 5 || s.Commits() != 1 {
+		t.Errorf("%d rows in %d commits, want 5 in 1", got, s.Commits())
+	}
+
+	// After the group, batches commit early again.
+	for _, n := range []string{"f", "g"} {
+		if err := s.Submit(ctx, insertContext(n)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	waitFor(t, func() bool { return s.Commits() == 2 })
+}
+
+// A store closed inside a Group still commits it; a Group on a closed store
+// runs fn.
+func TestGroupAtClose(t *testing.T) {
+	s, err := Open(context.Background(), Options{Path: filepath.Join(t.TempDir(), "hosts.db"), Clock: clock.NewSim(t0)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	closed := make(chan error, 1)
+	s.Group(ctx, func() {
+		if err := s.Submit(ctx, insertContext("eth0")); err != nil {
+			t.Fatal(err)
+		}
+		go func() { closed <- s.Close() }()
+		<-s.exited // the writer ended inside the group
+	})
+	if err := <-closed; err != nil {
+		t.Fatal(err)
+	}
+	if got := count(t, inspect(t, s.Path()), `SELECT count(*) FROM network_contexts`); got != 1 {
+		t.Errorf("rows = %d, want the group committed at close", got)
+	}
+	ran := false
+	s.Group(ctx, func() { ran = true })
+	if !ran {
+		t.Error("Group on a closed store did not run fn")
+	}
+}
+
 func TestFailingOpIsIsolated(t *testing.T) {
 	s := open(t, Options{Clock: clock.NewSim(t0)})
 	ctx := context.Background()

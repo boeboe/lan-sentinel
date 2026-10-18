@@ -20,9 +20,16 @@ func claims(cs []Claim) string {
 		}
 		sort.Strings(keys)
 		out[i] = fmt.Sprintf("%s=%s %.1f [%s]", c.Field, c.Value, c.Confidence, strings.Join(keys, " "))
+		if c.Replace {
+			out[i] += " replace"
+		}
 	}
 	return strings.Join(out, "; ")
 }
+
+// lldpDesc is the claim of an LLDP system description: the device's report
+// of its current model and firmware.
+const lldpDesc = "system_description=Industrial Ethernet Switch 0.8 [system_description=Industrial Ethernet Switch] replace"
 
 func TestIdentifiers(t *testing.T) {
 	mdns := func(meta ...string) observation.Observation {
@@ -77,10 +84,10 @@ func TestIdentifiers(t *testing.T) {
 			"device_type=Smartphone 0.4 [hostname=Barts-iPhone]; os=iOS 0.4 [hostname=Barts-iPhone]"},
 		{"hostname nothing", hostnameIdentifier{}, name(observation.NameMDNS, "plc-a.local"), ""},
 		{"hostname from a PTR record is not read", hostnameIdentifier{}, name(observation.NameDNSPTR, "DESKTOP-4F2K9QA.plant.example"), ""},
-		{"lldp switch", lldpIdentifier{}, lldp("bridge"), "device_type=Switch 0.8 [capabilities=bridge system_description=Industrial Ethernet Switch]"},
-		{"lldp router that bridges", lldpIdentifier{}, lldp("bridge,router"), "device_type=Router 0.8 [capabilities=bridge,router system_description=Industrial Ethernet Switch]"},
-		{"lldp phone", lldpIdentifier{}, lldp("bridge,telephone"), "device_type=IP phone 0.8 [capabilities=bridge,telephone system_description=Industrial Ethernet Switch]"},
-		{"lldp station", lldpIdentifier{}, lldp("station"), ""},
+		{"lldp switch", lldpIdentifier{}, lldp("bridge"), "device_type=Switch 0.8 [capabilities=bridge system_description=Industrial Ethernet Switch]; " + lldpDesc},
+		{"lldp router that bridges", lldpIdentifier{}, lldp("bridge,router"), "device_type=Router 0.8 [capabilities=bridge,router system_description=Industrial Ethernet Switch]; " + lldpDesc},
+		{"lldp phone", lldpIdentifier{}, lldp("bridge,telephone"), "device_type=IP phone 0.8 [capabilities=bridge,telephone system_description=Industrial Ethernet Switch]; " + lldpDesc},
+		{"lldp station: the description only", lldpIdentifier{}, lldp("station"), lldpDesc},
 		{"lldp without description", lldpIdentifier{}, observation.Observation{Source: observation.PassiveLLDP, Meta: map[string]string{"capabilities": "wlan_ap"}},
 			"device_type=Access point 0.8 [capabilities=wlan_ap]"},
 		{"lldp not lldp", lldpIdentifier{}, observation.Observation{Source: observation.PassiveMDNS, Meta: map[string]string{"capabilities": "router"}}, ""},
@@ -102,7 +109,7 @@ func TestIdentifierToggles(t *testing.T) {
 		}
 		return strings.Join(n, ",")
 	}
-	if got := names(Identifiers(config.Defaults().Identity.Identifiers)); got != "mdns,dhcp,hostname,lldp" {
+	if got := names(Identifiers(config.Defaults().Identity.Identifiers)); got != "mdns,dhcp,hostname,lldp,netbios,cdp,ssdp,wsd" {
 		t.Errorf("default identifiers = %s", got)
 	}
 	if got := names(Identifiers(config.IdentifierToggles{DHCP: true, LLDP: true})); got != "dhcp,lldp" {

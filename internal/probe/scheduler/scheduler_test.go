@@ -1034,4 +1034,48 @@ func TestIdentifyRunForcesOnce(t *testing.T) {
 	if len(p.Identify) != 1 || p.Identify[0].Trigger != observation.TriggerOperator || !p.Identify[0].Force {
 		t.Errorf("forced job = %+v", p.Identify)
 	}
+
+	// On a missing link nothing is sent, which the daemon answers as a
+	// refusal (409), not a server error.
+	r.links = map[string]probe.Link{}
+	if _, err := r.s.IdentifyRun(context.Background(), "eth1", job); !errors.Is(err, ErrLinkDown) {
+		t.Errorf("IdentifyRun on a missing link = %v", err)
+	}
+}
+
+// A pass the kill switch cut short is ErrDisabled even when the switch is
+// cleared again before the pass returns, so it is not logged as a failure.
+func TestStoppedAfterQuickEnable(t *testing.T) {
+	sw := probe.NewSwitch(store.ActiveState{})
+	s := New(Options{Config: config.Defaults, Budget: probe.NewBudget(nil, probe.Limits{}, nil), Switch: sw})
+	pctx, cancel := s.passContext(context.Background())
+	defer cancel()
+	sw.Set(store.ActiveState{Disabled: true, Reason: "test"})
+	<-pctx.Done()
+	sw.Set(store.ActiveState{})
+	if err := s.stopped(pctx, context.Canceled); !errors.Is(err, probe.ErrDisabled) {
+		t.Errorf("stopped = %v, want ErrDisabled", err)
+	}
+
+	other, cancelOther := s.passContext(context.Background())
+	cancelOther()
+	if err := s.stopped(other, context.Canceled); !errors.Is(err, context.Canceled) {
+		t.Errorf("stopped after a plain cancel = %v", err)
+	}
+	if err := s.stopped(other, nil); err != nil {
+		t.Errorf("stopped(nil) = %v", err)
+	}
+}
+
+// An identification pass counts as replied every device that answered,
+// whatever it said; a timeout is probed but not replied.
+func TestIdentifyPassSummary(t *testing.T) {
+	s := New(Options{Config: config.Defaults, Budget: probe.NewBudget(nil, probe.Limits{}, nil), Switch: probe.NewSwitch(store.ActiveState{})})
+	s.summarise("eth1", probe.Identify, []probe.Result{
+		{State: observation.ResultOK}, {State: observation.ResultRefused}, {State: observation.ResultMalformed},
+		{State: observation.ResultTimeout}, {State: probe.Blocked},
+	}, time.Second, true)
+	if p := s.LastPasses()["eth1"][platform.CollectorIdentify]; p.Probed != 4 || p.Replied != 3 || p.Blocked != 1 {
+		t.Errorf("identify pass = %+v", p)
+	}
 }

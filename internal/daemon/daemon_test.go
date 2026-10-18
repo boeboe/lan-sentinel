@@ -644,3 +644,35 @@ func TestSocketInUse(t *testing.T) {
 		t.Errorf("second daemon: %v", err)
 	}
 }
+
+// Every metric the daemon serves is in the metrics table of docs/API.md
+// with its labels (AGENTS.md §12).
+func TestMetricsDocumented(t *testing.T) {
+	h := start(t, testConfig("$DIR", "info", ""), 0)
+	defer h.stop()
+	b, err := os.ReadFile("../../docs/API.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows := map[string]string{}
+	for _, line := range strings.Split(string(b), "\n") {
+		if strings.HasPrefix(line, "| `lan_sentinel_") {
+			cells := strings.Split(line, "|")
+			rows[strings.Trim(cells[1], " `")] = cells[3]
+		}
+	}
+	for _, f := range h.d.gather(context.Background()) {
+		labels, ok := rows[f.Name]
+		if !ok {
+			t.Errorf("metric %s is not in docs/API.md", f.Name)
+			continue
+		}
+		for _, s := range f.Samples {
+			for _, l := range s.Labels {
+				if !strings.Contains(labels, l.Name) {
+					t.Errorf("metric %s: label %q is not in docs/API.md (%s)", f.Name, l.Name, strings.TrimSpace(labels))
+				}
+			}
+		}
+	}
+}

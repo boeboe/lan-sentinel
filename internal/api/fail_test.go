@@ -28,6 +28,7 @@ func TestFailStatuses(t *testing.T) {
 		want int
 	}{
 		{fmt.Errorf("read: %w", codedErr(5)), http.StatusServiceUnavailable},
+		{fmt.Errorf("%w: not committed within 8s", ErrBusy), http.StatusServiceUnavailable},
 		{fmt.Errorf("host x: %w", store.ErrNotFound), http.StatusNotFound},
 		{badParam{"since: bad"}, http.StatusBadRequest},
 		{fmt.Errorf("read: %w", context.Canceled), http.StatusInternalServerError},
@@ -45,3 +46,25 @@ func TestFailStatuses(t *testing.T) {
 }
 
 func newTextLogger(w *strings.Builder) *slog.Logger { return slog.New(slog.NewTextHandler(w, nil)) }
+
+// A client sees the statuses as the errors it can test for.
+func TestErrorUnwrap(t *testing.T) {
+	for _, tt := range []struct {
+		status int
+		code   string
+		want   error
+	}{
+		{http.StatusNotFound, "", store.ErrNotFound},
+		{http.StatusBadRequest, "", store.ErrBadQuery},
+		{http.StatusUnprocessableEntity, "", ErrConfigRejected},
+		{http.StatusConflict, CodeIdentifyRefused, ErrIdentifyRefused},
+		{http.StatusServiceUnavailable, "", ErrBusy},
+	} {
+		if err := error(&Error{Status: tt.status, Code: tt.code}); !errors.Is(err, tt.want) {
+			t.Errorf("%d %q: not %v", tt.status, tt.code, tt.want)
+		}
+	}
+	if err := error(&Error{Status: http.StatusInternalServerError}); errors.Is(err, ErrBusy) || errors.Unwrap(err) != nil {
+		t.Errorf("500 unwraps to %v", errors.Unwrap(err))
+	}
+}
